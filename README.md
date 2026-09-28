@@ -2,10 +2,10 @@
 
 A voice assistant for your Mac. Say "Hey Jev" or hold right Option, say a thing, it does it and answers back.
 
-- **Jev** (TypeSafe) makes every decision in one call, $0.00004 per request
-- **Fish Audio S2.1 Pro** speaks every reply, with emotion tags like `[chuckling]` and `[sighing]`
+- **Jev** (TypeSafe) makes a decision in one call when the phrase isn't a local command, $0.00004 per request
+- **Fish Audio S2.1 Pro** speaks replies, with emotion tags like `[chuckling]` and `[sighing]`. Messages from My Love are the exception: the Mac `say` command speaks those, and the text never goes to Fish
 - **Whisper** (local, faster-whisper) turns your voice into text
-- An LLM only wakes up for a general question. The time, the date, and the calendar are answered on the Mac
+- An LLM only wakes up for a general question. Weather, the date, the calendar, notes, and the other local commands below are answered on the Mac, before any API call
 
 **Mac only.** Works on macOS Sequoia and Tahoe. It controls the Mac through AppleScript and the Keychain, so it won't run on Windows or Linux.
 
@@ -15,11 +15,87 @@ Open or quit apps, Mac volume up / down / mute / set, Spotify volume, play / pau
 
 Open and quit work for any installed app, not just a fixed list. "Open cap cut", "launch ChatGPT", "start Cursor", and "open the Claude app" are matched against `/Applications`, `/System/Applications` (including Utilities), and `~/Applications`. Quit is a polite quit. It will not quit Finder or Hey Jev. "Quit all" asks you to say yes within about 10 seconds, and it has to be its own command.
 
-Time and date are answered on the Mac: "what time is it", "what's the date", "what day is it". Calendar is read-only: "what's next", "what's my schedule today", "when's my next shift". A shift is the next event in the next 14 days whose title contains R345, Apple, or shift. "What apps are open" lists the apps in the foreground.
+Time and date are answered on the Mac: "what time is it", "what's the date", "what day is it". Calendar is read-only, across every calendar in Apple Calendar: "what's next", "what's my schedule today", "when's my next meeting", "what's on my calendar", "when's my next shift". A shift is the next event in the next 14 days whose title contains R345, Apple, Brea, or shift. "What apps are open" lists the apps in the foreground.
+
+"What's today" is the date plus how many events are on today's calendar. "What's Zoe got tomorrow" reads tomorrow's events whose title or calendar mentions Zoe, school, or Cabrillo.
 
 Shortcuts run only from a Shortcuts folder named `Jev`: "run shortcut Leaving for work", "run my Focus shortcut", "do Jev morning". Anything outside that folder is refused.
 
-Timers and reminders: "set a timer for 5 minutes", "remind me in 20 minutes to call Mum", "how long is left?", "cancel the timer". Each one counts down live in the window, and she tells you when it's done.
+These are also answered on the Mac, with no TypeSafe or LLM call:
+
+- **Weather:** "weather", "what's the weather". Current conditions, high, low, and chance of rain for Upland, CA, from Open-Meteo. No API key. If the request takes more than about 4 seconds, or it fails, she says she couldn't check the weather.
+- **Brief me:** the date, that weather, today's events, the next shift, and the first few items from the due list. Gmail is an optional step. It stays off unless a Google OAuth token is stored in the Keychain under service `com.jevsiri.keys`, account `GOOGLE_OAUTH_TOKEN`. This build does not include a Google client library and does not call Google. `gmail_brief_line()` in `commands.py` is the stub to replace if you add that later.
+- **Messages from My Love:** "check my messages from My Love". Reads the latest 3 incoming messages from the handles at the top of `commands.py` (`MY_LOVE_HANDLES`: `+15623616724` and `cgarcilazo6724@icloud.com`). When the `text` column is empty, the body is decoded from `attributedBody`. She speaks them with the Mac `say` command only. They are not sent to Fish Audio, TypeSafe, or an LLM, and the iPhone bridge will not run this command. Full Disk Access is optional and is the only reason to grant it. Without it, she says how to turn it on.
+- **Notes:** "take a note: buy oat milk" appends a timestamped line to `~/Documents/Jev/notes.md`, creating the file if needed.
+- **Due this week:** "what's due this week" reads `~/Documents/Jev/due.md`. See the format below.
+- **Focus:** "start focus mode" or "start focus mode for 10 minutes" runs the shortcut `Jev Focus On`, then a timer. The default is 25 minutes. When it ends, she runs `Jev Focus Off` and says focus is off. Hey Jev has to stay open for the off shortcut. Both shortcuts must live in the Jev folder. See below.
+- **IHSS hours:** "log IHSS hours: 4 hours today" or "log IHSS hours: 3.5 hours yesterday" appends `date,hours` to `~/Documents/Jev/ihss_hours.csv` and says the total for the current semi-monthly period (the 1st through the 15th, or the 16th through the end of the month).
+- **Case status:** "check my case status" opens https://egov.uscis.gov/ in the default browser. No receipt number is stored.
+- **iPhone:** commands can arrive as signed files in iCloud Drive. There is no network listener. See below.
+
+Timers and reminders: "set a timer for 5 minutes", "remind me in 20 minutes to call Mum", "how long is left?", "cancel the timer". Each one counts down live in the window, and she tells you when it's done. A focus timer is one of these: when it finishes she turns focus off.
+
+## Due list
+
+`~/Documents/Jev/due.md` is a markdown list you maintain yourself. One item per line. Each item needs a date written `YYYY-MM-DD`. The rest of the line is what she says. Blank lines, headings, and lines with no date are skipped. She reads items due today through 7 days from today, soonest first.
+
+```markdown
+# Due
+
+- 2026-09-30 Pay rent
+- 2026-10-03 Zoe permission slip
+- 2026-10-12 Too far out, so this one is skipped
+```
+
+## Focus shortcuts
+
+In the Shortcuts app, inside the folder named `Jev`, create:
+
+1. **Jev Focus On.** Add a Set Focus action and turn your Focus on (Do Not Disturb, or whichever Focus you use).
+2. **Jev Focus Off.** The same action, set to turn that Focus off.
+
+"Start focus mode" runs the first, waits (25 minutes unless you say "for N minutes"), runs the second, and tells you. Quit Hey Jev and the off shortcut will not run, because the timer lives in the app.
+
+## iPhone bridge
+
+Hey Jev does not listen on the network. While it is running (the app, or `python siri.py` / `--wake`, not a one-shot `--text`), a background thread checks `~/Library/Mobile Documents/com~apple~CloudDocs/Jev/inbox/` every 2 seconds. That folder is `iCloud Drive/Jev/inbox` on the iPhone. Replies are written to `iCloud Drive/Jev/outbox`.
+
+Each command is a JSON file:
+
+```json
+{"cmd": "what's the weather", "ts": 1710000000, "nonce": "a1b2c3d4e5", "sig": "<hex hmac>"}
+```
+
+- `cmd` is the same kind of phrase you would say out loud.
+- `ts` is the unix time in whole seconds.
+- `nonce` is 8 to 64 characters: letters, digits, underscore, or hyphen. Use a new one every time.
+- `sig` is the hex HMAC-SHA256 of the exact string `cmd|ts|nonce` (the three values joined with `|`, no spaces around the pipes, UTF-8). `ts` in that string is the decimal digits of the integer.
+
+The secret is only in the Mac Keychain, service `com.jevsiri.keys`, account `JEV_BRIDGE_SECRET`. A `.env` value is not used for this. Create it once:
+
+```bash
+.venv/bin/python siri.py --bridge-secret
+```
+
+That prints the secret once. Copy it into the iPhone Shortcut and do not commit it. A file is rejected when the signature is wrong, when `ts` is more than 120 seconds from the Mac's clock, or when that nonce was already used. The inbox file is deleted after it is handled. Quit-all, reading messages, and anything that needs a spoken confirmation are refused. Allowed phrases are the local ones: time, date, what's today, weather, calendar, shift, open apps, brief me, due, Zoe, take a note, focus, IHSS hours, and case status.
+
+### iPhone Shortcut
+
+1. On the Mac, run `python siri.py --bridge-secret` and copy the hex secret. Leave Hey Jev running so the inbox is polled.
+2. In Shortcuts, create a new shortcut.
+3. **Dictate Text.** Prompt: "What should Jev do?" Save as `Command`.
+4. **Date.** Current Date. Format as Unix Time in seconds, as a whole number (no decimal). Save as `Timestamp`.
+5. **Random** or **Text** for a nonce of at least 8 letters or digits, different every run. Save as `Nonce`.
+6. **Text** that is exactly `Command`, then `|`, then `Timestamp`, then `|`, then `Nonce`. No spaces beside the pipes and no extra newline. Save as `Payload`.
+7. **Generate Hash.** Input: `Payload`. If the action lists HMAC-SHA256, choose it, set the key to the secret from step 1, and ask for hex. Save as `Signature`.
+8. If Generate Hash has no HMAC choice, install the free app **a-Shell** and add its **Execute Command** action instead. The secret is hex, so it is safe inside single quotes. The command is `printf '%s' 'PAYLOAD' | openssl dgst -sha256 -hmac 'SECRET'`. If `Command` itself contains a single quote, build the payload in a file in the shortcut and run `openssl dgst -sha256 -hmac 'SECRET' -hex` on that file. The signature is the hex after the `=` sign, with spaces removed. Save that as `Signature`.
+9. **Text** the JSON, with quotes inside `Command` replaced by `\"` first (**Replace Text**). Use this shape, with your variables in the values: `{"cmd":"Command","ts":Timestamp,"nonce":"Nonce","sig":"Signature"}`. `ts` is a number, not a string. Save the file to **iCloud Drive/Jev/inbox** with the name `Nonce.json` (the **Save File** action, destination iCloud Drive, ask where to save turned off, overwrite on).
+10. **Wait** 4 seconds. iCloud can be slow; if the next step misses, wait 8 seconds or repeat the wait a couple of times.
+11. **Get File** `iCloud Drive/Jev/outbox/Nonce.json`.
+12. **Get Dictionary from Input**, then **Get Dictionary Value** for the key `reply`.
+13. **Speak Text** that reply. Optionally delete the outbox file.
+
+The Mac also speaks the reply while the shortcut reads it back. Message text is never written to the outbox.
 
 Anything that isn't a command ("who wrote Hamlet") goes to Claude Haiku via OpenRouter and gets spoken back. Haiku is told the current local date and time, so "tomorrow" in a reminder lines up with today.
 
@@ -66,8 +142,10 @@ First launch:
 3. macOS will ask for **Microphone** access. Say yes.
 4. Add "Hey Jev - Fish Audio" (or your terminal, if you run from the terminal) under **System Settings > Privacy & Security > Accessibility**, or key presses are ignored.
 5. The first time it toggles dark mode or controls Spotify you'll get an **Automation** prompt. Say yes. Quitting an app does not ask once per app.
-6. The first calendar question ("what's next", "what's my schedule today", "when's my next shift") asks for **Calendars → Full Access**. Allow it. That string is in the app bundle, so rebuild with `python setup.py py2app -A` after pulling a `setup.py` change, then quit and reopen. A `--text` run from Terminal asks Terminal (or Cursor) for calendar access, not the Hey Jev bundle.
-7. Shortcuts need a folder named `Jev` in the Shortcuts app. Only shortcuts in that folder can run.
+6. The first calendar question ("what's next", "what's my schedule today", "when's my next shift", "brief me", "what's Zoe got tomorrow") asks for **Calendars → Full Access**. Allow it. That string is in the app bundle, so rebuild with `python setup.py py2app -A` after pulling a `setup.py` change, then quit and reopen. A `--text` run from Terminal asks Terminal (or Cursor) for calendar access, not the Hey Jev bundle.
+7. Shortcuts need a folder named `Jev` in the Shortcuts app. Only shortcuts in that folder can run. Put **Jev Focus On** and **Jev Focus Off** there if you use focus mode.
+8. **Full Disk Access is optional.** Grant it only if you want "check my messages from My Love". System Settings > Privacy & Security > Full Disk Access, add Hey Jev (or Terminal, if you use `--text`). Everything else works without it.
+9. Weather calls `api.open-meteo.com` (no key). The iPhone bridge does not open a port. It only reads and writes the iCloud Drive folder described above.
 
 The window goes green when it's ready. The switch in the bottom right picks how you talk to it:
 
@@ -100,8 +178,23 @@ Useful for seeing the Jev trace (every question, answer and confidence per turn)
 .venv/bin/python siri.py --text "what time is it"
 .venv/bin/python siri.py --text "open cap cut"
 .venv/bin/python siri.py --text "what's my schedule today"
+.venv/bin/python siri.py --text "what's the weather"
+.venv/bin/python siri.py --text "what's today"
+.venv/bin/python siri.py --text "when's my next meeting"
+.venv/bin/python siri.py --text "what's on my calendar"
+.venv/bin/python siri.py --text "brief me"
+.venv/bin/python siri.py --text "check my messages from My Love"
+.venv/bin/python siri.py --text "take a note: buy oat milk"
+.venv/bin/python siri.py --text "what's due this week"
+.venv/bin/python siri.py --text "start focus mode for 25 minutes"
+.venv/bin/python siri.py --text "log IHSS hours: 4 hours today"
+.venv/bin/python siri.py --text "check my case status"
+.venv/bin/python siri.py --text "what's Zoe got tomorrow"
+.venv/bin/python siri.py --bridge-secret
 .venv/bin/python siri.py --ui          # same as the app, but shows as "Python" in the Dock
 ```
+
+"Check my messages from My Love" speaks with `say` and needs Full Disk Access on whichever app you run it from. "Check my case status" opens a browser. "Start focus mode" turns focus on; the off shortcut only runs if Hey Jev stays open, so a one-shot `--text` run will not turn it off. `--bridge-secret` prints a new Keychain secret. The trace for the local phrases above should not show a Jev or Haiku call.
 
 Keys can also go in a `.env` file in this folder (`TYPESAFE_API_KEY`, `FISH_AUDIO_API_KEY`, `OPENROUTER_API_KEY`). A key in `.env` takes priority over the one saved in the Keychain.
 
@@ -109,7 +202,7 @@ Keys can also go in a `.env` file in this folder (`TYPESAFE_API_KEY`, `FISH_AUDI
 
 1. Audio is recorded while you hold right Option. In Hey Jev mode the mic stays open, and each phrase is transcribed locally and only acted on if it starts with "Hey Jev".
 2. faster-whisper transcribes it locally for free, about 0.8s.
-3. One Jev call asks every question at once (category, is it compound, target, which app, which action, volume level, and so on). The code ignores the answers that don't apply. This is the speculative fan-out pattern from the TypeSafe docs.
+3. Local commands (weather, today, calendar, the brief, messages, notes, due, focus, IHSS, case status, Zoe, time, date, open apps, and a named Jev shortcut) are chosen in `decide()` from the transcript alone, before any TypeSafe or LLM call. Anything else is one Jev call that asks every question at once (category, is it compound, target, which app, which action, volume level, and so on). The code ignores the answers that don't apply. This is the speculative fan-out pattern from the TypeSafe docs.
 4. If Jev says the request is two things, a second Jev call asks the same questions twice, scoped to "the first action" and "the second action". No LLM needed to split.
 5. The action runs as a one line `osascript` or shell command. Opening an app uses `open -a`. Quitting uses a polite terminate, not AppleScript. Spoken text is never pasted into an AppleScript string.
 6. A scripted reply with emotion tags is picked at random and played. Fixed lines are pre-rendered into `cache/tts/` on first launch, so replies are instant. `{app}` is only filled in for the favourite list (Spotify, Slack, Chrome, VS Code, Finder, Safari, Messages, Notes, Cursor, Claude, ChatGPT, CapCut). The time, a calendar title, and any other app name are generated when you ask. LLM answers are generated live too.
@@ -130,11 +223,13 @@ Below 0.65 confidence it asks you to say it again, twice in a row and it gives u
 - **The app won't open again.** It's probably still running with the window closed. Click its Dock icon, or quit it properly with Cmd+Q and open it again.
 - **It stopped controlling apps after a macOS update.** Updates can reset permissions. Check Microphone, Accessibility, Automation, and Calendars under Privacy & Security again.
 - **Calendar says it doesn't have access.** System Settings > Privacy & Security > Calendars, set Hey Jev to Full Access, then ask again. Write-only access is not enough. If you asked from `python siri.py --text`, the grant is on Terminal or Cursor, not on the app bundle.
+- **Messages says to turn on Full Disk Access.** That command is the only one that needs it. Add Hey Jev (or Terminal / Cursor, if you used `--text`) under Privacy & Security > Full Disk Access, then ask again. Leave it off and the rest of the app still works.
+- **The iPhone shortcut never speaks a reply.** Hey Jev has to be running on the Mac. The JSON file has to land in `iCloud Drive/Jev/inbox`, the signature has to be the HMAC of `cmd|ts|nonce`, and the phone's clock has to be within 2 minutes of the Mac. A reused nonce is ignored.
 
 ## Files
 
 - `siri.py` all the logic: questions, actions, replies, Whisper, Fish, LLM fallback
-- `commands.py` open and quit any app, time and date, calendar, the Jev shortcuts folder, and the yes/no confirmation
+- `commands.py` open and quit any app, time and date, calendar, weather, the brief, messages, notes, the due list, focus, IHSS, case status, Zoe, the iPhone bridge, the Jev shortcuts folder, and the yes/no confirmation
 - `assistant_ui.py` the status window, mode switch and Keys panel
 - `secrets_store.py` Keychain read / write
 - `app.py` and `setup.py` the app bundle entry point and the py2app config, output lands in `dist/`

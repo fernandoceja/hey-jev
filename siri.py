@@ -1,4 +1,8 @@
-"""Mac voice assistant: hold right Option or say "Hey Jev", then speak. Jev decides, Fish speaks."""
+"""Mac voice assistant: hold right Option or say "Hey Jev", then speak. Jev decides, Fish speaks.
+
+Messages from My Love are the exception: they are spoken with the macOS say command
+and are never sent to Fish, TypeSafe, or an LLM.
+"""
 import os, re, sys, json, time, queue, random, argparse, subprocess, tempfile, threading, hashlib, collections
 from datetime import datetime
 import numpy as np, requests, sounddevice as sd, soundfile as sf
@@ -18,13 +22,16 @@ GATE = 0.65
 WHISPER_MODEL = "small.en"
 COMMAND_PROMPT = (
     "Open Spotify. Open CapCut. Open ChatGPT. Open Cursor. Open Claude. Quit Safari. "
-    "What time is it. What's the date. What's my schedule today. When's my next shift. What's next. "
-    "What apps are open. Run shortcut Leaving for work. Set a timer for five minutes. "
+    "What time is it. What's the date. What's today. What's the weather. Brief me. "
+    "What's my schedule today. When's my next meeting. What's on my calendar. When's my next shift. What's next. "
+    "What apps are open. Check my messages from My Love. Take a note. What's due this week. "
+    "Start focus mode for 25 minutes. Log IHSS hours. Check my case status. What's Zoe got tomorrow. "
+    "Run shortcut Leaving for work. Set a timer for five minutes. "
     "Play. Pause. Next track. Turn Spotify down. Turn the Mac volume down. Mute. Dark mode on. Lock the screen."
 )
 WAKE_PROMPT = (
     "Hey Jev, open CapCut. Hey Jev, open ChatGPT. Hey Jev, what time is it. "
-    "Hey Jev, what's my schedule today. Hey Jev, pause the music."
+    "Hey Jev, what's the weather. Hey Jev, brief me. Hey Jev, what's my schedule today. Hey Jev, pause the music."
 )
 # Whisper often hears "Jev" as Jeff or Jeb, so accept the close ones
 WAKE = re.compile(r"^\W*(?:hey|hi|hay|okay|ok|a)\W+(?:jev|jevs|jeff|jeffs|jef|jeb|jab|chev|jeve|jav)\b\W*", re.I)
@@ -210,6 +217,16 @@ ACTIONS = {
     "info_today_schedule": lambda _arg, _text: commands.speak_today_schedule(),
     "info_next_shift": lambda _arg, _text: commands.speak_next_shift(),
     "info_open_apps": lambda _arg, _text: commands.speak_open_apps(),
+    "info_weather": lambda _arg, _text: commands.speak_weather(),
+    "info_today": lambda _arg, _text: commands.speak_today(),
+    "info_brief": lambda _arg, _text: commands.speak_brief(),
+    "info_due": lambda _arg, _text: commands.speak_due(),
+    "info_zoe": lambda _arg, _text: commands.speak_zoe_tomorrow(),
+    "info_messages": lambda _arg, text: commands.speak_my_love_messages(),
+    "note_take": lambda _arg, text: commands.take_note(text),
+    "focus_on": lambda _arg, text: _start_focus(text),
+    "ihss_log": lambda _arg, text: commands.log_ihss(text),
+    "case_status": lambda _arg, _text: commands.open_case_status(),
     "shortcut_run": lambda _arg, text: commands.run_named_shortcut(text),
 }
 
@@ -331,8 +348,8 @@ def say_duration(secs):
 TIMERS, TIMERS_LOCK = [], threading.Lock()
 
 
-def add_timer(secs, label=None):
-    t = {"end": time.time() + secs, "secs": secs, "label": label, "line": None}
+def add_timer(secs, label=None, focus=False):
+    t = {"end": time.time() + secs, "secs": secs, "label": label, "line": None, "focus": bool(focus)}
     with TIMERS_LOCK:
         TIMERS.append(t)
         TIMERS.sort(key=lambda x: x["end"])
@@ -428,7 +445,19 @@ def start_timer_loop(on_done):
     threading.Thread(target=loop, daemon=True).start()
 
 
+def _start_focus(text):
+    """Run the Jev Focus On shortcut and arm the off-timer. Default is 25 minutes."""
+    secs = parse_duration(text) or commands.FOCUS_DEFAULT_SECONDS
+
+    def arm(seconds):
+        add_timer(seconds, label="Focus", focus=True)
+
+    return commands.begin_focus(secs, arm)
+
+
 def timer_done_line(t):
+    if t.get("focus"):
+        return commands.finish_focus()
     if t["line"]:
         return t["line"]
     return say_line("reminder_done", label=t["label"]) if t["label"] else say_line("timer_done")
@@ -496,9 +525,19 @@ def sub_action(ans, target):
 def decide(ans, text=""):
     """Read the Jev fan-out. Returns ("actions", [...]), ("reply", key), ("llm", None) or ("clarify", None).
 
-    Time, date, calendar, open apps, and a named shortcut are routed here before the
-    information_request -> LLM branch. Quit-all is never one half of a two-part command.
+    handle() calls decide(None, text) first. route_before_api() then picks weather,
+    the brief, messages, notes, and the other local phrases before any API or LLM
+    call. None means nothing local matched, so the caller may ask Jev.
+    Quit-all is never one half of a two-part command.
     """
+    if ans is None:
+        local = commands.route_before_api(text)
+        if local:
+            return ("actions", [_picked(local)])
+        return None
+    # A message read must not fall through to Haiku even if the early call was skipped.
+    if commands.is_private_message_request(text):
+        return ("actions", [_picked("info_messages")])
     cat, cconf = ans["category"]
     # compound[0] is the yes/no. A weak yes still blocks the single-action fast paths,
     # matching the original timer check; only a confident yes is actually split.
@@ -654,7 +693,7 @@ def _finish_confirmed(notify):
     emit(notify, "Ready", line)
 
 
-def handle(text, stt_ms=None, notify=None):
+def handle(text, stt_ms=None, notify=None, reply_sink=None):
     global misses
     print(f"\n> heard: {text!r}" + (f"  (stt {stt_ms}ms)" if stt_ms is not None else ""))
     if not text.strip():
@@ -676,6 +715,14 @@ def handle(text, stt_ms=None, notify=None):
         return
     if pending in ("expired", "other"):
         print(f"  confirm: {pending}, handling this as a new request")
+    # Local phrases, including message reads, are chosen before TypeSafe or Haiku.
+    early = decide(None, text)
+    if early is None and commands.is_private_message_request(text):
+        early = ("actions", [_picked("info_messages")])
+    if early is not None:
+        misses = 0
+        _run_local(early[1], text, notify, reply_sink)
+        return
     emit(notify, "Thinking", text)
     ans, jev_ms, cost = jev(text)
     for k, (v, c) in ans.items():
@@ -708,7 +755,7 @@ def handle(text, stt_ms=None, notify=None):
             if speak_first:
                 line = default_line()
                 say(line, notify)
-            done, timer_reply, dynamic, fmt_override = 0, None, [], {}
+            done, timer_reply, dynamic, fmt_override, private_lines = 0, None, [], {}, []
             for _, action, arg, reply_key, fmt in payload:
                 if action in commands.CONFIRM:
                     # Ask first. A second action in the same utterance was already dropped.
@@ -728,7 +775,9 @@ def handle(text, stt_ms=None, notify=None):
                         timer_reply = run_timer(action, text)
                     else:
                         result = ACTIONS[action](arg, text)
-                        if isinstance(result, str):
+                        if isinstance(result, commands.LocalSpeech):
+                            private_lines.append(result.text)
+                        elif isinstance(result, str):
                             dynamic.append(result)
                         elif isinstance(result, dict):
                             fmt_override.update(result)
@@ -738,6 +787,10 @@ def handle(text, stt_ms=None, notify=None):
                     print(f"  action failed: {action} {e}")
             if speak_first:
                 emit(notify, "Ready", line)
+                return
+            if private_lines:
+                # Message text uses say, even on this fallback path, and is not given to Fish.
+                _deliver(" ".join(private_lines), notify, reply_sink, private=True)
                 return
             if not done:
                 line = say_line("unsupported")
@@ -766,6 +819,54 @@ def say(line, notify):
     emit(notify, "Speaking", line)
     tts_ms = speak(line)
     print(f"  fish {'cached' if tts_ms == 0 else str(tts_ms) + 'ms'}")
+
+
+def say_local(text, notify):
+    """macOS say only. The words are not printed and are not sent to Fish."""
+    print("  say-local: (kept on this Mac)")
+    emit(notify, "Speaking", "Spoken on this Mac only")
+    try:
+        subprocess.run(["/usr/bin/say", text or ""], check=False)
+    except Exception as exc:
+        print(f"  say-local failed: {type(exc).__name__}")
+
+
+def _deliver(line, notify, reply_sink=None, private=False):
+    """Play a line. Private lines stay out of reply_sink so they cannot be written to iCloud."""
+    if private:
+        say_local(line, notify)
+        emit(notify, "Ready", "Spoken on this Mac only")
+        return
+    if reply_sink is not None:
+        reply_sink.append(line)
+    say(line, notify)
+    emit(notify, "Ready", line)
+
+
+def _run_local(payload, text, notify, reply_sink):
+    """Run one command that decide() already chose with no network call."""
+    if not payload:
+        return
+    _conf, action, arg, reply_key, fmt = payload[0]
+    if action in commands.CONFIRM:
+        _deliver(say_line("unsupported"), notify, reply_sink)
+        return
+    private = action == "info_messages"
+    print(f"  local: {action} (no api, no llm)")
+    try:
+        emit(notify, "Doing it", "On this Mac" if private else text)
+        result = ACTIONS[action](arg, text)
+    except Exception as exc:
+        print(f"  action failed: {action} {type(exc).__name__ if private else exc}")
+        if private:
+            _deliver("I couldn't read those messages.", notify, reply_sink, private=True)
+        else:
+            _deliver(say_line("unsupported"), notify, reply_sink)
+        return
+    if isinstance(result, commands.LocalSpeech):
+        _deliver(result.text, notify, reply_sink, private=True)
+        return
+    _deliver(_speak_result(action, result, reply_key, fmt), notify, reply_sink)
 
 
 # --------------------------------------------------------------------------- Mic + push to talk
@@ -931,6 +1032,22 @@ def run_voice_assistant(notify=None, controls=None, mode="ptt"):
         emit(notify, "Ready", ready_text(rec.wake))
 
     start_timer_loop(timer_done)
+
+    def bridge_turn(command):
+        """Run one allowlisted phone command on the same turn lock as the mic."""
+        spoken = []
+        with busy:
+            rec.paused = True
+            try:
+                handle(command, reply_sink=spoken)
+            except Exception as exc:
+                print(f"  bridge turn: {type(exc).__name__}")
+            finally:
+                time.sleep(0.1)
+                rec.paused = False
+        return spoken[-1] if spoken else ""
+
+    commands.start_bridge_thread(bridge_turn)
     threading.Thread(target=warm_cache, daemon=True).start()
     threading.Thread(target=wake_loop, daemon=True).start()
     set_mode(mode)
@@ -965,7 +1082,19 @@ def main():
     ap.add_argument("--text", help="skip the mic, run one turn on this transcript")
     ap.add_argument("--ui", action="store_true", help="show the native floating status window")
     ap.add_argument("--wake", action="store_true", help="always listening, say \"Hey Jev\" instead of holding Option")
+    ap.add_argument("--bridge-secret", action="store_true",
+                    help="create JEV_BRIDGE_SECRET in the Keychain and print it once")
     args = ap.parse_args()
+    if args.bridge_secret:
+        import secrets
+        from secrets_store import save_secret
+        value = secrets.token_hex(32)
+        try:
+            save_secret("JEV_BRIDGE_SECRET", value)
+        except Exception as exc:
+            sys.exit(f"could not save the bridge secret: {exc}")
+        print(value)
+        return
     if args.ui:
         from assistant_ui import run_app
         run_app()
