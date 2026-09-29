@@ -61,6 +61,8 @@ JEV_DOCS = os.path.expanduser("~/Documents/Jev")
 NOTES_PATH = os.path.join(JEV_DOCS, "notes.md")
 DUE_PATH = os.path.join(JEV_DOCS, "due.md")
 IHSS_PATH = os.path.join(JEV_DOCS, "ihss_hours.csv")
+# Optional payday anchor. Missing file uses DEFAULT_APPLE_PAY_ANCHOR and IHSS semi-monthly.
+MONEY_PATH = os.path.join(JEV_DOCS, "money.md")
 # Today through this many days ahead, including today.
 DUE_HORIZON_DAYS = 7
 
