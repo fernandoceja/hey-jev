@@ -11,7 +11,7 @@ A voice assistant for your Mac. Say "Hey Jev" or hold right Option, say a thing,
 
 ## What it can do
 
-Open or quit apps, Mac volume up / down / mute / set, Spotify volume, play / pause / next / previous, dark mode, lock or sleep the Mac. Two things in one sentence work too: "pause Spotify and open Slack".
+Open or quit apps, Mac volume up / down / mute / set, Apple Music play / pause / next / previous / what's playing, dark mode, lock or sleep the Mac. Spotify volume and playback stay available only when the Spotify app is installed and you name Spotify. Two things in one sentence work too: "pause the music and open Notes".
 
 Open and quit work for any installed app, not just a fixed list. "Open cap cut", "launch ChatGPT", "start Cursor", and "open the Claude app" are matched against `/Applications`, `/System/Applications` (including Utilities), and `~/Applications`. Quit is a polite quit. It will not quit Finder or Hey Jev. "Quit all" asks you to say yes within about 10 seconds, and it has to be its own command.
 
@@ -19,7 +19,7 @@ Time and date are answered on the Mac: "what time is it", "what's the date", "wh
 
 "What's today" is the date plus how many events are on today's calendar. "What's Zoe got tomorrow" reads tomorrow's events whose title or calendar mentions Zoe, school, or Cabrillo.
 
-Shortcuts run only from a Shortcuts folder named `Jev`: "run shortcut Leaving for work", "run my Focus shortcut", "do Jev morning". Anything outside that folder is refused.
+Shortcuts run only from a Shortcuts folder named `Jev`: "run shortcut Leaving for work", "run my Focus shortcut", "do Jev morning", or "run Leaving for work" when that name is actually in the folder. `shortcuts list --folder-name Jev` prints every shortcut on the Mac when that folder does not exist, so Hey Jev checks `shortcuts list --folders` first and compares identifier lists before it runs anything. If the folder is missing or the listing can't be verified, nothing runs.
 
 These are also answered on the Mac, with no TypeSafe or LLM call:
 
@@ -30,10 +30,52 @@ These are also answered on the Mac, with no TypeSafe or LLM call:
 - **Due this week:** "what's due this week" reads `~/Documents/Jev/due.md`. See the format below.
 - **Focus:** "start focus mode" or "start focus mode for 10 minutes" runs the shortcut `Jev Focus On`, then a timer. The default is 25 minutes. When it ends, she runs `Jev Focus Off` and says focus is off. Hey Jev has to stay open for the off shortcut. Both shortcuts must live in the Jev folder. See below.
 - **IHSS hours:** "log IHSS hours: 4 hours today" or "log IHSS hours: 3.5 hours yesterday" appends `date,hours` to `~/Documents/Jev/ihss_hours.csv` and says the total for the current semi-monthly period (the 1st through the 15th, or the 16th through the end of the month).
-- **Case status:** "check my case status" opens https://egov.uscis.gov/ in the default browser. No receipt number is stored.
+- **Case status:** "check my case status" opens https://egov.uscis.gov/casestatus in Google Chrome. No receipt number is stored.
 - **iPhone:** commands can arrive as signed files in iCloud Drive. There is no network listener. See below.
 
-Timers and reminders: "set a timer for 5 minutes", "remind me in 20 minutes to call Mum", "how long is left?", "cancel the timer". Each one counts down live in the window, and she tells you when it's done. A focus timer is one of these: when it finishes she turns focus off.
+Timers and reminders: "set a timer for 5 minutes", "remind me in 20 minutes to call Mum", "how long is left?", "cancel the timer". Each one counts down live in the window, and she tells you when it's done. A focus timer is one of these: when it finishes she turns focus off. "Start a 5 minute timer for Zoe" is a local timer labeled Zoe, so it does not ask the LLM to write the alert.
+
+## Round 2 commands
+
+These are chosen from the transcript before any TypeSafe or LLM call. A sentence that only resembles one of them ("how long until summer", "help me write an email", "what's the weather in paris") still goes to the LLM. Edit the maps at the top of `commands.py`: `KNOWN_APPS`, `APP_NICKNAMES`, `SITE_CONFIG`, and `SHIFT_TITLE_PATTERNS`.
+
+- **Apps.** "Open settings", "open business email", "open my phone", "open numbers", "open clean my mac". Nicknames live in `APP_NICKNAMES` (business email and Zoho are Zoho Mail - Desktop, my phone and mirroring are iPhone Mirroring, numbers and budget app are Numbers Creator Studio, settings is System Settings). She launches with `open -a` and says the app isn't installed when that fails.
+- **Sites, in Google Chrome.** WorkJam, UKG, the Apple employee portal, UMGC (`learn.umgc.edu`), Shopify admin, the store site, Cal.com bookings, the IHSS timesheet portal, USCIS case status, Bank of America, Fidelity, Capital One, and GitHub. URLs marked editable in `SITE_CONFIG` are a public login page you should replace with the one you use. She does not fetch those pages, and she does not sign in.
+- **Apple Music.** "Play", "pause", "next track", "previous track", "what's playing". "Play Bohemian Rhapsody on YouTube" opens a YouTube search in Chrome. "Pause Spotify" still talks to Spotify when that app is on the Mac.
+- **Shifts.** "When's my next shift", "am I working this weekend", "how long is my shift". A shift is a calendar event whose title matches `SHIFT_TITLE_PATTERNS` (an R-number such as R345, the word shift, Brea, or Apple). "When do I start at Brea" reads a Brea line in `due.md`, and a Brea event on the calendar when there is one.
+- **School.** "What's due for UMGC" or "what's due for school" reads `due.md` lines that mention UMGC, school, or class, or that carry `#umgc`, `#school`, or `#class`, for the next 30 days.
+- **Money, read-only.** "When's rent due" and "what bills are coming up" read `due.md` only. "How long until payday" uses `~/Documents/Jev/money.md` when that file exists, otherwise a default: Apple every other Friday anchored on 2026-09-25, and IHSS on the 15th and the last day of the month. She never opens a bank from these questions. Opening a bank site is a separate "open Bank of America" command, and that only launches Chrome.
+- **IHSS.** "Log 3 hours for grandma" appends to `ihss_hours.csv`, same as "log IHSS hours". "How many hours this pay period" totals the current 1st–15th or 16th–end period. "Remind me to submit my timesheet" creates a Reminders item titled Submit IHSS timesheet and says so.
+- **The LLC.** "Open Shopify admin", "open bookings", "open the store site", "any new orders" (opens the Shopify orders URL in `SHOPIFY_ORDERS_URL`; paste your store's orders link there), "open business email".
+- **Zoe.** "What's Zoe got tomorrow", "open Princess Academy" (runs the shortcut `Zoe's Princess Academy` when it is in the Jev folder, otherwise the URL in `PRINCESS_ACADEMY_URL` if you set one), "start a 10 minute timer for Zoe".
+- **The Mac.** Volume up, down, and set, mute and unmute, brightness up and down, battery level, lock the screen, screenshot to the Desktop, show the desktop, and open Downloads, Documents, or the Desktop folder. "Empty the trash" asks you to say yes first, and it has to be its own command.
+- **ChatGPT.** "Continue ChatGPT" brings ChatGPT to the front and types the word continue, then Return.
+- **Shortcuts.** "Run shortcut Leaving for work" or, when the name matches a shortcut that was verified in the Jev folder, "run Leaving for work".
+- **Help.** "What can you do" lists those categories in one short reply.
+
+### money.md
+
+Optional. Without it, payday uses the default Apple Friday and the IHSS 15th / month-end dates, and she says so.
+
+```markdown
+# Jev only reads this file. It does not open a bank.
+
+apple: 2026-09-25
+ihss: semi-monthly
+```
+
+`apple:` is one payday, and it should be a Friday. The next payday is every 14 days from that date.
+
+### Shift titles and the due list
+
+Add a pattern to `SHIFT_TITLE_PATTERNS` in `commands.py` if a store name should count as a shift. School and bill questions also look at tags on the due line:
+
+```markdown
+- 2026-10-01 Pay rent
+- 2026-10-03 Start at Brea
+- 2026-10-05 UMGC discussion post #umgc
+- 2026-10-08 Electric bill #bill
+```
 
 ## Due list
 
@@ -103,7 +145,7 @@ Anything that isn't a command ("who wrote Hamlet") goes to Claude Haiku via Open
 
 - A Mac
 - Python 3 (tested on 3.14, see below if you don't have it)
-- The Spotify desktop app, for the music commands
+- Apple Music, which is already on the Mac. Spotify is optional: music commands use it only when you say Spotify and the app is installed
 - Three API keys:
   - **TypeSafe (Jev):** [https://typesafe.ai](https://typesafe.ai)
   - **Fish Audio:** [https://fish.audio/?fpr=henryk](https://fish.audio/?fpr=henryk). Sign in, then create a key on the API keys page in your account. You don't need a paid plan or API credit: the `s2.1-pro-free` model this app uses is free on the API until the end of November 2026.
@@ -141,9 +183,9 @@ First launch:
 2. Whisper downloads its `small.en` model (about 250MB), one time.
 3. macOS will ask for **Microphone** access. Say yes.
 4. Add "Hey Jev - Fish Audio" (or your terminal, if you run from the terminal) under **System Settings > Privacy & Security > Accessibility**, or key presses are ignored.
-5. The first time it toggles dark mode or controls Spotify you'll get an **Automation** prompt. Say yes. Quitting an app does not ask once per app.
+5. The first time it controls Music, Reminders, ChatGPT, Finder, or System Events (brightness, show desktop, dark mode, typing into ChatGPT) you'll get an **Automation** prompt. Say yes. Quitting an app does not ask once per app. Screenshots need **Screen Recording**. Rebuild with `python setup.py py2app -A` after this round so the app's Apple Events description matches; `setup.py` changed and `requirements.txt` did not.
 6. The first calendar question ("what's next", "what's my schedule today", "when's my next shift", "brief me", "what's Zoe got tomorrow") asks for **Calendars → Full Access**. Allow it. That string is in the app bundle, so rebuild with `python setup.py py2app -A` after pulling a `setup.py` change, then quit and reopen. A `--text` run from Terminal asks Terminal (or Cursor) for calendar access, not the Hey Jev bundle.
-7. Shortcuts need a folder named `Jev` in the Shortcuts app. Only shortcuts in that folder can run. Put **Jev Focus On** and **Jev Focus Off** there if you use focus mode.
+7. Shortcuts need a folder named `Jev` in the Shortcuts app. Hey Jev confirms that folder with `shortcuts list --folders` before it runs anything. If the folder is missing, she will not run a shortcut, even though `shortcuts list --folder-name Jev` would print your whole library. Put **Jev Focus On**, **Jev Focus Off**, and **Zoe's Princess Academy** there if you use them.
 8. **Full Disk Access is optional.** Grant it only if you want "check my messages from My Love". System Settings > Privacy & Security > Full Disk Access, add Hey Jev (or Terminal, if you use `--text`). Everything else works without it.
 9. Weather calls `api.open-meteo.com` (no key). The iPhone bridge does not open a port. It only reads and writes the iCloud Drive folder described above.
 
@@ -190,6 +232,10 @@ Useful for seeing the Jev trace (every question, answer and confidence per turn)
 .venv/bin/python siri.py --text "log IHSS hours: 4 hours today"
 .venv/bin/python siri.py --text "check my case status"
 .venv/bin/python siri.py --text "what's Zoe got tomorrow"
+.venv/bin/python siri.py --text "what can you do"
+.venv/bin/python siri.py --text "am I working this weekend"
+.venv/bin/python siri.py --text "how long until payday"
+.venv/bin/python siri.py --text "open settings"
 .venv/bin/python siri.py --bridge-secret
 .venv/bin/python siri.py --ui          # same as the app, but shows as "Python" in the Dock
 ```
@@ -229,7 +275,8 @@ Below 0.65 confidence it asks you to say it again, twice in a row and it gives u
 ## Files
 
 - `siri.py` all the logic: questions, actions, replies, Whisper, Fish, LLM fallback
-- `commands.py` open and quit any app, time and date, calendar, weather, the brief, messages, notes, the due list, focus, IHSS, case status, Zoe, the iPhone bridge, the Jev shortcuts folder, and the yes/no confirmation
+- `commands.py` open and quit any app, sites, time and date, calendar and shifts, weather, the brief, messages, notes, the due list, school, bills, payday, focus, IHSS, case status, Zoe, Mac controls, the iPhone bridge, the verified Jev shortcuts folder, and the yes/no confirmation
+- `tests/test_round2.py` routing tests and the shortcut-folder safety check. They mock `shortcuts` and `osascript`, so they run without macOS: `python3 -m unittest tests.test_round2`
 - `assistant_ui.py` the status window, mode switch and Keys panel
 - `secrets_store.py` Keychain read / write
 - `app.py` and `setup.py` the app bundle entry point and the py2app config, output lands in `dist/`

@@ -4,21 +4,51 @@ Names are parsed from the transcript here, the same way timers parse a duration.
 decide() in siri.py calls route_before_api() before any TypeSafe or LLM call.
 
 Nothing in this module listens on a socket. The iPhone bridge only polls an
-iCloud Drive folder. App launches, the case-status URL, and shortcut runs go
-through argument lists, never a shell string. Message text is returned as
-LocalSpeech so the caller can speak it with the macOS say command and must
-not send it to Fish or any API.
+iCloud Drive folder. App launches, site URLs, and shortcut runs go through
+argument lists, never a shell string. A shortcut runs only when the Jev folder
+can be verified; `shortcuts list --folder-name` alone is not proof, because a
+missing folder makes that command print every shortcut. Message text is
+returned as LocalSpeech so the caller can speak it with the macOS say command
+and must not send it to Fish or any API. Bank and portal pages are opened in
+Chrome only. This module never fetches them and never moves money.
 """
 import csv, difflib, glob, hashlib, hmac, json, os, re, sqlite3, subprocess, threading, time
 from datetime import datetime, timedelta
+from urllib.parse import quote_plus
 
 FUZZY_CUTOFF = 0.6
+# App names are close together (News/Notes, YouTube/YouTube TV), so typos
+# have to be nearer than shortcut names before a fuzzy open is trusted.
+APP_FUZZY_CUTOFF = 0.88
 APP_INDEX_TTL = 600  # seconds
 CONFIRM_SECONDS = 10
 SHORTCUT_FOLDER = "Jev"
-# A shift is the next event whose title contains one of these words.
-SHIFT_RE = re.compile(r"\b(?:R345|Apple|Brea|shift)\b", re.I)
+SHORTCUT_CACHE_SECONDS = 30
+# A shift is a calendar event whose title matches any of these. R345 is an
+# Apple store code; any R-number counts. Add a store name here if you use one.
+SHIFT_TITLE_PATTERNS = (
+    r"\bR\d{2,4}\b",
+    r"\bshift\b",
+    r"\bBrea\b",
+    r"\bApple\b",
+)
 SHIFT_HORIZON_DAYS = 14
+SCHOOL_HORIZON_DAYS = 30
+BILL_HORIZON_DAYS = 45
+# Apple pay is every other Friday. This date is one payday. Override it in money.md.
+DEFAULT_APPLE_PAY_ANCHOR = "2026-09-25"
+PRINCESS_SHORTCUT = "Zoe's Princess Academy"
+# Used only when that shortcut is not in the Jev folder. Leave blank to skip the site.
+PRINCESS_ACADEMY_URL = ""
+# Orders has no store slug here. Paste https://admin.shopify.com/store/YOUR-STORE/orders
+SHOPIFY_ORDERS_URL = "https://admin.shopify.com/"
+BRIGHTNESS_UP_CODE = 144
+BRIGHTNESS_DOWN_CODE = 145
+SHOW_DESKTOP_CODE = 103  # F11, the usual Show Desktop shortcut
+VOLUME_WORDS = {
+    "silent": 0, "zero": 0, "mute": 0, "quiet": 25, "low": 25,
+    "medium": 50, "half": 50, "loud": 75, "high": 75, "max": 100, "full": 100, "maximum": 100,
+}
 # "What's Zoe got tomorrow": title or calendar name.
 ZOE_EVENT_RE = re.compile(r"\b(?:Zoe|school|Cabrillo)\b", re.I)
 
@@ -44,7 +74,7 @@ FOCUS_OFF_NAME = "Jev Focus Off"
 FOCUS_DEFAULT_SECONDS = 25 * 60
 
 # Opened as-is. No receipt number is read or stored.
-CASE_STATUS_URL = "https://egov.uscis.gov/"
+CASE_STATUS_URL = "https://egov.uscis.gov/casestatus"
 
 # Optional Gmail hook. Same Keychain service as the API keys (com.jevsiri.keys).
 # The brief stays quiet about mail unless this account holds a token.
@@ -72,28 +102,111 @@ BRIDGE_ALLOW = frozenset({
     "info_open_apps",
     "info_brief",
     "info_due",
+    "info_school",
+    "info_weekend",
+    "info_shift_length",
+    "info_brea",
+    "info_rent",
+    "info_bills",
+    "info_payday",
+    "info_battery",
+    "info_help",
+    "media_now",
     "info_zoe",
     "note_take",
     "focus_on",
     "ihss_log",
+    "ihss_hours",
     "case_status",
 })
-# Spoken text is matched against these after spaces and punctuation are stripped.
-APP_ALIASES = {
-    "chatgpt": "ChatGPT",
+# Names `open -a` should use. Edit a spelling here if Launch Services uses another.
+KNOWN_APPS = (
+    "App Store", "Automator", "Books", "Calculator", "Calendar", "ChatGPT",
+    "ChatGPT Classic", "Chess", "Claude", "CleanMyMac_5", "Clock", "Contacts",
+    "Cursor", "Dictionary", "FaceTime", "Find My", "Freeform", "Games", "Gemini",
+    "Google Chrome", "Google Password Manager", "Grok Bot", "Home",
+    "Image Playground", "Journal", "Mail", "Maps", "Messages", "MovieBoxPro",
+    "Muse", "Music", "News", "Notes", "Numbers Creator Studio",
+    "Pages Creator Studio", "Passwords", "Phone", "Photo Booth", "Photos",
+    "Podcasts", "Preview", "QuickTime Player", "Reminders", "Safari", "Shortcuts",
+    "Siri", "Stickies", "Stocks", "System Settings", "TV", "TextEdit", "Tips",
+    "Voice Memos", "Weather", "YouTube", "YouTube TV", "iPhone Mirroring",
+    "Zoho Mail - Desktop", "Finder", "Visual Studio Code", "CapCut", "Spotify", "Slack",
+)
+# Extra spoken names. The value is what `open -a` is given.
+APP_NICKNAMES = {
+    "business email": "Zoho Mail - Desktop",
+    "zoho": "Zoho Mail - Desktop",
+    "zoho mail": "Zoho Mail - Desktop",
+    "mirroring": "iPhone Mirroring",
+    "my phone": "iPhone Mirroring",
+    "numbers": "Numbers Creator Studio",
+    "budget app": "Numbers Creator Studio",
+    "pages": "Pages Creator Studio",
+    "settings": "System Settings",
+    "system preferences": "System Settings",
+    "preferences": "System Settings",
+    "clean my mac": "CleanMyMac_5",
     "gpt": "ChatGPT",
-    "capcut": "CapCut",
-    "cursor": "Cursor",
-    "claude": "Claude",
-    "vscode": "Visual Studio Code",
+    "chat gpt": "ChatGPT",
     "chrome": "Google Chrome",
-    "googlechrome": "Google Chrome",
-    "spotify": "Spotify",
-    "slack": "Slack",
-    "finder": "Finder",
-    "safari": "Safari",
-    "messages": "Messages",
-    "notes": "Notes",
+    "quicktime": "QuickTime Player",
+    "quick time": "QuickTime Player",
+    "voice memos": "Voice Memos",
+    "voicememos": "Voice Memos",
+    "findmy": "Find My",
+    "find my": "Find My",
+    "grok": "Grok Bot",
+    "password manager": "Google Password Manager",
+    "google passwords": "Google Password Manager",
+    "text edit": "TextEdit",
+    "youtube tv": "YouTube TV",
+    "vscode": "Visual Studio Code",
+    "vs code": "Visual Studio Code",
+    "cap cut": "CapCut",
+}
+# Spoken phrase -> page opened in Google Chrome. editable=True means swap in your real URL.
+# These are public login pages. Jev only hands the URL to `open`. It does not fetch them.
+SITE_CONFIG = (
+    {"phrases": ("workjam", "work jam"), "url": "https://app.workjam.com/login",
+     "label": "WorkJam", "editable": False},
+    {"phrases": ("ukg",), "url": "https://www.ukg.com/",
+     "label": "UKG", "editable": True},
+    {"phrases": ("apple employee portal", "employee portal", "appleconnect", "apple connect"),
+     "url": "https://appleconnect.apple.com/", "label": "the Apple employee portal", "editable": True},
+    {"phrases": ("umgc", "umgc class", "class site", "school site", "learn umgc"),
+     "url": "https://learn.umgc.edu/", "label": "UMGC", "editable": False},
+    {"phrases": ("shopify", "shopify admin"), "url": "https://admin.shopify.com/",
+     "label": "Shopify admin", "editable": False},
+    {"phrases": ("shopify orders", "orders"), "url": SHOPIFY_ORDERS_URL,
+     "label": "Shopify orders", "editable": True},
+    {"phrases": ("80s obsession", "80s obsession company", "store", "store site", "our store",
+                 "business site", "our website"),
+     "url": "https://80sobsessioncompany.com/", "label": "the store site", "editable": False},
+    {"phrases": ("bookings", "cal.com", "cal com", "my bookings"),
+     "url": "https://app.cal.com/bookings", "label": "bookings", "editable": False},
+    {"phrases": ("ihss", "ihss portal", "ets", "timesheet portal", "timesheets", "ihss timesheet"),
+     "url": "https://etspublic.cdss.ca.gov/", "label": "the IHSS timesheet portal", "editable": True},
+    {"phrases": ("case status", "uscis", "uscis case status"),
+     "url": CASE_STATUS_URL, "label": "case status", "editable": False},
+    {"phrases": ("bank of america", "bofa", "boa"),
+     "url": "https://secure.bankofamerica.com/login/sign-in/signOnV2Screen.go",
+     "label": "Bank of America", "editable": False},
+    {"phrases": ("fidelity",),
+     "url": "https://login.fidelity.com/ftgw/Fas/Fidelity/RtlCust/Login/Init",
+     "label": "Fidelity", "editable": False},
+    {"phrases": ("capital one",),
+     "url": "https://verified.capitalone.com/auth/signin",
+     "label": "Capital One", "editable": False},
+    {"phrases": ("github",), "url": "https://github.com/login",
+     "label": "GitHub", "editable": False},
+)
+FOLDER_PATHS = {
+    "downloads": "~/Downloads",
+    "download": "~/Downloads",
+    "documents": "~/Documents",
+    "document": "~/Documents",
+    "desktop": "~/Desktop",
 }
 APP_DIRS = (
     "/System/Applications",
@@ -112,7 +225,7 @@ PROTECTED_IDS = {
 }
 PROTECTED_NAMES = {"finder", "loginwindow", "system settings", "system preferences"}
 # Actions that must be confirmed out loud before they run. Never inside a two-part command.
-CONFIRM = {"apps_quit_all"}
+CONFIRM = {"apps_quit_all", "empty_trash"}
 
 _index_cache = {"at": 0.0, "idx": None}
 _store = None
@@ -143,12 +256,61 @@ JOINER_RE = re.compile(r"\b(?:and|then)\b", re.I)
 # Whole-utterance commands. Checked before the looser patterns below.
 _PLEASE = r"(?:please\s+)?"
 _TAIL = r"(?:\s+please)?[.!?]*$"
+_PLAY = (
+    rf"^{_PLEASE}(?:play|resume)"
+    rf"(?:\s+spotify|\s+(?:the\s+)?(?:music|song)|\s+apple\s+music|\s+on\s+apple\s+music)?{_TAIL}"
+)
 STRICT_PATTERNS = (
+    (re.compile(rf"^{_PLEASE}what can you do{_TAIL}", re.I), "info_help"),
+    (re.compile(rf"^{_PLEASE}what do you do{_TAIL}", re.I), "info_help"),
+    (re.compile(rf"^{_PLEASE}what are your commands{_TAIL}", re.I), "info_help"),
+    (re.compile(rf"^{_PLEASE}help{_TAIL}", re.I), "info_help"),
     (re.compile(rf"^{_PLEASE}what(?:'s| is) today{_TAIL}", re.I), "info_today"),
     (re.compile(rf"^{_PLEASE}brief me{_TAIL}", re.I), "info_brief"),
     (re.compile(rf"^{_PLEASE}(?:what(?:'s| is) the weather(?:\s+like)?|how(?:'s| is) the weather|weather){_TAIL}", re.I), "info_weather"),
     (re.compile(rf"^{_PLEASE}what(?:'s| is| does| has)\s+zoe\b.*\btomorrow\b{_TAIL}", re.I), "info_zoe"),
+    (re.compile(rf"^{_PLEASE}open\s+(?:zoe'?s\s+)?princess\s+academy{_TAIL}", re.I), "zoe_academy"),
+    (re.compile(rf"^{_PLEASE}(?:start|set)\s+(?:a\s+|an\s+)?(?:[\w.]+\s+)*timer\s+for\s+zoe\b.*{_TAIL}", re.I), "zoe_timer"),
+    (re.compile(rf"^{_PLEASE}what(?:'s| is)\s+due(?:\s+this\s+week)?\s+for\s+(?:umgc|school|class|my\s+class){_TAIL}", re.I), "info_school"),
+    (re.compile(rf"^{_PLEASE}what(?:'s| is)\s+due\s+for\s+(?:umgc|school|class|my\s+class){_TAIL}", re.I), "info_school"),
+    (re.compile(rf"^{_PLEASE}(?:any|what(?:'s| is))\s+(?:umgc|school)\s+(?:work\s+)?due{_TAIL}", re.I), "info_school"),
     (re.compile(rf"^{_PLEASE}what(?:'s| is) due(?: this week)?{_TAIL}", re.I), "info_due"),
+    (re.compile(rf"^{_PLEASE}when(?:'s| is)\s+rent\s+due{_TAIL}", re.I), "info_rent"),
+    (re.compile(rf"^{_PLEASE}what\s+bills\s+are\s+coming\s+up{_TAIL}", re.I), "info_bills"),
+    (re.compile(rf"^{_PLEASE}(?:any\s+)?bills\s+coming\s+up{_TAIL}", re.I), "info_bills"),
+    (re.compile(rf"^{_PLEASE}how\s+long\s+until\s+payday{_TAIL}", re.I), "info_payday"),
+    (re.compile(rf"^{_PLEASE}when(?:'s| is)\s+(?:my\s+)?payday{_TAIL}", re.I), "info_payday"),
+    (re.compile(rf"^{_PLEASE}(?:am\s+i|do\s+i)\s+work(?:ing)?\s+this\s+weekend{_TAIL}", re.I), "info_weekend"),
+    (re.compile(rf"^{_PLEASE}how\s+long\s+is\s+(?:my\s+)?(?:the\s+)?shift{_TAIL}", re.I), "info_shift_length"),
+    (re.compile(rf"^{_PLEASE}when\s+do\s+i\s+start(?:\s+work)?\s+at\s+brea{_TAIL}", re.I), "info_brea"),
+    (re.compile(rf"^{_PLEASE}when\s+does\s+brea\s+start{_TAIL}", re.I), "info_brea"),
+    (re.compile(rf"^{_PLEASE}what\s+time\s+do\s+i\s+start\s+at\s+brea{_TAIL}", re.I), "info_brea"),
+    (re.compile(rf"^{_PLEASE}how\s+many\s+(?:ihss\s+)?hours(?:\s+do\s+i\s+have)?\s+this\s+pay\s+period{_TAIL}", re.I), "ihss_hours"),
+    (re.compile(rf"^{_PLEASE}how\s+many\s+hours\s+have\s+i\s+logged(?:\s+this\s+pay\s+period)?{_TAIL}", re.I), "ihss_hours"),
+    (re.compile(rf"^{_PLEASE}remind\s+me\s+to\s+submit\s+(?:my\s+)?(?:ihss\s+)?timesheet{_TAIL}", re.I), "ihss_remind"),
+    (re.compile(rf"^{_PLEASE}play\s+(.+?)\s+on\s+youtube{_TAIL}", re.I), "youtube_play"),
+    (re.compile(rf"^{_PLEASE}what(?:'s| is)\s+playing{_TAIL}", re.I), "media_now"),
+    (re.compile(rf"^{_PLEASE}what(?:'s| is)\s+this\s+song{_TAIL}", re.I), "media_now"),
+    (re.compile(rf"^{_PLEASE}what\s+song\s+is\s+this{_TAIL}", re.I), "media_now"),
+    (re.compile(_PLAY, re.I), "media_play"),
+    (re.compile(rf"^{_PLEASE}pause(?:\s+spotify|\s+(?:the\s+)?(?:music|song)|\s+apple\s+music)?{_TAIL}", re.I), "media_pause"),
+    (re.compile(rf"^{_PLEASE}(?:next\s+(?:track|song)|skip(?:\s+(?:the\s+)?(?:track|song))?){_TAIL}", re.I), "media_next"),
+    (re.compile(rf"^{_PLEASE}(?:previous\s+(?:track|song)|last\s+(?:track|song)|go\s+back(?:\s+a|\s+one)?\s+(?:track|song)){_TAIL}", re.I), "media_previous"),
+    (re.compile(rf"^{_PLEASE}(?:turn\s+(?:it|the\s+volume)\s+up|(?:turn\s+)?(?:the\s+)?(?:mac\s+|system\s+)?volume\s+up|louder){_TAIL}", re.I), "volume_up"),
+    (re.compile(rf"^{_PLEASE}(?:turn\s+(?:it|the\s+volume)\s+down|(?:turn\s+)?(?:the\s+)?(?:mac\s+|system\s+)?volume\s+down|quieter){_TAIL}", re.I), "volume_down"),
+    (re.compile(rf"^{_PLEASE}set\s+(?:the\s+)?volume\s+to\s+.+{_TAIL}", re.I), "volume_set"),
+    (re.compile(rf"^{_PLEASE}mute(?:\s+(?:the\s+)?(?:mac|volume|sound)|\s+it)?{_TAIL}", re.I), "volume_mute"),
+    (re.compile(rf"^{_PLEASE}unmute(?:\s+(?:the\s+)?(?:mac|volume|sound)|\s+it)?{_TAIL}", re.I), "volume_unmute"),
+    (re.compile(rf"^{_PLEASE}(?:(?:turn\s+)?(?:the\s+)?brightness\s+up|brighter){_TAIL}", re.I), "brightness_up"),
+    (re.compile(rf"^{_PLEASE}(?:(?:turn\s+)?(?:the\s+)?brightness\s+down|dimmer|dim\s+the\s+screen){_TAIL}", re.I), "brightness_down"),
+    (re.compile(rf"^{_PLEASE}(?:what(?:'s| is)\s+(?:my\s+)?battery(?:\s+level)?|how(?:'s| is)\s+my\s+battery|battery\s+level|how\s+much\s+battery(?:\s+do\s+i\s+have)?){_TAIL}", re.I), "info_battery"),
+    (re.compile(rf"^{_PLEASE}lock\s+(?:the\s+)?(?:screen|mac|computer){_TAIL}", re.I), "system_lock"),
+    (re.compile(rf"^{_PLEASE}(?:take\s+(?:a\s+)?screenshot|screenshot|capture\s+the\s+screen){_TAIL}", re.I), "screenshot"),
+    (re.compile(rf"^{_PLEASE}empty\s+(?:the\s+)?trash{_TAIL}", re.I), "empty_trash"),
+    (re.compile(rf"^{_PLEASE}show\s+(?:me\s+)?(?:the\s+)?desktop{_TAIL}", re.I), "show_desktop"),
+    (re.compile(rf"^{_PLEASE}continue(?:\s+(?:in|on|with))?\s+chat\s*gpt{_TAIL}", re.I), "continue_chatgpt"),
+    (re.compile(rf"^{_PLEASE}(?:are\s+there\s+)?any\s+new\s+orders{_TAIL}", re.I), "site_open"),
+    (re.compile(rf"^{_PLEASE}(?:check|show)(?:\s+me)?\s+(?:the\s+)?(?:new\s+)?orders{_TAIL}", re.I), "site_open"),
     (re.compile(
         rf"^{_PLEASE}(?:start\s+)?focus\s+mode(?:\s+for\s+.+?)?{_TAIL}"
         rf"|^{_PLEASE}start\s+focus(?:\s+mode)?(?:\s+for\s+.+?)?{_TAIL}",
@@ -156,7 +318,11 @@ STRICT_PATTERNS = (
     (re.compile(rf"^{_PLEASE}(?:check\s+(?:my\s+)?)?case\s+status{_TAIL}", re.I), "case_status"),
 )
 _NOTE_CMD_RE = re.compile(rf"^{_PLEASE}take\s+a\s+note\b\s*[:\-]?\s*(.*)$", re.I | re.S)
-_IHSS_CMD_RE = re.compile(r"\blog\s+ihss\s+hours\b", re.I)
+_IHSS_CMD_RE = re.compile(
+    r"\blog\s+ihss\s+hours\b|\blog\s+\d+(?:\.\d+)?\s*(?:hours?)?\s+for\s+grandma\b",
+    re.I,
+)
+_BARE_RUN_RE = re.compile(rf"^{_PLEASE}run\s+(.+?){_TAIL}", re.I)
 # Checked in order. More specific calendar phrases come before "what's next".
 LOCAL_PATTERNS = (
     (re.compile(r"\b(?:what day is it|what(?:'s| is) the date|what is the date|what(?:'s| is) the day)\b", re.I), "info_date"),
@@ -175,6 +341,98 @@ def _clean(text):
 def _norm(text):
     """'cap cut' and 'CapCut' both become 'capcut'."""
     return re.sub(r"[^a-z0-9]", "", (text or "").lower())
+
+
+def app_alias_map():
+    """Normalized spoken name -> `open -a` display name. Nicknames win over the plain name."""
+    found = {}
+    for name in KNOWN_APPS:
+        found.setdefault(_norm(name), name)
+    for spoken, name in APP_NICKNAMES.items():
+        found[_norm(spoken)] = name
+    return found
+
+
+def site_index():
+    """Normalized spoken name -> site config dict."""
+    found = {}
+    for entry in SITE_CONFIG:
+        for phrase in entry["phrases"]:
+            found[_norm(phrase)] = entry
+    return found
+
+
+def _drop_my(spoken):
+    """'my phone' stays available for nicknames; callers may also try the shorter form."""
+    shorter = re.sub(r"^my\s+", "", (spoken or "").strip(), flags=re.I).strip()
+    if shorter and _norm(shorter) != _norm(spoken):
+        return shorter
+    return None
+
+
+def _lookup_app(spoken):
+    """Display name for a spoken app, or None. Exact nicknames win; fuzzy is strict."""
+    if not spoken:
+        return None
+    aliases = app_alias_map()
+    key = _norm(spoken)
+    if not key:
+        return None
+    if key in aliases:
+        return aliases[key]
+    if len(key) < 4:
+        return None
+    matches = difflib.get_close_matches(key, list(aliases), n=2, cutoff=APP_FUZZY_CUTOFF)
+    if not matches:
+        return None
+    best = difflib.SequenceMatcher(None, key, matches[0]).ratio()
+    if len(matches) > 1:
+        second = difflib.SequenceMatcher(None, key, matches[1]).ratio()
+        if best - second < 0.05:
+            return None
+    return aliases[matches[0]]
+
+
+def known_app_name(spoken):
+    """Prefer the full phrase, so 'my phone' is iPhone Mirroring and not the Phone app."""
+    hit = _lookup_app(spoken)
+    if hit:
+        return hit
+    shorter = _drop_my(spoken)
+    return _lookup_app(shorter) if shorter else None
+
+
+def resolve_site(spoken):
+    """Site config for a spoken name, or None. Exact phrases only, no fuzzy."""
+    if not spoken:
+        return None
+    found = site_index().get(_norm(spoken))
+    if found:
+        return found
+    shorter = _drop_my(spoken)
+    return site_index().get(_norm(shorter)) if shorter else None
+
+
+def resolve_folder(spoken):
+    """~/ path for downloads, documents, or desktop, or None."""
+    if not spoken:
+        return None
+    key = re.sub(r"folder$", "", _norm(spoken))
+    found = FOLDER_PATHS.get(key)
+    if found:
+        return found
+    shorter = _drop_my(spoken)
+    if not shorter:
+        return None
+    key = re.sub(r"folder$", "", _norm(shorter))
+    return FOLDER_PATHS.get(key)
+
+
+def music_target(text, spotify_installed):
+    """'spotify' only when the utterance names it and the app is on disk. Otherwise Music."""
+    if re.search(r"\bspotify\b", text or "", re.I):
+        return "spotify" if spotify_installed else None
+    return "music"
 
 
 def _run(args, timeout=30):
@@ -306,7 +564,12 @@ def route_before_api(text):
         if key == "info_time" and re.search(r"\b(?:left|remaining|timer|timers)\b", raw, re.I):
             continue
         return key
+    opened = route_open_phrase(raw)
+    if opened:
+        return opened
     if parse_shortcut_name(raw):
+        return "shortcut_run"
+    if bare_run_matches_folder(raw):
         return "shortcut_run"
     return None
 
@@ -317,6 +580,47 @@ def preview_action(text):
     'what time is it in Tokyo' is left for the LLM. A bare 'what time is it' is not.
     """
     return route_before_api(text)
+
+
+def route_open_phrase(raw):
+    """app_open, site_open, or folder_open when the name is one we know. Else None.
+
+    An unknown 'open ...' stays with the LLM so a stray sentence is not launched.
+    """
+    if not re.match(rf"^{_PLEASE}(?:{_OPEN_VERBS})\b", raw, re.I):
+        return None
+    spoken = parse_app_name(raw, "open")
+    if not spoken or len(spoken.split()) > 6:
+        return None
+    if resolve_folder(spoken):
+        return "folder_open"
+    if resolve_site(spoken):
+        return "site_open"
+    if known_app_name(spoken) or resolve_app(spoken):
+        return "app_open"
+    return None
+
+
+def bare_run_matches_folder(raw):
+    """True only when 'run NAME' fuzzy-matches a shortcut verified in the Jev folder.
+
+    'run shortcut NAME' is handled by parse_shortcut_name. A bare 'run ...' that
+    does not match the folder is left alone so it can still be a normal sentence.
+    """
+    if parse_shortcut_name(raw):
+        return False
+    match = _BARE_RUN_RE.match(raw)
+    if not match:
+        return False
+    spoken = re.sub(r"^(?:the|my|a)\s+", "", match.group(1).strip(" .,!?"), flags=re.I).strip()
+    if not spoken or len(spoken.split()) > 6:
+        return False
+    if re.search(r"\b(?:how|why|what|when|where|who)\b", spoken, re.I):
+        return False
+    catalog = jev_shortcut_catalog()
+    if not catalog:
+        return False
+    return resolve_shortcut(spoken, list(catalog.values())) is not None
 
 
 # --------------------------------------------------------------------------- Apps
@@ -348,7 +652,7 @@ def resolve_app(spoken, idx=None):
     if not spoken:
         return None
     idx = app_index() if idx is None else idx
-    wanted = _norm(APP_ALIASES.get(_norm(spoken), spoken))
+    wanted = _norm(known_app_name(spoken) or spoken)
     if not wanted:
         return None
     path = idx.get(wanted)
@@ -380,7 +684,7 @@ def parse_app_name(text, kind=None):
     if not match:
         return None
     name = match.group(1).strip(" .,!?")
-    name = re.sub(r"^(?:up|the|my|an|a)\s+", "", name, flags=re.I)
+    name = re.sub(r"^(?:up|the|an|a)\s+", "", name, flags=re.I)
     name = re.sub(r"\s+(?:app|application|please|for me)$", "", name, flags=re.I).strip(" .,!?")
     if not name or re.fullmatch(r"all|everything|every app|all apps|all of them", name, re.I):
         return None
@@ -430,7 +734,7 @@ def is_protected(app):
 
 def _running_match(spoken):
     """The running regular app that best matches a spoken name, including protected ones."""
-    wanted = _norm(APP_ALIASES.get(_norm(spoken), spoken))
+    wanted = _norm(known_app_name(spoken) or spoken)
     if not wanted:
         return None
     apps = running_regular_apps()
@@ -479,7 +783,7 @@ def launch_app(target):
 
 
 def open_any_app(arg, text, favourites):
-    """Launch a spoken app. favourites is the small APPS map, used only when the transcript has no name."""
+    """Launch a spoken app with `open -a`. favourites is used only when the transcript has no name."""
     spoken = parse_app_name(text, "open")
     from_enum = False
     if not spoken and arg in favourites:
@@ -487,14 +791,19 @@ def open_any_app(arg, text, favourites):
         from_enum = True
     if not spoken:
         return "Which app should I open?"
-    found = resolve_app(spoken) or resolve_app(spoken, app_index(force=True))
-    if not found and from_enum:
-        # open -a accepts a display name when the .app isn't in the indexed folders.
-        found = (favourites[arg], favourites[arg])
-    if not found:
-        return f"I couldn't find an app called {spoken}."
-    path, display = found
-    launch_app(path)
+    display = known_app_name(spoken)
+    if display is None and from_enum:
+        display = favourites[arg]
+    if display is None:
+        found = resolve_app(spoken) or resolve_app(spoken, app_index(force=True))
+        if found:
+            display = found[1]
+    if not display:
+        return f"{spoken} isn't installed."
+    try:
+        _run(("open", "-a", display))
+    except Exception:
+        return f"{display} isn't installed."
     # {app} in the scripted reply is filled in by the caller. Only APPS names are pre-rendered.
     return {"app": display.replace("{", "").replace("}", "")}
 
@@ -825,8 +1134,14 @@ def speak_today_schedule():
     return f"Today you've got {timed_line}."
 
 
+def is_shift_title(title):
+    """True when a calendar title looks like a work shift. Patterns are SHIFT_TITLE_PATTERNS."""
+    text = title or ""
+    return any(re.search(pattern, text, re.I) for pattern in SHIFT_TITLE_PATTERNS)
+
+
 def speak_next_shift():
-    """Next event in 14 days whose title matches R345, Apple, Brea, or shift."""
+    """Next event in 14 days whose title matches a shift pattern."""
     problem = _calendar_problem()
     if problem:
         return problem
@@ -836,7 +1151,7 @@ def speak_next_shift():
         events = _upcoming(_events_between(now - timedelta(hours=12), horizon), now, horizon, skip_all_day=False)
     except Exception:
         return _CAL_FAILED
-    shifts = [ev for ev in events if SHIFT_RE.search(_title(ev))]
+    shifts = [ev for ev in events if is_shift_title(_title(ev))]
     if not shifts:
         return "No shift in the next two weeks."
     ev = shifts[0]
@@ -1010,18 +1325,17 @@ def take_note(text):
     return "Got it. I added that to your notes."
 
 
-def _read_due_lines():
-    """(date, title) pairs due from today through DUE_HORIZON_DAYS, soonest first.
+def _dated_lines(path=None):
+    """Every (date, title) in a markdown file. None when the file is missing.
 
-    None when the file is missing. A line needs a YYYY-MM-DD date. The rest of
-    the line, without the date and a leading dash, is the item.
+    A line needs a YYYY-MM-DD date. The rest of the line, without the date and
+    a leading dash, is the title. Blank lines and dateless lines are skipped.
     """
-    if not os.path.isfile(DUE_PATH):
+    path = path or DUE_PATH
+    if not os.path.isfile(path):
         return None
-    today = datetime.now().astimezone().date()
-    horizon = today + timedelta(days=DUE_HORIZON_DAYS)
     found = []
-    with open(DUE_PATH, encoding="utf-8") as handle:
+    with open(path, encoding="utf-8") as handle:
         for raw in handle:
             match = re.search(r"(\d{4}-\d{2}-\d{2})", raw)
             if not match:
@@ -1029,8 +1343,6 @@ def _read_due_lines():
             try:
                 day = datetime.strptime(match.group(1), "%Y-%m-%d").date()
             except ValueError:
-                continue
-            if day < today or day > horizon:
                 continue
             title = raw.strip()
             title = re.sub(r"^[-*]\s*", "", title)
@@ -1040,6 +1352,19 @@ def _read_due_lines():
                 found.append((day, title))
     found.sort(key=lambda item: (item[0], item[1].lower()))
     return found
+
+
+def _read_due_lines():
+    """(date, title) pairs due from today through DUE_HORIZON_DAYS, soonest first.
+
+    None when the file is missing.
+    """
+    lines = _dated_lines()
+    if lines is None:
+        return None
+    today = datetime.now().astimezone().date()
+    horizon = today + timedelta(days=DUE_HORIZON_DAYS)
+    return [(day, title) for day, title in lines if today <= day <= horizon]
 
 
 def speak_due(limit=7):
@@ -1064,23 +1389,17 @@ def speak_due(limit=7):
 
 
 def run_jev_folder_shortcut(name):
-    """Run one shortcut by its real name, if it is in the Jev folder.
+    """Run one shortcut by its real name, if it is verified in the Jev folder.
 
     Returns None on success, or a sentence describing why it did not run.
+    The process is started by identifier, never by a name that might exist outside the folder.
     """
-    names = list_jev_shortcuts()
-    if names is None:
-        return "I only run shortcuts in the Jev folder, and I couldn't find that folder."
-    resolved = resolve_shortcut(name, names)
-    if not resolved:
+    ok, info = _run_catalog_shortcut(name)
+    if ok:
+        return None
+    if info and info.startswith("I couldn't find"):
         return f"Add a shortcut named {name} to the Jev folder."
-    try:
-        _run(("shortcuts", "run", resolved), timeout=120)
-    except subprocess.TimeoutExpired:
-        return f"{name} took too long, so I stopped waiting."
-    except RuntimeError:
-        return f"I couldn't run {name}."
-    return None
+    return info
 
 
 def _spoken_span(seconds):
@@ -1132,10 +1451,16 @@ def _hours_phrase(hours):
 
 
 def _parse_ihss(text):
+    raw = _clean(text)
     match = re.search(
         r"\blog\s+ihss\s+hours\b\s*[:\-]?\s*(\d+(?:\.\d+)?)\s*(?:hours?)?\b(?:\s+(today|yesterday))?",
-        _clean(text), re.I,
+        raw, re.I,
     )
+    if not match:
+        match = re.search(
+            r"\blog\s+(\d+(?:\.\d+)?)\s*(?:hours?)?\s+for\s+grandma\b(?:\s+(today|yesterday))?",
+            raw, re.I,
+        )
     if not match:
         return None
     hours = float(match.group(1))
@@ -1191,12 +1516,11 @@ def log_ihss(text):
 
 
 def open_case_status():
-    """Open the USCIS case-status site. The receipt number is never stored."""
-    try:
-        subprocess.run(["open", CASE_STATUS_URL], check=True)
-    except Exception:
+    """Open the USCIS case-status site in Chrome. The receipt number is never stored."""
+    entry = resolve_site("case status")
+    if not entry:
         return "I couldn't open the case status site."
-    return "Opening the case status site."
+    return _open_in_chrome(entry["url"], "Opening the case status site.")
 
 
 def _calendar_name(ev):
@@ -1651,6 +1975,541 @@ def start_bridge_thread(run_text):
         _bridge_thread.start()
 
 
+# --------------------------------------------------------------------------- Round 2: sites, Mac, work, school, money, IHSS, Zoe
+HELP_TEXT = (
+    "I can open your apps and work sites, control volume, brightness, and the Mac, "
+    "and play Apple Music or a YouTube search. I can read your calendar, shifts, school, "
+    "and bills, log IHSS hours, and run shortcuts that are in the Jev folder. "
+    "I can also help with Zoe. I won't send a message or move money."
+)
+SCHOOL_RE = re.compile(r"(?:#|\b)(?:umgc|school|class)\b", re.I)
+BILL_RE = re.compile(
+    r"(?:#bill\b|\b(?:rent|bill|bills|electric|gas|water|internet|insurance|mortgage|utilities|utility|phone)\b)",
+    re.I,
+)
+_UUID_RE = re.compile(
+    r"^(?P<name>.*?)\s+\((?P<id>[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12})\)$"
+)
+_shortcut_cache = {"at": 0.0, "catalog": None, "valid": False}
+
+
+def app_is_installed(display_name):
+    """True when a .app with this name is in the indexed app folders. No fuzzy match."""
+    if not display_name:
+        return False
+    return _norm(display_name) in app_index()
+
+
+def speak_help():
+    return HELP_TEXT
+
+
+def _https_url(url):
+    return isinstance(url, str) and url.startswith("https://") and " " not in url and '"' not in url
+
+
+def _open_in_chrome(url, spoken):
+    """Hand one https URL to Chrome. This does not fetch the page."""
+    if not _https_url(url):
+        return "That site isn't set up yet. The URL in commands.py needs to be https."
+    try:
+        _run(("open", "-a", "Google Chrome", url))
+    except Exception:
+        return "Google Chrome isn't installed, so I couldn't open that."
+    return spoken
+
+
+def open_site_from_text(text):
+    """Open a configured site, or the Shopify orders page for an orders phrase."""
+    raw = _clean(text)
+    if re.search(r"\borders\b", raw, re.I) and not parse_app_name(raw, "open"):
+        return _open_in_chrome(SHOPIFY_ORDERS_URL, "Opening Shopify orders.")
+    spoken = parse_app_name(raw, "open") or ""
+    if re.search(r"\borders\b", spoken, re.I):
+        entry = resolve_site("shopify orders")
+    else:
+        entry = resolve_site(spoken)
+    if not entry:
+        return "Which site should I open?"
+    return _open_in_chrome(entry["url"], f"Opening {entry['label']}.")
+
+
+def open_folder_from_text(text):
+    spoken = parse_app_name(_clean(text), "open") or ""
+    path = resolve_folder(spoken)
+    if not path:
+        return "Which folder should I open?"
+    target = os.path.expanduser(path)
+    label = os.path.basename(target)
+    try:
+        _run(("open", target))
+    except Exception:
+        return f"I couldn't open {label}."
+    return f"Opening your {label} folder."
+
+
+def play_on_youtube(text):
+    match = re.search(r"\bplay\s+(.+?)\s+on\s+youtube\b", _clean(text), re.I)
+    query = match.group(1).strip(" .,!?") if match else ""
+    query = re.sub(r"^(?:the|some|a|an)\s+", "", query, flags=re.I).strip()
+    if not query:
+        return "What should I play on YouTube?"
+    url = "https://www.youtube.com/results?search_query=" + quote_plus(query)
+    return _open_in_chrome(url, f"Opening {query} on YouTube.")
+
+
+def parse_volume_level(text):
+    """0-100 from 'set volume to 40' or 'half', or None."""
+    raw = _clean(text or "")
+    match = re.search(r"\b(\d{1,3})\b", raw)
+    if match:
+        return max(0, min(100, int(match.group(1))))
+    for word, level in VOLUME_WORDS.items():
+        if re.search(rf"\b{word}\b", raw, re.I):
+            return level
+    return None
+
+
+def set_mac_volume(level_name, text):
+    """Set the Mac output volume. The number is chosen here, never typed into a shell."""
+    level = parse_volume_level(text)
+    if level is None and level_name:
+        level = VOLUME_WORDS.get(str(level_name).lower())
+    if level is None:
+        return "What level should I set the volume to?"
+    level = max(0, min(100, int(level)))
+    try:
+        _run(("osascript", "-e", f"set volume output volume {level}"))
+    except Exception:
+        return "I couldn't change the volume."
+    return f"Volume's set to {level}."
+
+
+def change_brightness(direction):
+    code = BRIGHTNESS_UP_CODE if direction == "up" else BRIGHTNESS_DOWN_CODE
+    script = f'tell application "System Events" to key code {int(code)}'
+    try:
+        _run(("osascript", "-e", script))
+    except Exception:
+        return "I couldn't change the brightness. Allow Automation for System Events."
+    return "Brighter." if direction == "up" else "Dimmer."
+
+
+def show_desktop():
+    script = f'tell application "System Events" to key code {int(SHOW_DESKTOP_CODE)}'
+    try:
+        _run(("osascript", "-e", script))
+    except Exception:
+        return "I couldn't show the desktop. That uses the F11 shortcut."
+    return "Showing the desktop."
+
+
+def speak_battery():
+    try:
+        out = _run(("pmset", "-g", "batt"))
+    except Exception:
+        return "I couldn't read the battery."
+    match = re.search(r"(\d+)%", out or "")
+    if not match:
+        return "I couldn't read the battery."
+    pct = int(match.group(1))
+    lower = out.lower()
+    if "ac power" in lower or "charging" in lower and "discharging" not in lower:
+        source = "and it's charging" if "charging" in lower and "charged" not in lower else "and it's on power"
+    else:
+        source = "on battery"
+    return f"Battery is at {pct} percent, {source}."
+
+
+def take_screenshot():
+    stamp = datetime.now().astimezone().strftime("%Y-%m-%d %H-%M-%S")
+    path = os.path.expanduser(f"~/Desktop/Jev {stamp}.png")
+    try:
+        _run(("screencapture", "-x", path))
+    except Exception:
+        return "I couldn't take a screenshot. Allow Screen Recording for Hey Jev."
+    return "Saved a screenshot to your Desktop."
+
+
+def empty_trash():
+    """Only call this after a spoken yes."""
+    try:
+        _run(("osascript", "-e", 'tell application "Finder" to empty the trash'))
+    except Exception:
+        return "I couldn't empty the trash. Allow Automation for Finder."
+    return "Trash is empty."
+
+
+def continue_chatgpt():
+    """Activate ChatGPT and type the fixed word continue. Nothing else is typed."""
+    script = (
+        'tell application "ChatGPT" to activate\n'
+        "delay 0.5\n"
+        'tell application "System Events"\n'
+        'tell process "ChatGPT" to set frontmost to true\n'
+        'keystroke "continue"\n'
+        "key code 36\n"
+        "end tell"
+    )
+    try:
+        _run(("osascript", "-e", script))
+    except Exception:
+        return "I couldn't continue ChatGPT. Allow Automation for ChatGPT and System Events."
+    return "I told ChatGPT to continue."
+
+
+def _plain_event(ev):
+    return {
+        "title": _title(ev),
+        "start": _stamp(ev.startDate()),
+        "end": _stamp(ev.endDate()),
+        "all_day": _all_day(ev),
+        "calendar": _calendar_name(ev),
+    }
+
+
+def _load_plain_events(start, end):
+    """A list of plain event dicts, or a spoken error string."""
+    problem = _calendar_problem()
+    if problem:
+        return problem
+    try:
+        return [_plain_event(ev) for ev in _events_between(start, end)]
+    except Exception:
+        return _CAL_FAILED
+
+
+def weekend_bounds(now):
+    """Saturday and Sunday of this weekend. On Sunday, Saturday is yesterday."""
+    day = now.date()
+    weekday = day.weekday()  # Monday is 0
+    if weekday == 6:
+        saturday = day - timedelta(days=1)
+    else:
+        saturday = day + timedelta(days=(5 - weekday))
+    return saturday, saturday + timedelta(days=1)
+
+
+def _covers_day(ev, day):
+    start = ev["start"].date()
+    if ev.get("all_day"):
+        return start == day
+    end = ev["end"]
+    end_day = end.date()
+    if end.hour == 0 and end.minute == 0 and end_day > start:
+        end_day = end_day - timedelta(days=1)
+    return start <= day <= end_day
+
+
+def describe_work_weekend(events, now):
+    saturday, sunday = weekend_bounds(now)
+    found = []
+    for ev in events:
+        if not is_shift_title(ev.get("title", "")):
+            continue
+        if _covers_day(ev, saturday) or _covers_day(ev, sunday):
+            found.append(ev)
+    if not found:
+        return "You're not working this weekend."
+    found.sort(key=lambda ev: ev["start"])
+    parts = []
+    for ev in found[:4]:
+        when = ev["start"]
+        if when.date() == saturday:
+            day_name = "Saturday"
+        elif when.date() == sunday:
+            day_name = "Sunday"
+        else:
+            day_name = when.strftime("%A")
+        if ev.get("all_day"):
+            parts.append(f"{day_name}, {ev['title']}, all day")
+        else:
+            parts.append(f"{day_name}, {ev['title']} at {_clock(when)}")
+    return "You're working this weekend: " + _join_names(parts) + "."
+
+
+def _hours_minutes(minutes):
+    minutes = max(0, int(minutes))
+    hours, mins = divmod(minutes, 60)
+    bits = []
+    if hours:
+        bits.append("1 hour" if hours == 1 else f"{hours} hours")
+    if mins or not bits:
+        bits.append("1 minute" if mins == 1 else f"{mins} minutes")
+    return " and ".join(bits)
+
+
+def describe_shift_length(events, now):
+    horizon = now + timedelta(days=SHIFT_HORIZON_DAYS)
+    upcoming = []
+    for ev in events:
+        if not is_shift_title(ev.get("title", "")):
+            continue
+        if ev["end"] <= now or ev["start"] > horizon:
+            continue
+        upcoming.append(ev)
+    upcoming.sort(key=lambda ev: ev["start"])
+    if not upcoming:
+        return "No shift in the next two weeks."
+    ev = upcoming[0]
+    start, end = ev["start"], ev["end"]
+    title = ev["title"]
+    if ev.get("all_day"):
+        return f"Your next shift, {title}, is all day {_day_phrase(start, now)}."
+    span = _hours_minutes(int(round((end - start).total_seconds() / 60.0)))
+    if start <= now:
+        left = _hours_minutes(int(round((end - now).total_seconds() / 60.0)))
+        return f"This shift, {title}, is {span}, until {_clock(end)}. About {left} left."
+    return (
+        f"Your next shift, {title}, is {span}, {_day_phrase(start, now)} "
+        f"from {_clock(start)} to {_clock(end)}."
+    )
+
+
+def speak_working_weekend():
+    now = datetime.now().astimezone()
+    saturday, sunday = weekend_bounds(now)
+    start = datetime.combine(saturday, datetime.min.time()).astimezone()
+    end = datetime.combine(sunday + timedelta(days=1), datetime.min.time()).astimezone()
+    loaded = _load_plain_events(start, end)
+    if isinstance(loaded, str):
+        return loaded
+    return describe_work_weekend(loaded, now)
+
+
+def speak_shift_length():
+    now = datetime.now().astimezone()
+    horizon = now + timedelta(days=SHIFT_HORIZON_DAYS)
+    loaded = _load_plain_events(now - timedelta(hours=18), horizon)
+    if isinstance(loaded, str):
+        return loaded
+    return describe_shift_length(loaded, now)
+
+
+def _until_day(day, today):
+    delta = (day - today).days
+    if delta == 0:
+        return "today"
+    if delta == 1:
+        return "tomorrow"
+    if delta == -1:
+        return "yesterday"
+    if delta > 1:
+        return f"in {delta} days"
+    return f"{abs(delta)} days ago"
+
+
+def brea_from_due(path=None, today=None):
+    """Spoken Brea line from due.md, or None when the file or the line is missing."""
+    lines = _dated_lines(path)
+    if not lines:
+        return None
+    hits = [(day, title) for day, title in lines if re.search(r"\bbrea\b", title, re.I)]
+    if not hits:
+        return None
+    today = today or datetime.now().astimezone().date()
+    future = [item for item in hits if item[0] >= today]
+    day, title = future[0] if future else hits[-1]
+    return f"The due list says {title} on {_month_day(day)}, {_until_day(day, today)}."
+
+
+def speak_brea_start():
+    today = datetime.now().astimezone().date()
+    due_line = brea_from_due(today=today)
+    now = datetime.now().astimezone()
+    loaded = _load_plain_events(now - timedelta(days=2), now + timedelta(days=60))
+    cal_line = None
+    if not isinstance(loaded, str):
+        brea = [ev for ev in loaded if re.search(r"\bbrea\b", ev["title"], re.I) and ev["end"] > now]
+        brea.sort(key=lambda ev: ev["start"])
+        if brea:
+            ev = brea[0]
+            cal_line = f"The calendar has {ev['title']} {_day_phrase(ev['start'], now)} at {_clock(ev['start'])}."
+    parts = [part for part in (due_line, cal_line) if part]
+    if parts:
+        return " ".join(parts)
+    if isinstance(loaded, str) and due_line is None and not os.path.isfile(DUE_PATH):
+        return "I don't see a Brea start. Add a dated line to Documents, Jev, due.md."
+    return "I don't see a Brea start in your due list. Add a dated line to Documents, Jev, due.md."
+
+
+def _filtered_due(pattern, horizon_days, path=None, today=None):
+    lines = _dated_lines(path)
+    if lines is None:
+        return None
+    today = today or datetime.now().astimezone().date()
+    horizon = today + timedelta(days=horizon_days)
+    found = [(day, title) for day, title in lines if today <= day <= horizon and pattern.search(title)]
+    found.sort(key=lambda item: (item[0], item[1].lower()))
+    return found
+
+
+def _speak_item_list(items, empty, label):
+    if items is None:
+        return "You don't have a due list yet. Add dated lines to Documents, Jev, due.md."
+    if not items:
+        return empty
+    shown = items[:5]
+    extra = len(items) - len(shown)
+    spoken = [f"{title} on {_month_day(day)}" for day, title in shown]
+    line = label + _join_names(spoken) + "."
+    if extra == 1:
+        line += " And 1 more."
+    elif extra:
+        line += f" And {extra} more."
+    return line
+
+
+def speak_school_due(today=None, path=None):
+    items = _filtered_due(SCHOOL_RE, SCHOOL_HORIZON_DAYS, path=path, today=today)
+    return _speak_item_list(items, "Nothing for school is due in the next 30 days.", "For school: ")
+
+
+def speak_rent(today=None, path=None):
+    lines = _dated_lines(path)
+    if lines is None:
+        return "You don't have a due list yet. Add a dated rent line to Documents, Jev, due.md."
+    today = today or datetime.now().astimezone().date()
+    rent = [(day, title) for day, title in lines if day >= today and re.search(r"\brent\b", title, re.I)]
+    if not rent:
+        return "I don't see an upcoming rent date. Add a dated line to Documents, Jev, due.md."
+    day, title = rent[0]
+    return f"{title} is due {_month_day(day)}, {_until_day(day, today)}."
+
+
+def speak_bills(today=None, path=None):
+    items = _filtered_due(BILL_RE, BILL_HORIZON_DAYS, path=path, today=today)
+    return _speak_item_list(items, "No bills are coming up in the next 45 days.", "Bills coming up: ")
+
+
+def next_biweekly(anchor, today):
+    """Next date on a 14-day cadence, including today when today is a payday."""
+    if today <= anchor:
+        return anchor
+    delta = (today - anchor).days
+    steps = (delta + 13) // 14
+    return anchor + timedelta(days=steps * 14)
+
+
+def _month_end(year, month):
+    if month == 12:
+        return datetime(year + 1, 1, 1).date() - timedelta(days=1)
+    return datetime(year, month + 1, 1).date() - timedelta(days=1)
+
+
+def next_semi_payday(today):
+    """Next 15th or last day of the month, including today."""
+    candidates = []
+    year, month = today.year, today.month
+    for _ in range(4):
+        candidates.append(datetime(year, month, 15).date())
+        candidates.append(_month_end(year, month))
+        month += 1
+        if month > 12:
+            month = 1
+            year += 1
+    future = [day for day in candidates if day >= today]
+    return min(future)
+
+
+def load_pay_schedule(path=None):
+    """Apple anchor date, and whether money.md was missing so the default is in use.
+
+    The file is local. Bank sites are never contacted from here.
+    """
+    path = path or MONEY_PATH
+    anchor = datetime.strptime(DEFAULT_APPLE_PAY_ANCHOR, "%Y-%m-%d").date()
+    if not os.path.isfile(path):
+        return {"anchor": anchor, "default": True}
+    try:
+        with open(path, encoding="utf-8") as handle:
+            text = handle.read()
+    except OSError:
+        return {"anchor": anchor, "default": True}
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        match = re.match(r"apple\s*:\s*(\d{4}-\d{2}-\d{2})", line, re.I)
+        if match:
+            try:
+                anchor = datetime.strptime(match.group(1), "%Y-%m-%d").date()
+            except ValueError:
+                continue
+    return {"anchor": anchor, "default": False}
+
+
+def _weekday_month(day):
+    return f"{day:%A}, {day:%B} {_ordinal(day.day)}"
+
+
+def speak_payday(today=None, path=None):
+    today = today or datetime.now().astimezone().date()
+    schedule = load_pay_schedule(path)
+    apple = next_biweekly(schedule["anchor"], today)
+    ihss = next_semi_payday(today)
+    apple_line = f"Apple payday is {_weekday_month(apple)}, {_until_day(apple, today)}."
+    ihss_line = f"IHSS payday is {_month_day(ihss)}, {_until_day(ihss, today)}."
+    if apple <= ihss:
+        first, second = apple_line, ihss_line
+    else:
+        first, second = ihss_line, apple_line
+    note = ""
+    if schedule["default"]:
+        note = " That's the default schedule. Edit Documents, Jev, money.md to change the Apple Friday."
+    return f"{first} {second}{note}"
+
+
+def speak_ihss_period(today=None):
+    today = today or datetime.now().astimezone().date()
+    start, end = _semi_period(today)
+    if not os.path.isfile(IHSS_PATH):
+        return (
+            f"No IHSS hours logged yet. This period is {_month_day(start)} through {_month_day(end)}."
+        )
+    try:
+        total, start, end = _period_total(IHSS_PATH, today)
+    except OSError:
+        return "I couldn't read the IHSS log."
+    return (
+        f"This pay period, {_month_day(start)} through {_month_day(end)}, "
+        f"is {_hours_phrase(total)}."
+    )
+
+
+def remind_timesheet():
+    """Create one fixed Reminders item. The title is not taken from speech."""
+    script = (
+        'tell application "Reminders"\n'
+        "if (count of lists) is 0 then error \"no lists\"\n"
+        "set targetList to default list\n"
+        'make new reminder at end of targetList with properties {name:"Submit IHSS timesheet"}\n'
+        "end tell"
+    )
+    try:
+        _run(("osascript", "-e", script))
+    except Exception:
+        return "I couldn't add the reminder. Allow Automation for Reminders."
+    return "I added a reminder called Submit IHSS timesheet."
+
+
+def open_princess_academy():
+    ok, info = _run_catalog_shortcut(PRINCESS_SHORTCUT)
+    if ok:
+        return f"Ran {info}."
+    if PRINCESS_ACADEMY_URL:
+        opened = _open_in_chrome(PRINCESS_ACADEMY_URL, "Opening Princess Academy.")
+        if info and "couldn't verify" in info:
+            return "I didn't run a shortcut. " + opened
+        return opened
+    if info and "couldn't verify" in info:
+        return info
+    return (
+        "Zoe's Princess Academy isn't in the Jev folder. "
+        "Add that shortcut, or set PRINCESS_ACADEMY_URL in commands.py."
+    )
+
+
 # --------------------------------------------------------------------------- Shortcuts (Jev folder only)
 def parse_shortcut_name(text):
     """Name from 'run shortcut Leaving for work', 'run my Focus shortcut', 'do Jev morning'."""
@@ -1676,18 +2535,184 @@ def parse_shortcut_name(text):
     return name
 
 
-def list_jev_shortcuts():
-    """Names from `shortcuts list --folder-name Jev`. None when the command fails."""
+def spoken_shortcut_from(text):
+    """Explicit shortcut phrase, or the name in a bare 'run NAME'."""
+    name = parse_shortcut_name(text)
+    if name:
+        return name
+    match = _BARE_RUN_RE.match(_clean(text).strip())
+    if not match:
+        return None
+    spoken = re.sub(r"^(?:the|my|a)\s+", "", match.group(1).strip(" .,!?"), flags=re.I).strip()
+    if not spoken or re.search(r"\bshortcut\b", spoken, re.I):
+        return None
+    return spoken
+
+
+def clear_shortcut_cache():
+    _shortcut_cache.update(at=0.0, catalog=None, valid=False)
+
+
+def _shortcuts_output(*args):
+    """stdout of `shortcuts list`, or None when the command fails. Argument list only."""
     try:
         result = subprocess.run(
-            ["shortcuts", "list", "--folder-name", SHORTCUT_FOLDER],
+            ["shortcuts", "list", *args],
             capture_output=True, text=True, timeout=30,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
     if result.returncode:
         return None
-    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    return result.stdout
+
+
+def _parse_id_line(line):
+    """(identifier or None, name) for one shortcuts-list line, or None if blank."""
+    line = (line or "").strip()
+    if not line:
+        return None
+    match = _UUID_RE.match(line)
+    if match:
+        name = match.group("name").strip()
+        if not name:
+            return None
+        return match.group("id").upper(), name
+    return None, line
+
+
+def parse_shortcut_ids(stdout):
+    """({identifier: name}, count of lines with no identifier). None if stdout is None."""
+    if stdout is None:
+        return None
+    items, unidentified = {}, 0
+    for line in stdout.splitlines():
+        parsed = _parse_id_line(line)
+        if parsed is None:
+            continue
+        ident, name = parsed
+        if ident:
+            items[ident] = name
+        elif name:
+            unidentified += 1
+    return items, unidentified
+
+
+def parse_folder_rows(stdout):
+    """(identifier or None, name) rows. None when the command failed."""
+    if stdout is None:
+        return None
+    rows = []
+    for line in stdout.splitlines():
+        parsed = _parse_id_line(line)
+        if parsed is None:
+            continue
+        ident, name = parsed
+        if name:
+            rows.append((ident, name))
+    return rows
+
+
+def find_jev_folder(rows):
+    """(identifier or None, actual name) for the Jev folder, or None if it is absent."""
+    if not rows:
+        return None
+    for ident, name in rows:
+        if name.lower() == SHORTCUT_FOLDER.lower():
+            return ident, name
+    return None
+
+
+def catalog_from_listings(folders_out, name_out, id_out, all_out):
+    """{identifier: name} verified in the Jev folder, {} if that folder is empty, or None.
+
+    `shortcuts list --folder-name Jev` prints every shortcut when the folder does
+    not exist, and it still exits 0. A folder-name listing is ignored unless
+    `shortcuts list --folders` contains Jev. When the folder has an identifier,
+    a name filter that dumped the whole library is discarded in favor of the
+    identifier filter, if that one is a real subset.
+    """
+    folders = parse_folder_rows(folders_out)
+    if folders is None:
+        return None
+    found = find_jev_folder(folders)
+    if not found:
+        return None
+    folder_ident, _folder_name = found
+    named = parse_shortcut_ids(name_out)
+    everyone = parse_shortcut_ids(all_out)
+    if named is None or everyone is None:
+        return None
+    name_items, name_bad = named
+    all_items, _all_bad = everyone
+    if name_bad and not name_items:
+        return None
+    if not set(name_items).issubset(all_items):
+        return None
+    chosen = name_items
+    if folder_ident:
+        identified = parse_shortcut_ids(id_out)
+        if identified is None:
+            # The identifier-scoped list failed. A name list that is the entire
+            # library is the missing-folder bug, so refuse it. A real subset is kept.
+            if all_items and set(name_items) == set(all_items):
+                return None
+            return dict(name_items)
+        id_items, id_bad = identified
+        if id_bad and not id_items and (id_out or "").strip():
+            return None
+        if not set(id_items).issubset(all_items):
+            return None
+        name_is_all = bool(all_items) and set(name_items) == set(all_items)
+        id_is_all = bool(all_items) and set(id_items) == set(all_items)
+        if name_is_all and not id_is_all:
+            chosen = id_items
+        elif id_is_all and not name_is_all:
+            chosen = name_items
+        elif set(name_items) != set(id_items):
+            both = set(name_items) & set(id_items)
+            if not both and (name_items or id_items):
+                return None
+            chosen = {ident: id_items.get(ident) or name_items[ident] for ident in both}
+        else:
+            chosen = id_items
+    return dict(chosen)
+
+
+def _load_shortcut_catalog():
+    folders_out = _shortcuts_output("--folders", "--show-identifiers")
+    if folders_out is None:
+        folders_out = _shortcuts_output("--folders")
+    folders = parse_folder_rows(folders_out)
+    if folders is None:
+        return None
+    found = find_jev_folder(folders)
+    if not found:
+        # Do not read --folder-name. That flag lists the whole library when Jev is missing.
+        return None
+    folder_ident, folder_name = found
+    name_out = _shortcuts_output("--folder-name", folder_name, "--show-identifiers")
+    all_out = _shortcuts_output("--show-identifiers")
+    id_out = _shortcuts_output("--folder-name", folder_ident, "--show-identifiers") if folder_ident else None
+    return catalog_from_listings(folders_out, name_out, id_out, all_out)
+
+
+def jev_shortcut_catalog(force=False):
+    """Verified {identifier: name}, {} when the folder is empty, or None when it can't be verified."""
+    now = time.time()
+    if not force and _shortcut_cache["valid"] and now - _shortcut_cache["at"] < SHORTCUT_CACHE_SECONDS:
+        return _shortcut_cache["catalog"]
+    catalog = _load_shortcut_catalog()
+    _shortcut_cache.update(at=now, catalog=catalog, valid=True)
+    return catalog
+
+
+def list_jev_shortcuts():
+    """Verified shortcut names in the Jev folder. None when the folder can't be verified."""
+    catalog = jev_shortcut_catalog()
+    if catalog is None:
+        return None
+    return list(catalog.values())
 
 
 def resolve_shortcut(spoken, names):
@@ -1709,23 +2734,41 @@ def resolve_shortcut(spoken, names):
     return by_key[match[0]] if match else None
 
 
+def _ident_for_name(catalog, name):
+    hits = [ident for ident, title in catalog.items() if title == name]
+    if len(hits) != 1:
+        return None
+    return hits[0]
+
+
+def _run_catalog_shortcut(spoken):
+    """(True, canonical name) or (False, spoken reason). Runs by identifier only."""
+    catalog = jev_shortcut_catalog()
+    if catalog is None:
+        return False, "I only run shortcuts in the Jev folder, and I couldn't verify that folder, so I didn't run anything."
+    if not catalog:
+        return False, "The Jev shortcuts folder is empty."
+    name = resolve_shortcut(spoken, list(catalog.values()))
+    if not name:
+        return False, f"I couldn't find {spoken} in the Jev shortcuts folder."
+    ident = _ident_for_name(catalog, name)
+    if not ident:
+        return False, f"I couldn't verify {spoken} is in the Jev folder, so I didn't run it."
+    try:
+        _run(("shortcuts", "run", ident), timeout=120)
+    except subprocess.TimeoutExpired:
+        return False, f"{name} took too long, so I stopped waiting."
+    except RuntimeError:
+        return False, f"I couldn't run {name}."
+    return True, name
+
+
 def run_named_shortcut(text):
-    """Run one shortcut that appears in the Jev folder. Anything else is refused."""
-    spoken = parse_shortcut_name(text)
+    """Run one shortcut verified in the Jev folder. Anything else is refused."""
+    spoken = spoken_shortcut_from(text)
     if not spoken:
         return "Which shortcut should I run?"
-    names = list_jev_shortcuts()
-    if names is None:
-        return "I only run shortcuts in the Jev folder, and I couldn't find that folder."
-    if not names:
-        return "The Jev shortcuts folder is empty."
-    name = resolve_shortcut(spoken, names)
-    if not name:
-        return f"I couldn't find {spoken} in the Jev shortcuts folder."
-    try:
-        _run(("shortcuts", "run", name), timeout=120)
-    except subprocess.TimeoutExpired:
-        return f"{name} took too long, so I stopped waiting."
-    except RuntimeError:
-        return f"I couldn't run {name}."
-    return f"Ran {name}."
+    ok, info = _run_catalog_shortcut(spoken)
+    if ok:
+        return f"Ran {info}."
+    return info

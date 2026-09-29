@@ -27,7 +27,10 @@ COMMAND_PROMPT = (
     "What apps are open. Check my messages from My Love. Take a note. What's due this week. "
     "Start focus mode for 25 minutes. Log IHSS hours. Check my case status. What's Zoe got tomorrow. "
     "Run shortcut Leaving for work. Set a timer for five minutes. "
-    "Play. Pause. Next track. Turn Spotify down. Turn the Mac volume down. Mute. Dark mode on. Lock the screen."
+    "Play. Pause. Next track. What's playing. Play the song on YouTube. "
+    "Turn the volume up. Set the volume to 40. Mute. Lock the screen. What's my battery. "
+    "When's my next shift. Am I working this weekend. How long until payday. "
+    "Open settings. Open business email. Run shortcut Leaving for work. What can you do."
 )
 WAKE_PROMPT = (
     "Hey Jev, open CapCut. Hey Jev, open ChatGPT. Hey Jev, what time is it. "
@@ -181,6 +184,64 @@ def spotify_play(tries=12):
     raise RuntimeError("Spotify never started playing")
 
 
+def _spotify_only(fn):
+    """Run a Spotify AppleScript only when that app is installed."""
+    def run(arg, text):
+        if not commands.app_is_installed("Spotify"):
+            return "Spotify isn't installed."
+        fn(arg, text)
+    return run
+
+
+def _music_app(text):
+    """Apple Music, unless the utterance names Spotify and Spotify is installed."""
+    target = commands.music_target(text or "", commands.app_is_installed("Spotify"))
+    if target is None:
+        return None
+    return "Spotify" if target == "spotify" else "Music"
+
+
+def _now_playing(app):
+    raw = osa(
+        f'tell application "{app}"\n'
+        "if player state is stopped then\n"
+        'return ""\n'
+        "end if\n"
+        "try\n"
+        'return (get name of current track) & " | " & (get artist of current track)\n'
+        "on error\n"
+        'return ""\n'
+        "end try\n"
+        "end tell"
+    )
+    if not raw or "|" not in raw:
+        return f"Nothing is playing on {app}."
+    title, artist = [part.strip() for part in raw.split("|", 1)]
+    if not title:
+        return f"Nothing is playing on {app}."
+    if artist:
+        return f"Playing {title} by {artist}."
+    return f"Playing {title}."
+
+
+def do_media(kind, text):
+    """Play, pause, skip, or ask what's playing. Apple Music unless Spotify was named."""
+    app = _music_app(text)
+    if app is None:
+        return "Spotify isn't installed."
+    try:
+        if kind == "now":
+            return _now_playing(app)
+        if kind == "play" and app == "Spotify":
+            spotify_play()
+        else:
+            verb = {"play": "play", "pause": "pause", "next": "next track", "previous": "previous track"}[kind]
+            osa(f'tell application "{app}" to {verb}')
+    except Exception:
+        return f"I couldn't control {app}."
+    return None
+
+
 def _quiet(fn):
     """Side effect only. osascript's stdout is not a sentence; REPLIES supplies that."""
     def run(arg, text):
@@ -196,19 +257,42 @@ ACTIONS = {
     "volume_down": _quiet(lambda _arg, _text: osa(f"set volume output volume {max(0, volume() - 20)}")),
     "volume_mute": _quiet(lambda _arg, _text: osa("set volume output muted true")),
     "volume_unmute": _quiet(lambda _arg, _text: osa("set volume output muted false")),
-    "volume_set": _quiet(lambda lvl, _text: osa(f"set volume output volume {LEVELS.get(lvl, 50)}")),
-    "spotify_volume_up": _quiet(lambda _arg, _text: osa(f'tell application "Spotify" to set sound volume to {min(100, spotify_volume() + 20)}')),
-    "spotify_volume_down": _quiet(lambda _arg, _text: osa(f'tell application "Spotify" to set sound volume to {max(0, spotify_volume() - 20)}')),
-    "spotify_volume_mute": _quiet(lambda _arg, _text: osa('tell application "Spotify" to set sound volume to 0')),
-    "spotify_volume_unmute": _quiet(lambda _arg, _text: osa('tell application "Spotify" to set sound volume to 50')),
-    "spotify_volume_set": _quiet(lambda lvl, _text: osa(f'tell application "Spotify" to set sound volume to {LEVELS.get(lvl, 50)}')),
+    "volume_set": lambda lvl, text: commands.set_mac_volume(lvl, text),
+    "spotify_volume_up": _spotify_only(lambda _arg, _text: osa(f'tell application "Spotify" to set sound volume to {min(100, spotify_volume() + 20)}')),
+    "spotify_volume_down": _spotify_only(lambda _arg, _text: osa(f'tell application "Spotify" to set sound volume to {max(0, spotify_volume() - 20)}')),
+    "spotify_volume_mute": _spotify_only(lambda _arg, _text: osa('tell application "Spotify" to set sound volume to 0')),
+    "spotify_volume_unmute": _spotify_only(lambda _arg, _text: osa('tell application "Spotify" to set sound volume to 50')),
+    "spotify_volume_set": _spotify_only(lambda lvl, _text: osa(f'tell application "Spotify" to set sound volume to {LEVELS.get(lvl, 50)}')),
     "display_dark_on": _quiet(lambda _arg, _text: osa('tell application "System Events" to tell appearance preferences to set dark mode to true')),
     "display_dark_off": _quiet(lambda _arg, _text: osa('tell application "System Events" to tell appearance preferences to set dark mode to false')),
     "display_toggle": _quiet(lambda _arg, _text: osa('tell application "System Events" to tell appearance preferences to set dark mode to not dark mode')),
-    "media_play": _quiet(lambda _arg, _text: spotify_play()),
-    "media_pause": _quiet(lambda _arg, _text: osa('tell application "Spotify" to pause')),
-    "media_next": _quiet(lambda _arg, _text: osa('tell application "Spotify" to next track')),
-    "media_previous": _quiet(lambda _arg, _text: osa('tell application "Spotify" to previous track')),
+    "media_play": lambda _arg, text: do_media("play", text),
+    "media_pause": lambda _arg, text: do_media("pause", text),
+    "media_next": lambda _arg, text: do_media("next", text),
+    "media_previous": lambda _arg, text: do_media("previous", text),
+    "media_now": lambda _arg, text: do_media("now", text),
+    "youtube_play": lambda _arg, text: commands.play_on_youtube(text),
+    "brightness_up": lambda _arg, _text: commands.change_brightness("up"),
+    "brightness_down": lambda _arg, _text: commands.change_brightness("down"),
+    "screenshot": lambda _arg, _text: commands.take_screenshot(),
+    "empty_trash": lambda _arg, _text: commands.empty_trash(),
+    "show_desktop": lambda _arg, _text: commands.show_desktop(),
+    "folder_open": lambda _arg, text: commands.open_folder_from_text(text),
+    "site_open": lambda _arg, text: commands.open_site_from_text(text),
+    "continue_chatgpt": lambda _arg, _text: commands.continue_chatgpt(),
+    "info_help": lambda _arg, _text: commands.speak_help(),
+    "info_weekend": lambda _arg, _text: commands.speak_working_weekend(),
+    "info_shift_length": lambda _arg, _text: commands.speak_shift_length(),
+    "info_brea": lambda _arg, _text: commands.speak_brea_start(),
+    "info_school": lambda _arg, _text: commands.speak_school_due(),
+    "info_rent": lambda _arg, _text: commands.speak_rent(),
+    "info_bills": lambda _arg, _text: commands.speak_bills(),
+    "info_payday": lambda _arg, _text: commands.speak_payday(),
+    "info_battery": lambda _arg, _text: commands.speak_battery(),
+    "ihss_hours": lambda _arg, _text: commands.speak_ihss_period(),
+    "ihss_remind": lambda _arg, _text: commands.remind_timesheet(),
+    "zoe_academy": lambda _arg, _text: commands.open_princess_academy(),
+    "zoe_timer": lambda _arg, text: _start_zoe_timer(text),
     "system_lock": _quiet(lambda _arg, _text: osa('tell application "System Events" to keystroke "q" using {control down, command down}')),
     "system_sleep": _quiet(lambda _arg, _text: sh("pmset", "sleepnow")),
     "info_time": lambda _arg, _text: commands.speak_time(),
@@ -273,6 +357,7 @@ REPLIES = {
     "apps_quit_all": ["Quit every app except Finder and Hey Jev? Say yes to quit them."],
     "confirm_no": ["Okay, I won't.", "Cancelled."],
     "quit_all_alone": ["Quit all has to be on its own. Say it by itself, then yes to confirm."],
+    "empty_trash": ["Empty the trash? Say yes to confirm."],
 }
 
 
@@ -443,6 +528,15 @@ def start_timer_loop(on_done):
                 except Exception as e:
                     print(f"  timer alert failed: {e}")
     threading.Thread(target=loop, daemon=True).start()
+
+
+def _start_zoe_timer(text):
+    """A local timer labeled for Zoe. This does not ask the LLM to write the alert."""
+    secs = parse_duration(text)
+    if not secs:
+        return "How many minutes should I set for Zoe?"
+    add_timer(secs, label="Zoe")
+    return f"Timer for Zoe is set for {say_duration(secs)}."
 
 
 def _start_focus(text):
@@ -721,8 +815,7 @@ def handle(text, stt_ms=None, notify=None, reply_sink=None):
         early = ("actions", [_picked("info_messages")])
     if early is not None:
         misses = 0
-        _run_local(early[1], text, notify, reply_sink)
-        return
+        return _run_local(early[1], text, notify, reply_sink)
     emit(notify, "Thinking", text)
     ans, jev_ms, cost = jev(text)
     for k, (v, c) in ans.items():
@@ -846,12 +939,26 @@ def _deliver(line, notify, reply_sink=None, private=False):
 def _run_local(payload, text, notify, reply_sink):
     """Run one command that decide() already chose with no network call."""
     if not payload:
-        return
+        return None
     _conf, action, arg, reply_key, fmt = payload[0]
     if action in commands.CONFIRM:
-        _deliver(say_line("unsupported"), notify, reply_sink)
-        return
+        commands.arm_confirmation(action, arg, text, reply_key, fmt)
+        prompt = say_line(reply_key) if reply_key in REPLIES else "Say yes to confirm."
+        print(f"  confirm: waiting for yes/no on {action} (local)")
+        _deliver(prompt, notify, reply_sink)
+        commands.refresh_confirmation()
+        return "expect_reply"
     private = action == "info_messages"
+    if action in SPEAK_FIRST:
+        line = say_line(reply_key, **fmt) if reply_key in REPLIES else "Okay."
+        _deliver(line, notify, reply_sink)
+        try:
+            emit(notify, "Doing it", text)
+            ACTIONS[action](arg, text)
+            print(f"  local: {action} (no api, no llm)")
+        except Exception as exc:
+            print(f"  action failed: {action} {exc}")
+        return None
     print(f"  local: {action} (no api, no llm)")
     try:
         emit(notify, "Doing it", "On this Mac" if private else text)
