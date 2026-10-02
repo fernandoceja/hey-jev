@@ -6,7 +6,7 @@ import os
 import re
 import threading
 import time
-from .config import BRIDGE_ALLOW, BRIDGE_INBOX, BRIDGE_MAX_AGE, BRIDGE_MAX_CMD, BRIDGE_OUTBOX, BRIDGE_POLL_SECONDS, BRIDGE_SECRET_ACCOUNT, CONFIRM, NONCE_LIMIT, NONCE_LOG, NONCE_RE
+from .config import BRIDGE_ALLOW, BRIDGE_INBOX, BRIDGE_MAX_AGE, BRIDGE_MAX_CMD, BRIDGE_OUTBOX, BRIDGE_POLL_SECONDS, BRIDGE_SECRET_ACCOUNT, CONFIRM, NONCE_LIMIT, NONCE_LOG, NONCE_RE, OUTBOX_TTL_SECONDS
 from .routing import route_before_api
 
 # --------------------------------------------------------------------------- iPhone bridge (iCloud files only, no listener)
@@ -89,6 +89,40 @@ def _write_outbox(nonce, ok, reply):
     os.replace(tmp, dest)
 
 
+def sweep_outbox(now=None):
+    """Delete reply files in the outbox that are older than OUTBOX_TTL_SECONDS.
+
+    Only regular files sitting directly in that directory are considered, and
+    only when the name is a bridge nonce plus ``.json``. Nothing outside the
+    outbox, nothing in a subdirectory, and no other name is removed.
+    """
+    now = time.time() if now is None else now
+    try:
+        names = os.listdir(BRIDGE_OUTBOX)
+    except OSError:
+        return 0
+    removed = 0
+    for name in names:
+        if not name.endswith(".json") or not NONCE_RE.match(name[:-5]):
+            continue
+        path = os.path.join(BRIDGE_OUTBOX, name)
+        # A symlink's name can match while its target lives somewhere else.
+        if os.path.islink(path) or not os.path.isfile(path):
+            continue
+        try:
+            age = now - os.path.getmtime(path)
+        except OSError:
+            continue
+        if age <= OUTBOX_TTL_SECONDS:
+            continue
+        try:
+            os.remove(path)
+        except OSError:
+            continue
+        removed += 1
+    return removed
+
+
 def _delete_inbox(path):
     try:
         os.remove(path)
@@ -169,6 +203,7 @@ def _process_bridge_file(path, run_text):
 
 def poll_bridge(run_text):
     """Handle every JSON file currently in the iCloud inbox. No socket is opened."""
+    sweep_outbox()
     try:
         os.makedirs(BRIDGE_INBOX, exist_ok=True)
         os.makedirs(BRIDGE_OUTBOX, exist_ok=True)
@@ -195,6 +230,8 @@ def poll_bridge(run_text):
 def start_bridge_thread(run_text):
     """Poll the inbox every 2 seconds. run_text(cmd) returns the spoken reply."""
     global _bridge_thread
+
+    sweep_outbox()
 
     def loop():
         while True:

@@ -55,6 +55,7 @@ from .config import (
     BRIDGE_MAX_AGE,
     BRIDGE_MAX_CMD,
     BRIDGE_POLL_SECONDS,
+    OUTBOX_TTL_SECONDS,
     NONCE_LOG,
     NONCE_LIMIT,
     NONCE_RE,

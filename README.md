@@ -143,9 +143,9 @@ That prints the secret once. Copy it into the iPhone Shortcut and do not commit 
 10. **Wait** 4 seconds. iCloud can be slow; if the next step misses, wait 8 seconds or repeat the wait a couple of times.
 11. **Get File** `iCloud Drive/Jev/outbox/Nonce.json`.
 12. **Get Dictionary from Input**, then **Get Dictionary Value** for the key `reply`.
-13. **Speak Text** that reply. Optionally delete the outbox file.
+13. **Speak Text** that reply. Optionally delete the outbox file. If the shortcut never does, the Mac deletes that reply after about 10 minutes.
 
-The Mac also speaks the reply while the shortcut reads it back. Message text is never written to the outbox.
+The Mac also speaks the reply while the shortcut reads it back. Message text is never written to the outbox. Each inbox poll, and the moment the bridge thread starts, deletes reply files in that outbox that are older than 10 minutes (`OUTBOX_TTL_SECONDS` in `commands/config.py`). Only a regular file directly in the outbox, named like the nonce plus `.json`, is removed. A shortcut can still delete a reply after it reads it. It does not have to.
 
 Dictation: say "Hey Jev, transcribe" and a little waveform bubble shows at the bottom of the screen. Talk as long as you like, then say "Hey Jev, stop transcribing" and the text is pasted where your cursor is (and left on the clipboard). It uses `gpt-4o-mini-transcribe` through your OpenRouter key, so no extra key. Every dictation is saved to `~/Library/Logs/Hey Jev dictation.jsonl`.
 
@@ -296,7 +296,7 @@ Below 0.65 confidence it asks you to say it again, twice in a row and it gives u
 - **It stopped controlling apps after a macOS update.** Updates can reset permissions. Check Microphone, Accessibility, Automation, and Calendars under Privacy & Security again.
 - **Calendar says it doesn't have access.** System Settings > Privacy & Security > Calendars, set Hey Jev to Full Access, then ask again. Write-only access is not enough. If you asked from `python siri.py --text`, the grant is on Terminal or Cursor, not on the app bundle.
 - **Messages says to turn on Full Disk Access.** That command is the only one that needs it. Add Hey Jev (or Terminal / Cursor, if you used `--text`) under Privacy & Security > Full Disk Access, then ask again. Leave it off and the rest of the app still works.
-- **The iPhone shortcut never speaks a reply.** Hey Jev has to be running on the Mac. The JSON file has to land in `iCloud Drive/Jev/inbox`, the signature has to be the HMAC of `cmd|ts|nonce`, and the phone's clock has to be within 2 minutes of the Mac. A reused nonce is ignored.
+- **The iPhone shortcut never speaks a reply.** Hey Jev has to be running on the Mac. The JSON file has to land in `iCloud Drive/Jev/inbox`, the signature has to be the HMAC of `cmd|ts|nonce`, and the phone's clock has to be within 2 minutes of the Mac. A reused nonce is ignored. A reply file older than 10 minutes is deleted on the Mac.
 
 
 
