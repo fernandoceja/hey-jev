@@ -1,8 +1,14 @@
-"""Mac voice assistant: hold right Option or say "Hey Jev", then speak. Jev decides, Fish speaks."""
+"""Mac voice assistant: hold right Option or say "Hey Jev", then speak. Jev decides, Fish speaks.
+
+Messages from My Love are the exception: they are spoken with the macOS say command
+and are never sent to Fish, TypeSafe, or an LLM.
+"""
 import os, re, sys, json, time, queue, random, argparse, subprocess, tempfile, threading, hashlib, collections
+from datetime import datetime
 import numpy as np, requests, sounddevice as sd, soundfile as sf
 from dotenv import load_dotenv
 from pynput import keyboard
+import commands
 from secrets_store import get_secret
 
 load_dotenv()
@@ -14,8 +20,22 @@ PTT_KEY = keyboard.Key.alt_r
 SAMPLE_RATE = 16000
 GATE = 0.65
 WHISPER_MODEL = "small.en"
-COMMAND_PROMPT = "Open Spotify. Set a timer for five minutes. Play. Pause. Next track. Turn Spotify down. Turn the Mac volume down. Mute. Dark mode on. Lock the screen."
-WAKE_PROMPT = "Hey Jev, open Spotify. Hey Jev, pause the music. Hey Jev, turn the volume down."
+COMMAND_PROMPT = (
+    "Open Spotify. Open CapCut. Open ChatGPT. Open Cursor. Open Claude. Quit Safari. "
+    "What time is it. What's the date. What's today. What's the weather. Brief me. "
+    "What's my schedule today. When's my next meeting. What's on my calendar. When's my next shift. What's next. "
+    "What apps are open. Check my messages from My Love. Take a note. What's due this week. "
+    "Start focus mode for 25 minutes. Log IHSS hours. Check my case status. What's Zoe got tomorrow. "
+    "Run shortcut Leaving for work. Set a timer for five minutes. "
+    "Play. Pause. Next track. What's playing. Play the song on YouTube. "
+    "Turn the volume up. Set the volume to 40. Mute. Lock the screen. What's my battery. "
+    "When's my next shift. Am I working this weekend. How long until payday. "
+    "Open settings. Open business email. Run shortcut Leaving for work. What can you do."
+)
+WAKE_PROMPT = (
+    "Hey Jev, open CapCut. Hey Jev, open ChatGPT. Hey Jev, what time is it. "
+    "Hey Jev, what's the weather. Hey Jev, brief me. Hey Jev, what's my schedule today. Hey Jev, pause the music."
+)
 # Whisper often hears "Jev" as Jeff or Jeb, so accept the close ones
 WAKE = re.compile(r"^\W*(?:hey|hi|hay|okay|ok|a)\W+(?:jev|jevs|jeff|jeffs|jef|jeb|jab|chev|jeve|jav)\b\W*", re.I)
 WAKE_WINDOW = 6.0
@@ -38,10 +58,15 @@ QUESTIONS = {
     "target": {"type": "choice", "instructions": "What is the primary thing being controlled?",
                "criteria": {"app": "an application", "volume": "sound level", "display": "screen appearance or dark mode",
                             "media": "music playback", "system": "locking or sleeping the computer",
-                            "timer": "setting, checking, or cancelling a timer or reminder"}},
+                            "timer": "setting, checking, or cancelling a timer or reminder",
+                            "info": "the time, the date, the calendar, a shift, or which apps are open",
+                            "shortcut": "running a named Apple Shortcut"}},
     "app": {"type": "choice", "instructions": "Which app, if any, is named?",
             "criteria": {"spotify": None, "slack": None, "chrome": None, "vscode": None, "finder": None,
-                         "safari": None, "messages": None, "notes": None, "none": None}},
+                         "safari": None, "messages": None, "notes": None, "cursor": None, "claude": None,
+                         "chatgpt": None, "capcut": None,
+                         "other": "an application is named that is not one of the apps listed above",
+                         "none": "no specific application is named"}},
     "app_action": {"type": "choice", "instructions": "What should happen to the app?",
                    "criteria": {"open": "open, launch, or start the app itself", "quit": "quit, close, or kill the app",
                                 "none": "the request is about playback, volume, or something inside the app, not opening or quitting it"}},
@@ -62,6 +87,16 @@ QUESTIONS = {
                                   "cancel": "stop or cancel a timer", "none": None}},
     "system_action": {"type": "choice", "instructions": "What should happen to the computer?",
                       "criteria": {"lock": None, "sleep": None, "none": None}},
+    "info_action": {"type": "choice", "instructions": "What local information is being asked for?",
+                    "criteria": {"time": "the current time",
+                                 "date": "today's date or the day of the week",
+                                 "next_event": "the next calendar event, including 'what's next'",
+                                 "today_schedule": "the calendar schedule for today",
+                                 "next_shift": "the next work shift, including R345 or Apple",
+                                 "open_apps": "which applications are currently open",
+                                 "none": None}},
+    "shortcut_action": {"type": "choice", "instructions": "What should happen with a Shortcut?",
+                        "criteria": {"run": "run, start, or do a named Shortcut", "none": None}},
 }
 
 
@@ -98,13 +133,28 @@ def jev(text, questions=None):
 
 
 # --------------------------------------------------------------------------- Mac actions
+# Favourites only. warm_cache pre-renders {app} for these names, not for every app on disk.
 APPS = {"spotify": "Spotify", "slack": "Slack", "chrome": "Google Chrome", "vscode": "Visual Studio Code",
-        "finder": "Finder", "safari": "Safari", "messages": "Messages", "notes": "Notes"}
+        "finder": "Finder", "safari": "Safari", "messages": "Messages", "notes": "Notes",
+        "cursor": "Cursor", "claude": "Claude", "chatgpt": "ChatGPT", "capcut": "CapCut"}
 LEVELS = {"silent": 0, "quiet": 25, "medium": 50, "loud": 75, "max": 100}
 
 
 def osa(script):
+    """Fixed AppleScript only. Spoken text must go through osa_args(), never an f-string."""
     result = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
+    if result.returncode:
+        raise RuntimeError(result.stderr.strip() or "AppleScript failed")
+    return result.stdout.strip()
+
+
+def osa_args(script, *args):
+    """Run AppleScript that reads spoken text from argv.
+
+    The script starts with `on run argv` and uses `item 1 of argv`, `item 2 of argv`, and so on.
+    User-controlled strings are passed as separate arguments so they are not interpolated.
+    """
+    result = subprocess.run(["osascript", "-e", script, *map(str, args)], capture_output=True, text=True)
     if result.returncode:
         raise RuntimeError(result.stderr.strip() or "AppleScript failed")
     return result.stdout.strip()
@@ -124,14 +174,6 @@ def spotify_volume():
     return int(osa('tell application "Spotify" to get sound volume'))
 
 
-def open_app(name, wait=5.0):
-    """Launch and wait until the app reports running, so a follow up action doesn't land too early."""
-    sh("open", "-a", name)
-    t = time.time()
-    while time.time() - t < wait and osa(f'application "{name}" is running') != "true":
-        time.sleep(0.2)
-
-
 def spotify_play(tries=12):
     """Spotify ignores play while it's still loading, so keep asking until it says it's playing."""
     for _ in range(tries):
@@ -142,28 +184,134 @@ def spotify_play(tries=12):
     raise RuntimeError("Spotify never started playing")
 
 
+def _spotify_only(fn):
+    """Run a Spotify AppleScript only when that app is installed."""
+    def run(arg, text):
+        if not commands.app_is_installed("Spotify"):
+            return "Spotify isn't installed."
+        fn(arg, text)
+    return run
+
+
+def _music_app(text):
+    """Apple Music, unless the utterance names Spotify and Spotify is installed."""
+    target = commands.music_target(text or "", commands.app_is_installed("Spotify"))
+    if target is None:
+        return None
+    return "Spotify" if target == "spotify" else "Music"
+
+
+def _now_playing(app):
+    raw = osa(
+        f'tell application "{app}"\n'
+        "if player state is stopped then\n"
+        'return ""\n'
+        "end if\n"
+        "try\n"
+        'return (get name of current track) & " | " & (get artist of current track)\n'
+        "on error\n"
+        'return ""\n'
+        "end try\n"
+        "end tell"
+    )
+    if not raw or "|" not in raw:
+        return f"Nothing is playing on {app}."
+    title, artist = [part.strip() for part in raw.split("|", 1)]
+    if not title:
+        return f"Nothing is playing on {app}."
+    if artist:
+        return f"Playing {title} by {artist}."
+    return f"Playing {title}."
+
+
+def do_media(kind, text):
+    """Play, pause, skip, or ask what's playing. Apple Music unless Spotify was named."""
+    app = _music_app(text)
+    if app is None:
+        return "Spotify isn't installed."
+    try:
+        if kind == "now":
+            return _now_playing(app)
+        if kind == "play" and app == "Spotify":
+            spotify_play()
+        else:
+            verb = {"play": "play", "pause": "pause", "next": "next track", "previous": "previous track"}[kind]
+            osa(f'tell application "{app}" to {verb}')
+    except Exception:
+        return f"I couldn't control {app}."
+    return None
+
+
+def _quiet(fn):
+    """Side effect only. osascript's stdout is not a sentence; REPLIES supplies that."""
+    def run(arg, text):
+        fn(arg, text)
+    return run
+
+
 ACTIONS = {
-    "app_open": lambda a: open_app(APPS[a]),
-    "app_quit": lambda a: osa(f'tell application "{APPS[a]}" to quit'),
-    "volume_up": lambda _: osa(f"set volume output volume {min(100, volume() + 20)}"),
-    "volume_down": lambda _: osa(f"set volume output volume {max(0, volume() - 20)}"),
-    "volume_mute": lambda _: osa("set volume output muted true"),
-    "volume_unmute": lambda _: osa("set volume output muted false"),
-    "volume_set": lambda lvl: osa(f"set volume output volume {LEVELS.get(lvl, 50)}"),
-    "spotify_volume_up": lambda _: osa(f'tell application "Spotify" to set sound volume to {min(100, spotify_volume() + 20)}'),
-    "spotify_volume_down": lambda _: osa(f'tell application "Spotify" to set sound volume to {max(0, spotify_volume() - 20)}'),
-    "spotify_volume_mute": lambda _: osa('tell application "Spotify" to set sound volume to 0'),
-    "spotify_volume_unmute": lambda _: osa('tell application "Spotify" to set sound volume to 50'),
-    "spotify_volume_set": lambda lvl: osa(f'tell application "Spotify" to set sound volume to {LEVELS.get(lvl, 50)}'),
-    "display_dark_on": lambda _: osa('tell application "System Events" to tell appearance preferences to set dark mode to true'),
-    "display_dark_off": lambda _: osa('tell application "System Events" to tell appearance preferences to set dark mode to false'),
-    "display_toggle": lambda _: osa('tell application "System Events" to tell appearance preferences to set dark mode to not dark mode'),
-    "media_play": lambda _: spotify_play(),
-    "media_pause": lambda _: osa('tell application "Spotify" to pause'),
-    "media_next": lambda _: osa('tell application "Spotify" to next track'),
-    "media_previous": lambda _: osa('tell application "Spotify" to previous track'),
-    "system_lock": lambda _: osa('tell application "System Events" to keystroke "q" using {control down, command down}'),
-    "system_sleep": lambda _: sh("pmset", "sleepnow"),
+    "app_open": lambda arg, text: commands.open_any_app(arg, text, APPS),
+    "app_quit": lambda arg, text: commands.quit_any_app(arg, text, APPS),
+    "apps_quit_all": lambda _arg, text: commands.quit_all_apps(),
+    "volume_up": _quiet(lambda _arg, _text: osa(f"set volume output volume {min(100, volume() + 20)}")),
+    "volume_down": _quiet(lambda _arg, _text: osa(f"set volume output volume {max(0, volume() - 20)}")),
+    "volume_mute": _quiet(lambda _arg, _text: osa("set volume output muted true")),
+    "volume_unmute": _quiet(lambda _arg, _text: osa("set volume output muted false")),
+    "volume_set": lambda lvl, text: commands.set_mac_volume(lvl, text),
+    "spotify_volume_up": _spotify_only(lambda _arg, _text: osa(f'tell application "Spotify" to set sound volume to {min(100, spotify_volume() + 20)}')),
+    "spotify_volume_down": _spotify_only(lambda _arg, _text: osa(f'tell application "Spotify" to set sound volume to {max(0, spotify_volume() - 20)}')),
+    "spotify_volume_mute": _spotify_only(lambda _arg, _text: osa('tell application "Spotify" to set sound volume to 0')),
+    "spotify_volume_unmute": _spotify_only(lambda _arg, _text: osa('tell application "Spotify" to set sound volume to 50')),
+    "spotify_volume_set": _spotify_only(lambda lvl, _text: osa(f'tell application "Spotify" to set sound volume to {LEVELS.get(lvl, 50)}')),
+    "display_dark_on": _quiet(lambda _arg, _text: osa('tell application "System Events" to tell appearance preferences to set dark mode to true')),
+    "display_dark_off": _quiet(lambda _arg, _text: osa('tell application "System Events" to tell appearance preferences to set dark mode to false')),
+    "display_toggle": _quiet(lambda _arg, _text: osa('tell application "System Events" to tell appearance preferences to set dark mode to not dark mode')),
+    "media_play": lambda _arg, text: do_media("play", text),
+    "media_pause": lambda _arg, text: do_media("pause", text),
+    "media_next": lambda _arg, text: do_media("next", text),
+    "media_previous": lambda _arg, text: do_media("previous", text),
+    "media_now": lambda _arg, text: do_media("now", text),
+    "youtube_play": lambda _arg, text: commands.play_on_youtube(text),
+    "brightness_up": lambda _arg, _text: commands.change_brightness("up"),
+    "brightness_down": lambda _arg, _text: commands.change_brightness("down"),
+    "screenshot": lambda _arg, _text: commands.take_screenshot(),
+    "empty_trash": lambda _arg, _text: commands.empty_trash(),
+    "show_desktop": lambda _arg, _text: commands.show_desktop(),
+    "folder_open": lambda _arg, text: commands.open_folder_from_text(text),
+    "site_open": lambda _arg, text: commands.open_site_from_text(text),
+    "continue_chatgpt": lambda _arg, _text: commands.continue_chatgpt(),
+    "info_help": lambda _arg, _text: commands.speak_help(),
+    "info_weekend": lambda _arg, _text: commands.speak_working_weekend(),
+    "info_shift_length": lambda _arg, _text: commands.speak_shift_length(),
+    "info_brea": lambda _arg, _text: commands.speak_brea_start(),
+    "info_school": lambda _arg, _text: commands.speak_school_due(),
+    "info_rent": lambda _arg, _text: commands.speak_rent(),
+    "info_bills": lambda _arg, _text: commands.speak_bills(),
+    "info_payday": lambda _arg, _text: commands.speak_payday(),
+    "info_battery": lambda _arg, _text: commands.speak_battery(),
+    "ihss_hours": lambda _arg, _text: commands.speak_ihss_period(),
+    "ihss_remind": lambda _arg, _text: commands.remind_timesheet(),
+    "zoe_academy": lambda _arg, _text: commands.open_princess_academy(),
+    "zoe_timer": lambda _arg, text: _start_zoe_timer(text),
+    "system_lock": _quiet(lambda _arg, _text: osa('tell application "System Events" to keystroke "q" using {control down, command down}')),
+    "system_sleep": _quiet(lambda _arg, _text: sh("pmset", "sleepnow")),
+    "info_time": lambda _arg, _text: commands.speak_time(),
+    "info_date": lambda _arg, _text: commands.speak_date(),
+    "info_next_event": lambda _arg, _text: commands.speak_next_event(),
+    "info_today_schedule": lambda _arg, _text: commands.speak_today_schedule(),
+    "info_next_shift": lambda _arg, _text: commands.speak_next_shift(),
+    "info_open_apps": lambda _arg, _text: commands.speak_open_apps(),
+    "info_weather": lambda _arg, _text: commands.speak_weather(),
+    "info_today": lambda _arg, _text: commands.speak_today(),
+    "info_brief": lambda _arg, _text: commands.speak_brief(),
+    "info_due": lambda _arg, _text: commands.speak_due(),
+    "info_zoe": lambda _arg, _text: commands.speak_zoe_tomorrow(),
+    "info_messages": lambda _arg, text: commands.speak_my_love_messages(),
+    "note_take": lambda _arg, text: commands.take_note(text),
+    "focus_on": lambda _arg, text: _start_focus(text),
+    "ihss_log": lambda _arg, text: commands.log_ihss(text),
+    "case_status": lambda _arg, _text: commands.open_case_status(),
+    "shortcut_run": lambda _arg, text: commands.run_named_shortcut(text),
 }
 
 # --------------------------------------------------------------------------- Scripted replies with Fish tags
@@ -206,10 +354,14 @@ REPLIES = {
     "timer_done": ["[cheerful] Time's up!", "[chuckling] Ding ding, time's up."],
     "reminder_done": ["[cheerful] Hey, just a reminder: {label}.", "Reminder: {label}."],
     "unsupported": ["[chuckling] I know what you want, I just can't do that one yet."],
+    "apps_quit_all": ["Quit every app except Finder and Hey Jev? Say yes to quit them."],
+    "confirm_no": ["Okay, I won't.", "Cancelled."],
+    "quit_all_alone": ["Quit all has to be on its own. Say it by itself, then yes to confirm."],
+    "empty_trash": ["Empty the trash? Say yes to confirm."],
 }
 
 
-TARGETS = ("app", "volume", "display", "media", "system", "timer")
+TARGETS = ("app", "volume", "display", "media", "system", "timer", "info", "shortcut")
 SPEAK_FIRST = {"volume_mute", "system_lock", "system_sleep"}
 
 
@@ -281,12 +433,21 @@ def say_duration(secs):
 TIMERS, TIMERS_LOCK = [], threading.Lock()
 
 
-def add_timer(secs, label=None):
-    t = {"end": time.time() + secs, "secs": secs, "label": label, "line": None}
+def add_timer(secs, label=None, focus=False):
+    t = {"end": time.time() + secs, "secs": secs, "label": label, "line": None, "focus": bool(focus)}
     with TIMERS_LOCK:
         TIMERS.append(t)
         TIMERS.sort(key=lambda x: x["end"])
     return t
+
+
+def local_time_context():
+    """Date and time for cloud prompts. Calendar events and open apps stay off this string."""
+    now = datetime.now().astimezone()
+    hour = int(now.strftime("%I"))
+    tz = now.tzname() or "local time"
+    stamp = f"{now:%A, %B} {now.day}, {now.year}, {hour}:{now:%M %p}"
+    return f"Current local date and time: {stamp} ({tz}). The user is on a Mac. "
 
 
 def prepare_reminder(t, said):
@@ -296,6 +457,7 @@ def prepare_reminder(t, said):
                           headers={"Authorization": f"Bearer {OR_KEY}"},
                           json={"model": LLM_MODEL, "max_tokens": 120, "response_format": {"type": "json_object"},
                                 "messages": [{"role": "system", "content":
+                                    local_time_context() +
                                     "The user set a reminder with a voice assistant. Reply with JSON only: "
                                     '{"label": "2 to 4 word name for the task, e.g. Call Sam", '
                                     '"alert": "one short friendly sentence the assistant says out loud when the time is up, '
@@ -368,7 +530,28 @@ def start_timer_loop(on_done):
     threading.Thread(target=loop, daemon=True).start()
 
 
+def _start_zoe_timer(text):
+    """A local timer labeled for Zoe. This does not ask the LLM to write the alert."""
+    secs = parse_duration(text)
+    if not secs:
+        return "How many minutes should I set for Zoe?"
+    add_timer(secs, label="Zoe")
+    return f"Timer for Zoe is set for {say_duration(secs)}."
+
+
+def _start_focus(text):
+    """Run the Jev Focus On shortcut and arm the off-timer. Default is 25 minutes."""
+    secs = parse_duration(text) or commands.FOCUS_DEFAULT_SECONDS
+
+    def arm(seconds):
+        add_timer(seconds, label="Focus", focus=True)
+
+    return commands.begin_focus(secs, arm)
+
+
 def timer_done_line(t):
+    if t.get("focus"):
+        return commands.finish_focus()
     if t["line"]:
         return t["line"]
     return say_line("reminder_done", label=t["label"]) if t["label"] else say_line("timer_done")
@@ -383,7 +566,8 @@ def ask_llm(text):
     r = requests.post("https://openrouter.ai/api/v1/chat/completions",
                       headers={"Authorization": f"Bearer {OR_KEY}"},
                       json={"model": LLM_MODEL, "max_tokens": 80, "usage": {"include": True},
-                            "messages": [{"role": "system", "content": "You are a voice assistant. Answer in one short spoken sentence, no markdown. "
+                            "messages": [{"role": "system", "content": local_time_context() +
+                                          "You are a voice assistant. Answer in one short spoken sentence, no markdown. "
                                           "You may start with exactly one tag from: [chuckling] [laughing] [sighing] [cheerful], or none."},
                                          {"role": "user", "content": text}]}, timeout=30)
     r.raise_for_status()
@@ -392,18 +576,36 @@ def ask_llm(text):
 
 
 # --------------------------------------------------------------------------- Decision
+def _picked(key, arg=None, reply=None, fmt=None, conf=0.95):
+    return (conf, key, arg, reply or key, fmt or {})
+
+
 def sub_action(ans, target):
     """(conf, action_key, arg, reply_key, fmt) for a target, or None if Jev didn't pick anything confident."""
     if target == "app":
         (app, ac), (action, aac) = ans["app"], ans["app_action"]
-        if app == "none" or action == "none" or min(ac, aac) < GATE:
+        if action not in ("open", "quit") or aac < GATE:
             return None
-        return (min(ac, aac), f"app_{action}", app, f"app_{action}", {"app": APPS[app]})
+        if app not in APPS:
+            # "other" / "none": the real name is parsed from the transcript, not from this enum.
+            app, conf, display = "other", aac, ""
+        elif ac < GATE:
+            return None
+        else:
+            conf, display = min(ac, aac), APPS[app]
+        return (conf, f"app_{action}", app, f"app_{action}", {"app": display or "that app"})
     key = {"volume": "volume_action", "display": "display_action", "media": "media_action",
-           "system": "system_action", "timer": "timer_action"}[target]
+           "system": "system_action", "timer": "timer_action", "info": "info_action",
+           "shortcut": "shortcut_action"}.get(target)
+    if key is None or key not in ans:
+        return None
     action, conf = ans[key]
     if action == "none" or conf < GATE:
         return None
+    if target == "info":
+        return (conf, f"info_{action}", None, f"info_{action}", {})
+    if target == "shortcut":
+        return (conf, "shortcut_run", None, "shortcut_run", {}) if action == "run" else None
     lvl = ans["volume_level"][0] if target == "volume" else None
     prefix = target
     if target == "volume":
@@ -414,20 +616,56 @@ def sub_action(ans, target):
     return (conf, f"{prefix}_{action}", lvl, f"{prefix}_{action}", {"level": lvl})
 
 
-def decide(ans):
-    """Read the Jev fan-out. Returns ("actions", [...]), ("reply", key), ("llm", None) or ("clarify", None)."""
+def decide(ans, text=""):
+    """Read the Jev fan-out. Returns ("actions", [...]), ("reply", key), ("llm", None) or ("clarify", None).
+
+    handle() calls decide(None, text) first. route_before_api() then picks weather,
+    the brief, messages, notes, and the other local phrases before any API or LLM
+    call. None means nothing local matched, so the caller may ask Jev.
+    Quit-all is never one half of a two-part command.
+    """
+    if ans is None:
+        local = commands.route_before_api(text)
+        if local:
+            return ("actions", [_picked(local)])
+        return None
+    # A message read must not fall through to Haiku even if the early call was skipped.
+    if commands.is_private_message_request(text):
+        return ("actions", [_picked("info_messages")])
     cat, cconf = ans["category"]
-    if ans["target"][0] == "timer" and ans["target"][1] >= GATE and not ans["compound"][0]:
+    # compound[0] is the yes/no. A weak yes still blocks the single-action fast paths,
+    # matching the original timer check; only a confident yes is actually split.
+    raw_compound = bool(ans["compound"][0])
+    compound = raw_compound and ans["compound"][1] >= GATE
+    if commands.is_quit_all(text):
+        if commands.quit_all_is_compound(text, raw_compound):
+            return ("reply", "quit_all_alone")
+        return ("actions", [_picked("apps_quit_all")])
+    # Clear local phrases, before the timer route and before Haiku.
+    if not raw_compound:
+        local = commands.preview_action(text)
+        if local:
+            return ("actions", [_picked(local)])
+    if ans["target"][0] == "timer" and ans["target"][1] >= GATE and not raw_compound:
         t = sub_action(ans, "timer")  # "how long is left?" reads like a question but it's a timer command
         if t:
             return ("actions", [t])
+    # Paraphrases Jev marked as info ("got the time?", "anything on today?") also stay local.
+    if not raw_compound and ans["target"][0] == "info" and ans["target"][1] >= 0.5:
+        info = sub_action(ans, "info")
+        if info:
+            return ("actions", [info])
+    if not raw_compound and ans["target"][0] == "shortcut" and ans["target"][1] >= 0.5:
+        shortcut = sub_action(ans, "shortcut")
+        if shortcut:
+            return ("actions", [shortcut])
     if cat == "chit_chat" and cconf >= GATE:
         return ("reply", "chit_chat")
     if cat == "information_request" and cconf >= GATE:
         return ("llm", None)
     if cat == "unclear" and cconf >= GATE:
         return ("clarify", None)
-    if ans["compound"][0] and ans["compound"][1] >= GATE:
+    if compound:
         return ("split", None)
     a = pick_action(ans)
     if a:
@@ -486,7 +724,11 @@ def speak(text):
 
 
 def all_scripted_lines():
-    """Every fixed reply with placeholders expanded, so the whole set can be pre-rendered."""
+    """Every fixed reply with placeholders expanded, so the whole set can be pre-rendered.
+
+    {app} expands only over APPS. Lines for any other installed app, and live answers
+    such as the time or a calendar title, are generated when they are spoken.
+    """
     for key, lines in REPLIES.items():
         for line in lines:
             if "{app}" in line:
@@ -519,22 +761,74 @@ def emit(notify, state, detail=""):
         notify(state, detail)
 
 
-def handle(text, stt_ms=None, notify=None):
+def _speak_result(action, result, reply_key, fmt):
+    """A string is spoken as-is. A dict fills the scripted reply (used for {app})."""
+    if isinstance(result, str):
+        return result
+    merged = {**fmt, **result} if isinstance(result, dict) else fmt
+    if reply_key in REPLIES:
+        return say_line(reply_key, **merged)
+    return say_line("unsupported")
+
+
+def _finish_confirmed(notify):
+    """Run the action that was armed by a previous turn. The yes was already checked locally."""
+    action, arg, source, reply_key, fmt = commands.take_confirmation()
+    print(f"  confirm: yes -> {action} (local, no api)")
+    try:
+        emit(notify, "Doing it", source or "")
+        result = ACTIONS[action](arg, source or "")
+        print(f"  action: {action} {arg or ''}")
+        line = _speak_result(action, result, reply_key, fmt)
+    except Exception as e:
+        print(f"  action failed: {action} {e}")
+        line = say_line("unsupported")
+    say(line, notify)
+    emit(notify, "Ready", line)
+
+
+def handle(text, stt_ms=None, notify=None, reply_sink=None):
     global misses
     print(f"\n> heard: {text!r}" + (f"  (stt {stt_ms}ms)" if stt_ms is not None else ""))
     if not text.strip():
         emit(notify, "Ready", "Didn't catch anything")
         return
+    # A pending yes/no is decided here, before Jev or any other request.
+    pending = commands.confirmation_status(text)
+    if pending == "yes":
+        misses = 0
+        _finish_confirmed(notify)
+        return
+    if pending == "no":
+        commands.clear_confirmation()
+        misses = 0
+        print("  confirm: no (local, no api)")
+        line = say_line("confirm_no")
+        say(line, notify)
+        emit(notify, "Ready", line)
+        return
+    if pending in ("expired", "other"):
+        print(f"  confirm: {pending}, handling this as a new request")
+    # Local phrases, including message reads, are chosen before TypeSafe or Haiku.
+    early = decide(None, text)
+    if early is None and commands.is_private_message_request(text):
+        early = ("actions", [_picked("info_messages")])
+    if early is not None:
+        misses = 0
+        return _run_local(early[1], text, notify, reply_sink)
     emit(notify, "Thinking", text)
     ans, jev_ms, cost = jev(text)
     for k, (v, c) in ans.items():
         flag = "" if c >= GATE else "  <- below gate"
         print(f"  {k:15} {str(v):22} {c:.2f}{flag}")
     print(f"  jev {jev_ms}ms  ${cost:.6f}")
-    kind, payload = decide(ans)
+    kind, payload = decide(ans, text)
     if kind == "split":
-        payload = split_actions(text, ans)
+        payload = commands.isolate_confirmations(split_actions(text, ans))
         kind = "actions" if payload else "clarify"
+    elif kind == "actions":
+        payload = commands.isolate_confirmations(payload)
+    armed = False
     if kind == "clarify":
         misses += 1
         line = say_line("give_up") if misses >= 2 else say_line("clarify")
@@ -554,14 +848,32 @@ def handle(text, stt_ms=None, notify=None):
             if speak_first:
                 line = default_line()
                 say(line, notify)
-            done, timer_reply = 0, None
-            for _, action, arg, _, _ in payload:
+            done, timer_reply, dynamic, fmt_override, private_lines = 0, None, [], {}, []
+            for _, action, arg, reply_key, fmt in payload:
+                if action in commands.CONFIRM:
+                    # Ask first. A second action in the same utterance was already dropped.
+                    if len(payload) > 1:
+                        dynamic = [say_line("quit_all_alone")]
+                        done += 1
+                        break
+                    commands.arm_confirmation(action, arg, text, reply_key, fmt)
+                    dynamic = [say_line(reply_key) if reply_key in REPLIES else "Say yes to confirm."]
+                    armed = True
+                    done += 1
+                    print(f"  confirm: waiting for yes/no on {action}")
+                    break
                 try:
                     emit(notify, "Doing it", text)
                     if action.startswith("timer_"):
                         timer_reply = run_timer(action, text)
                     else:
-                        ACTIONS[action](arg)
+                        result = ACTIONS[action](arg, text)
+                        if isinstance(result, commands.LocalSpeech):
+                            private_lines.append(result.text)
+                        elif isinstance(result, str):
+                            dynamic.append(result)
+                        elif isinstance(result, dict):
+                            fmt_override.update(result)
                     print(f"  action: {action} {arg or ''}")
                     done += 1
                 except Exception as e:
@@ -569,14 +881,30 @@ def handle(text, stt_ms=None, notify=None):
             if speak_first:
                 emit(notify, "Ready", line)
                 return
+            if private_lines:
+                # Message text uses say, even on this fallback path, and is not given to Fish.
+                _deliver(" ".join(private_lines), notify, reply_sink, private=True)
+                return
             if not done:
                 line = say_line("unsupported")
+            elif dynamic and len(payload) == 1:
+                line = dynamic[0]
             elif timer_reply and len(payload) == 1:
                 line = say_line(timer_reply[0], **timer_reply[1])
+            elif len(payload) == 1 and payload[0][3] in REPLIES:
+                line = say_line(payload[0][3], **{**payload[0][4], **fmt_override})
+            elif dynamic:
+                line = " ".join(dynamic + [say_line("compound_done")])
+            elif len(payload) == 1:
+                line = say_line("unsupported")
             else:
                 line = default_line()
     say(line, notify)
     emit(notify, "Ready", line)
+    if armed:
+        # The 10 seconds start after the prompt, so speaking it doesn't eat the window.
+        commands.refresh_confirmation()
+        return "expect_reply"
 
 
 def say(line, notify):
@@ -584,6 +912,68 @@ def say(line, notify):
     emit(notify, "Speaking", line)
     tts_ms = speak(line)
     print(f"  fish {'cached' if tts_ms == 0 else str(tts_ms) + 'ms'}")
+
+
+def say_local(text, notify):
+    """macOS say only. The words are not printed and are not sent to Fish."""
+    print("  say-local: (kept on this Mac)")
+    emit(notify, "Speaking", "Spoken on this Mac only")
+    try:
+        subprocess.run(["/usr/bin/say", text or ""], check=False)
+    except Exception as exc:
+        print(f"  say-local failed: {type(exc).__name__}")
+
+
+def _deliver(line, notify, reply_sink=None, private=False):
+    """Play a line. Private lines stay out of reply_sink so they cannot be written to iCloud."""
+    if private:
+        say_local(line, notify)
+        emit(notify, "Ready", "Spoken on this Mac only")
+        return
+    if reply_sink is not None:
+        reply_sink.append(line)
+    say(line, notify)
+    emit(notify, "Ready", line)
+
+
+def _run_local(payload, text, notify, reply_sink):
+    """Run one command that decide() already chose with no network call."""
+    if not payload:
+        return None
+    _conf, action, arg, reply_key, fmt = payload[0]
+    if action in commands.CONFIRM:
+        commands.arm_confirmation(action, arg, text, reply_key, fmt)
+        prompt = say_line(reply_key) if reply_key in REPLIES else "Say yes to confirm."
+        print(f"  confirm: waiting for yes/no on {action} (local)")
+        _deliver(prompt, notify, reply_sink)
+        commands.refresh_confirmation()
+        return "expect_reply"
+    private = action == "info_messages"
+    if action in SPEAK_FIRST:
+        line = say_line(reply_key, **fmt) if reply_key in REPLIES else "Okay."
+        _deliver(line, notify, reply_sink)
+        try:
+            emit(notify, "Doing it", text)
+            ACTIONS[action](arg, text)
+            print(f"  local: {action} (no api, no llm)")
+        except Exception as exc:
+            print(f"  action failed: {action} {exc}")
+        return None
+    print(f"  local: {action} (no api, no llm)")
+    try:
+        emit(notify, "Doing it", "On this Mac" if private else text)
+        result = ACTIONS[action](arg, text)
+    except Exception as exc:
+        print(f"  action failed: {action} {type(exc).__name__ if private else exc}")
+        if private:
+            _deliver("I couldn't read those messages.", notify, reply_sink, private=True)
+        else:
+            _deliver(say_line("unsupported"), notify, reply_sink)
+        return
+    if isinstance(result, commands.LocalSpeech):
+        _deliver(result.text, notify, reply_sink, private=True)
+        return
+    _deliver(_speak_result(action, result, reply_key, fmt), notify, reply_sink)
 
 
 # --------------------------------------------------------------------------- Mic + push to talk
@@ -658,7 +1048,11 @@ def run_voice_assistant(notify=None, controls=None, mode="ptt"):
         with busy:
             rec.paused = True  # don't hear her own reply
             try:
-                handle(text, stt_ms, notify)
+                result = handle(text, stt_ms, notify)
+                # Wake mode: she just asked for a yes/no, so the next phrase doesn't need "Hey Jev".
+                if result == "expect_reply" and rec.wake:
+                    armed_until[0] = time.time() + commands.CONFIRM_SECONDS
+                    emit(notify, "Listening", "Say yes to confirm, or no to cancel")
             except Exception as exc:
                 print(f"\n  turn failed: {exc}")
                 emit(notify, "Something went wrong", str(exc))
@@ -745,6 +1139,22 @@ def run_voice_assistant(notify=None, controls=None, mode="ptt"):
         emit(notify, "Ready", ready_text(rec.wake))
 
     start_timer_loop(timer_done)
+
+    def bridge_turn(command):
+        """Run one allowlisted phone command on the same turn lock as the mic."""
+        spoken = []
+        with busy:
+            rec.paused = True
+            try:
+                handle(command, reply_sink=spoken)
+            except Exception as exc:
+                print(f"  bridge turn: {type(exc).__name__}")
+            finally:
+                time.sleep(0.1)
+                rec.paused = False
+        return spoken[-1] if spoken else ""
+
+    commands.start_bridge_thread(bridge_turn)
     threading.Thread(target=warm_cache, daemon=True).start()
     threading.Thread(target=wake_loop, daemon=True).start()
     set_mode(mode)
@@ -779,7 +1189,19 @@ def main():
     ap.add_argument("--text", help="skip the mic, run one turn on this transcript")
     ap.add_argument("--ui", action="store_true", help="show the native floating status window")
     ap.add_argument("--wake", action="store_true", help="always listening, say \"Hey Jev\" instead of holding Option")
+    ap.add_argument("--bridge-secret", action="store_true",
+                    help="create JEV_BRIDGE_SECRET in the Keychain and print it once")
     args = ap.parse_args()
+    if args.bridge_secret:
+        import secrets
+        from secrets_store import save_secret
+        value = secrets.token_hex(32)
+        try:
+            save_secret("JEV_BRIDGE_SECRET", value)
+        except Exception as exc:
+            sys.exit(f"could not save the bridge secret: {exc}")
+        print(value)
+        return
     if args.ui:
         from assistant_ui import run_app
         run_app()
