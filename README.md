@@ -175,7 +175,7 @@ python3 -m venv .venv
 open "dist/Hey Jev - Fish Audio.app"
 ```
 
-The py2app line builds the app bundle in alias mode, so it runs the code straight from this folder. Build it once, and again if you move the folder or if `setup.py` changes. Calendar access is one of those `setup.py` changes: rebuild, then quit and reopen, or macOS never shows the new permission prompt. `py2app` itself is not in the runtime requirements; install it with `.venv/bin/pip install py2app` when you build.
+The py2app line builds the app bundle in alias mode, so it runs the code straight from this folder. Build it once, and again if you move the folder or if `setup.py` changes. Calendar access is one of those `setup.py` changes: rebuild, then quit and reopen, or macOS never shows the new permission prompt. `py2app` itself is not in the runtime requirements; install it with `.venv/bin/pip install 'py2app~=0.28.9'` when you build. `0.28.10` requires Python 3.10. `requirements.txt` uses compatible-release pins (`~=`) chosen for this Python 3.9 venv. After pulling a pin change, reinstall with `.venv/bin/pip install -r requirements.txt`.
 
 First launch:
 
