@@ -276,7 +276,7 @@ Below 0.65 confidence it asks you to say it again, twice in a row and it gives u
 
 - `siri.py` all the logic: questions, actions, replies, Whisper, Fish, LLM fallback
 - `commands/` local commands, split by area. `commands/config.py` holds the maps you edit (`KNOWN_APPS`, `APP_NICKNAMES`, `SITE_CONFIG`, `SHIFT_TITLE_PATTERNS`, `MY_LOVE_HANDLES`, `PRINCESS_ACADEMY_URL`, `SHOPIFY_ORDERS_URL`). The other modules cover time and date, calendar and shifts, money, notes and the due list, messages, media, Mac controls, the verified Jev shortcuts folder, yes/no confirmation, and the iPhone bridge. `import commands` is unchanged, so `siri.py` and the alias build keep the same entry points.
-- `tests/test_round2.py` routing tests and the shortcut-folder safety check. They mock `shortcuts` and `osascript`, so they run without macOS: `python3 -m unittest tests.test_round2`
+- `tests/` routing tests and the shortcut-folder safety check. They mock `shortcuts` and `osascript`, so they run without macOS: `python3 -m unittest discover -s tests` or `python3 -m pytest`. GitHub Actions runs pytest on Python 3.9 and 3.12 for every push and pull request. The workflow does not install `requirements.txt`, because those packages include macOS-only builds and the tests do not import them.
 - `assistant_ui.py` the status window, mode switch and Keys panel
 - `secrets_store.py` Keychain read / write
 - `app.py` and `setup.py` the app bundle entry point and the py2app config, output lands in `dist/`
