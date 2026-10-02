@@ -119,7 +119,7 @@ The secret is only in the Mac Keychain, service `com.jevsiri.keys`, account `JEV
 .venv/bin/python siri.py --bridge-secret
 ```
 
-That prints the secret once. Copy it into the iPhone Shortcut and do not commit it. A file is rejected when the signature is wrong, when `ts` is more than 120 seconds from the Mac's clock, or when that nonce was already used. The inbox file is deleted after it is handled. Quit-all, reading messages, and anything that needs a spoken confirmation are refused. Allowed phrases are the local ones: time, date, what's today, weather, calendar, shift, open apps, brief me, due, Zoe, take a note, focus, IHSS hours, and case status.
+That prints the secret once. Copy it into the iPhone Shortcut and do not commit it. A file is rejected when the signature is wrong, when `ts` is more than 120 seconds from the Mac's clock, when that nonce was already used, or when `cmd` is longer than 2000 characters (`BRIDGE_MAX_CMD`). The inbox file is deleted after it is handled. Quit-all, reading messages (including My Love), and anything that needs a spoken confirmation are refused. Allowed phrases are the local ones: time, date, what's today, weather, calendar, shift, open apps, brief me, due, Zoe, take a note, focus, IHSS hours, and case status.
 
 ### iPhone Shortcut
 
@@ -276,7 +276,7 @@ Below 0.65 confidence it asks you to say it again, twice in a row and it gives u
 
 - `siri.py` all the logic: questions, actions, replies, Whisper, Fish, LLM fallback
 - `commands/` local commands, split by area. `commands/config.py` holds the maps you edit (`KNOWN_APPS`, `APP_NICKNAMES`, `SITE_CONFIG`, `SHIFT_TITLE_PATTERNS`, `MY_LOVE_HANDLES`, `PRINCESS_ACADEMY_URL`, `SHOPIFY_ORDERS_URL`). The other modules cover time and date, calendar and shifts, money, notes and the due list, messages, media, Mac controls, the verified Jev shortcuts folder, yes/no confirmation, and the iPhone bridge. `import commands` is unchanged, so `siri.py` and the alias build keep the same entry points.
-- `tests/` routing tests and the shortcut-folder safety check. They mock `shortcuts` and `osascript`, so they run without macOS: `python3 -m unittest discover -s tests` or `python3 -m pytest`. GitHub Actions runs pytest on Python 3.9 and 3.12 for every push and pull request. The workflow does not install `requirements.txt`, because those packages include macOS-only builds and the tests do not import them.
+- `tests/` routing tests, the shortcut-folder safety check, and iPhone bridge validation. They mock `shortcuts` and `osascript`, so they run without macOS: `python3 -m unittest discover -s tests` or `python3 -m pytest`. GitHub Actions runs pytest on Python 3.9 and 3.12 for every push and pull request. The workflow does not install `requirements.txt`, because those packages include macOS-only builds and the tests do not import them.
 - `assistant_ui.py` the status window, mode switch and Keys panel
 - `secrets_store.py` Keychain read / write
 - `app.py` and `setup.py` the app bundle entry point and the py2app config, output lands in `dist/`

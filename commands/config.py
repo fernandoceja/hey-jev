@@ -73,6 +73,8 @@ BRIDGE_INBOX = os.path.expanduser("~/Library/Mobile Documents/com~apple~CloudDoc
 BRIDGE_OUTBOX = os.path.expanduser("~/Library/Mobile Documents/com~apple~CloudDocs/Jev/outbox")
 BRIDGE_SECRET_ACCOUNT = "JEV_BRIDGE_SECRET"
 BRIDGE_MAX_AGE = 120
+# Spoken command length. Longer inbox files are rejected before they run.
+BRIDGE_MAX_CMD = 2000
 BRIDGE_POLL_SECONDS = 2
 NONCE_LOG = os.path.expanduser("~/Library/Application Support/Hey Jev/bridge-nonces.json")
 NONCE_LIMIT = 200

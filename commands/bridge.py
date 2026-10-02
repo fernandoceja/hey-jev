@@ -6,7 +6,7 @@ import os
 import re
 import threading
 import time
-from .config import BRIDGE_ALLOW, BRIDGE_INBOX, BRIDGE_MAX_AGE, BRIDGE_OUTBOX, BRIDGE_POLL_SECONDS, BRIDGE_SECRET_ACCOUNT, CONFIRM, NONCE_LIMIT, NONCE_LOG, NONCE_RE
+from .config import BRIDGE_ALLOW, BRIDGE_INBOX, BRIDGE_MAX_AGE, BRIDGE_MAX_CMD, BRIDGE_OUTBOX, BRIDGE_POLL_SECONDS, BRIDGE_SECRET_ACCOUNT, CONFIRM, NONCE_LIMIT, NONCE_LOG, NONCE_RE
 from .routing import route_before_api
 
 # --------------------------------------------------------------------------- iPhone bridge (iCloud files only, no listener)
@@ -146,7 +146,7 @@ def _process_bridge_file(path, run_text):
         _delete_inbox(path)
         return
     _remember_nonce(nonce)
-    if len(cmd) > 2000:
+    if len(cmd) > BRIDGE_MAX_CMD:
         _write_outbox(nonce, False, "That command is too long.")
         _delete_inbox(path)
         return
