@@ -8,12 +8,15 @@ load_dotenv()  # so a .env works from the app bundle too, not just the terminal
 
 
 SERVICE = "com.jevsiri.keys"
-# Asked for in the Keys panel. The app will not start the mic until these exist.
-KEY_NAMES = ("TYPESAFE_API_KEY", "FISH_AUDIO_API_KEY", "OPENROUTER_API_KEY")
+# Asked for in the Keys panel. The app will not start the mic until the required ones exist.
+KEY_NAMES = ("TYPESAFE_API_KEY", "FISH_AUDIO_API_KEY", "OPENROUTER_API_KEY", "OPENAI_API_KEY")
+# Dictation only. Listed in KEY_NAMES so the Keys panel can save it, never required to launch.
+# An OpenAI key sends dictation straight to OpenAI instead of through OpenRouter.
+OPTIONAL = ("OPENAI_API_KEY",)
 # Stored in the same Keychain service, but never required to launch.
 # JEV_BRIDGE_SECRET signs iCloud inbox files. GOOGLE_OAUTH_TOKEN is the
 # optional Gmail hook for the morning brief (unused unless a token is saved).
-OPTIONAL_KEY_NAMES = ("JEV_BRIDGE_SECRET", "GOOGLE_OAUTH_TOKEN")
+OPTIONAL_KEY_NAMES = ("JEV_BRIDGE_SECRET", "GOOGLE_OAUTH_TOKEN", "OPENAI_API_KEY")
 
 
 def keychain_value(name):
@@ -45,5 +48,5 @@ def save_secret(name, value):
 
 
 def missing_secrets():
-    return [name for name in KEY_NAMES if not get_secret(name)]
+    return [name for name in KEY_NAMES if name not in OPTIONAL and not get_secret(name)]
 

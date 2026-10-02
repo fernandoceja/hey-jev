@@ -10,11 +10,13 @@ from dotenv import load_dotenv
 from pynput import keyboard
 import commands
 from secrets_store import get_secret
+from dictation import Dictation, START as DICTATE_START, paste
 
 load_dotenv()
 TS_KEY = get_secret("TYPESAFE_API_KEY")
 FISH_KEY = get_secret("FISH_AUDIO_API_KEY")
 OR_KEY = get_secret("OPENROUTER_API_KEY")
+OA_KEY = get_secret("OPENAI_API_KEY")
 VOICE_ID = "9a9cf47702da476aa4629e2506d4a857"
 PTT_KEY = keyboard.Key.alt_r
 SAMPLE_RATE = 16000
@@ -32,20 +34,37 @@ COMMAND_PROMPT = (
     "When's my next shift. Am I working this weekend. How long until payday. "
     "Open settings. Open business email. Run shortcut Leaving for work. What can you do."
 )
-WAKE_PROMPT = (
-    "Hey Jev, open CapCut. Hey Jev, open ChatGPT. Hey Jev, what time is it. "
-    "Hey Jev, what's the weather. Hey Jev, brief me. Hey Jev, what's my schedule today. Hey Jev, pause the music."
-)
-# Whisper often hears "Jev" as Jeff or Jeb, so accept the close ones
-WAKE = re.compile(r"^\W*(?:hey|hi|hay|okay|ok|a)\W+(?:jev|jevs|jeff|jeffs|jef|jeb|jab|chev|jeve|jav)\b\W*", re.I)
-WAKE_WINDOW = 6.0
+# No prompt in wake mode: on noise Whisper echoes the prompt back, which looked like a real "Hey Jev"
+WAKE_PROMPT = None
+NO_SPEECH_MAX = 0.6  # Whisper's own "this probably isn't speech" score, above this the segment is dropped
+WAKE_CHIME = "/System/Library/Sounds/Tink.aiff"
+SAVE_CLIPS = os.path.expanduser("~/Library/Logs/Hey Jev clips")  # set to None to stop saving ignored phrases
+# Whisper often hears "Jev" as Jeff or Jeb, so accept the close ones; can be mid-phrase since calls run sentences together
+NAMES = "jev|jevs|jeff|jeffs|jef|jeb|jab|chev|jeve|jav"
+# A soft "hey" can get swallowed, so a bare "Jeff," at the very start counts too, but only with the comma ("Jeff said..." doesn't)
+WAKE = re.compile(rf"(?:(?:^\W*a|\b(?:hey|hi|hay|okay|ok))\W+(?:{NAMES})\b|^\W*(?:{NAMES})\s*,)\W*", re.I)
+WAKE_WINDOW = 10.0
+DICTATE_CHIME = "/System/Library/Sounds/Pop.aiff"
+MIC_LEVELS = collections.deque(maxlen=40)  # mic loudness while dictating, the bubble draws it
+
+# Add an app with a line in apps.json: "name": "App Name", or {"app", "say", "heard_as"} for extras
+with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "apps.json")) as f:
+    _apps = json.load(f)
+APPS = {k: v if isinstance(v, str) else v["app"] for k, v in _apps.items()}
+APP_SAY = {k: v if isinstance(v, str) else v.get("say", v["app"]) for k, v in _apps.items()}
+# "heard_as" in apps.json: things Whisper writes instead of the app name, swapped back before Jev sees the text
+HEARD_AS = [(re.compile(r"\b(?:" + "|".join(map(re.escape, sorted(v["heard_as"], key=len, reverse=True))) + r")\b", re.I), APP_SAY[k])
+            for k, v in _apps.items() if isinstance(v, dict) and v.get("heard_as")]
+BROWSERS = ("chrome", "brave", "safari")
+DEFAULT_BROWSER = "chrome"  # used for "new tab" when no browser is named or in front
 
 
 def reload_keys():
-    global TS_KEY, FISH_KEY, OR_KEY
+    global TS_KEY, FISH_KEY, OR_KEY, OA_KEY
     TS_KEY = get_secret("TYPESAFE_API_KEY")
     FISH_KEY = get_secret("FISH_AUDIO_API_KEY")
     OR_KEY = get_secret("OPENROUTER_API_KEY")
+    OA_KEY = get_secret("OPENAI_API_KEY")
 
 # --------------------------------------------------------------------------- Jev
 QUESTIONS = {
@@ -60,16 +79,20 @@ QUESTIONS = {
                             "media": "music playback", "system": "locking or sleeping the computer",
                             "timer": "setting, checking, or cancelling a timer or reminder",
                             "info": "the time, the date, the calendar, a shift, or which apps are open",
-                            "shortcut": "running a named Apple Shortcut"}},
+                            "shortcut": "running a named Apple Shortcut",
+                            "browser": "opening a website or a new browser tab"}},
     "app": {"type": "choice", "instructions": "Which app, if any, is named?",
-            "criteria": {"spotify": None, "slack": None, "chrome": None, "vscode": None, "finder": None,
-                         "safari": None, "messages": None, "notes": None, "cursor": None, "claude": None,
-                         "chatgpt": None, "capcut": None,
+            "criteria": {**{k: None for k in APPS},
                          "other": "an application is named that is not one of the apps listed above",
                          "none": "no specific application is named"}},
-    "app_action": {"type": "choice", "instructions": "What should happen to the app?",
+    "app_action": {"type": "choice", "instructions": "What should happen to the app? Every name in the app list is an application, so open or close with one of those names is about the app itself.",
                    "criteria": {"open": "open, launch, or start the app itself", "quit": "quit, close, or kill the app",
-                                "none": "the request is about playback, volume, or something inside the app, not opening or quitting it"}},
+                                "hide": "hide the app", "minimise": "minimise the app's windows",
+                                "focus": "switch to, show, or bring the app to the front",
+                                "none": "the request is about playback, volume, a website, a tab, or something inside the app"}},
+    "browser_action": {"type": "choice", "instructions": "What should happen in the web browser, if anything?",
+                       "criteria": {"new_tab": "open a new empty tab", "open_site": "go to or open a specific website",
+                                    "none": None}},
     "volume_action": {"type": "choice", "instructions": "What should happen to the volume, if anything?",
                       "criteria": {"up": None, "down": None, "mute": None, "unmute": None,
                                    "set": "set to a specific level", "none": None}},
@@ -133,10 +156,6 @@ def jev(text, questions=None):
 
 
 # --------------------------------------------------------------------------- Mac actions
-# Favourites only. warm_cache pre-renders {app} for these names, not for every app on disk.
-APPS = {"spotify": "Spotify", "slack": "Slack", "chrome": "Google Chrome", "vscode": "Visual Studio Code",
-        "finder": "Finder", "safari": "Safari", "messages": "Messages", "notes": "Notes",
-        "cursor": "Cursor", "claude": "Claude", "chatgpt": "ChatGPT", "capcut": "CapCut"}
 LEVELS = {"silent": 0, "quiet": 25, "medium": 50, "loud": 75, "max": 100}
 
 
@@ -182,6 +201,56 @@ def spotify_play(tries=12):
         if osa('tell application "Spotify" to player state') == "playing":
             return
     raise RuntimeError("Spotify never started playing")
+
+
+def open_app(name, wait=5.0):
+    """Launch and wait until the app reports running, so a follow up action doesn't land too early."""
+    sh("open", "-a", name)
+    t = time.time()
+    while time.time() - t < wait and osa(f'application "{name}" is running') != "true":
+        time.sleep(0.2)
+
+
+def app_process(key):
+    """System Events handle for a running app, found by bundle id since process names differ (VS Code runs as "Code")."""
+    bid = osa(f'id of application "{APPS[key]}"')
+    return f'(first application process whose bundle identifier is "{bid}")'
+
+
+def front_browser():
+    front = osa('tell application "System Events" to get name of first application process whose frontmost is true')
+    return next((k for k in BROWSERS if APPS[k] == front), None)
+
+
+def find_url(text):
+    """'open youtube dot com' -> https://youtube.com. Falls back to the LLM for things like 'open the BBC'."""
+    t = re.sub(r"\s+dot\s+", ".", text, flags=re.I)
+    m = re.search(r"\b((?:[\w-]+\.)+(?:com|co\.uk|org|net|io|ai|dev|tv|app|me|uk|gov|edu)(?:/\S*)?)", t, re.I)
+    if m:
+        return "https://" + m[1].lower().rstrip(".,!?")
+    r = requests.post("https://openrouter.ai/api/v1/chat/completions", headers={"Authorization": f"Bearer {OR_KEY}"},
+                      json={"model": LLM_MODEL, "max_tokens": 40,
+                            "messages": [{"role": "system", "content": "Reply with only the full https URL of the website the user wants to open, or NONE."},
+                                         {"role": "user", "content": text}]}, timeout=15)
+    r.raise_for_status()
+    url = r.json()["choices"][0]["message"]["content"].strip()
+    return url if url.startswith("http") else None
+
+
+def run_browser(action, key, text):
+    """New tab or open a site in the named browser, else the one in front. Returns (reply_key, fmt)."""
+    if action == "browser_new_tab":
+        name = APPS[key or front_browser() or DEFAULT_BROWSER]
+        open_app(name)
+        osa(f'tell application "{name}" to activate')
+        time.sleep(0.3)
+        osa('tell application "System Events" to keystroke "t" using command down')
+        return "browser_new_tab", {}
+    url = find_url(text)
+    if not url:
+        return "browser_no_site", {}
+    sh("open", "-a", APPS[key], url) if key else sh("open", url)
+    return "browser_open_site", {"site": re.sub(r"^https?://(www\.)?", "", url).split("/")[0]}
 
 
 def _spotify_only(fn):
@@ -234,6 +303,9 @@ def do_media(kind, text):
             return _now_playing(app)
         if kind == "play" and app == "Spotify":
             spotify_play()
+        elif kind == "previous" and app == "Spotify":
+            # mid-song, one "previous" only restarts it, so press twice unless we're in the first 3 seconds
+            osa('tell application "Spotify"\nif player position > 3 then\nprevious track\ndelay 0.3\nend if\nprevious track\nend tell')
         else:
             verb = {"play": "play", "pause": "pause", "next": "next track", "previous": "previous track"}[kind]
             osa(f'tell application "{app}" to {verb}')
@@ -252,6 +324,9 @@ def _quiet(fn):
 ACTIONS = {
     "app_open": lambda arg, text: commands.open_any_app(arg, text, APPS),
     "app_quit": lambda arg, text: commands.quit_any_app(arg, text, APPS),
+    "app_hide": _quiet(lambda arg, _text: osa(f'tell application "System Events" to set visible of {app_process(arg)} to false')),
+    "app_minimise": _quiet(lambda arg, _text: osa(f'tell application "System Events" to set value of attribute "AXMinimized" of every window of {app_process(arg)} to true')),
+    "app_focus": _quiet(lambda arg, _text: osa(f'tell application "{APPS[arg]}" to activate')),
     "apps_quit_all": lambda _arg, text: commands.quit_all_apps(),
     "volume_up": _quiet(lambda _arg, _text: osa(f"set volume output volume {min(100, volume() + 20)}")),
     "volume_down": _quiet(lambda _arg, _text: osa(f"set volume output volume {max(0, volume() - 20)}")),
@@ -314,10 +389,17 @@ ACTIONS = {
     "shortcut_run": lambda _arg, text: commands.run_named_shortcut(text),
 }
 
+
 # --------------------------------------------------------------------------- Scripted replies with Fish tags
 REPLIES = {
-    "app_open": ["[cheerful] {app}'s up.", "{app}, opening now.", "[chuckling] There you go, {app}."],
+    "app_open": ["[chuckling] There you go.", "Opening it up.", "[cheerful] Here you go."],
     "app_quit": ["{app}'s gone.", "[sighing] Closing {app}. Good riddance.", "Done, {app} is closed."],
+    "app_hide": ["{app}'s hidden.", "[chuckling] Out of sight, {app}."],
+    "app_minimise": ["Minimised {app}.", "{app}'s tucked away."],
+    "app_focus": ["Here's {app}.", "[cheerful] Switching to {app}."],
+    "browser_new_tab": ["New tab's open.", "[cheerful] Fresh tab for you."],
+    "browser_open_site": ["Opening {site}.", "[cheerful] Here's {site}."],
+    "browser_no_site": ["[clear throat] Which website?"],
     "volume_up": ["Louder it is.", "[cheerful] Turning it up.", "Up we go."],
     "volume_down": ["Bringing it down.", "[sighing] A little quieter.", "Turning it down."],
     "volume_mute": ["[sighing] Muting. Finally some quiet.", "Muted.", "Shh. Muted."],
@@ -331,7 +413,7 @@ REPLIES = {
     "display_dark_on": ["[chuckling] Lights off.", "Dark mode on.", "Going dark."],
     "display_dark_off": ["[cheerful] Let there be light.", "Dark mode off.", "Back to light."],
     "display_toggle": ["Flipped it.", "There, switched."],
-    "media_play": ["[cheerful] Playing.", "Music's on.", "Here we go."],
+    "media_play": ["[cheerful] Playing.", "Putting the music on.", "Here we go."],
     "media_pause": ["Paused.", "[sighing] Pausing. Take your time.", "Holding it there."],
     "media_next": ["Skipping.", "[chuckling] Not a fan? Next one.", "Next track."],
     "media_previous": ["Going back one.", "Previous track.", "[chuckling] Again? Sure."],
@@ -361,7 +443,7 @@ REPLIES = {
 }
 
 
-TARGETS = ("app", "volume", "display", "media", "system", "timer", "info", "shortcut")
+TARGETS = ("app", "volume", "display", "media", "system", "timer", "info", "shortcut", "browser")
 SPEAK_FIRST = {"volume_mute", "system_lock", "system_sleep"}
 
 
@@ -584,16 +666,27 @@ def sub_action(ans, target):
     """(conf, action_key, arg, reply_key, fmt) for a target, or None if Jev didn't pick anything confident."""
     if target == "app":
         (app, ac), (action, aac) = ans["app"], ans["app_action"]
-        if action not in ("open", "quit") or aac < GATE:
+        if action not in ("open", "quit", "hide", "minimise", "focus") or aac < GATE:
             return None
+        if action in ("hide", "minimise", "focus"):
+            # Those only exist for apps listed in apps.json. The spoken name is the say form.
+            if app not in APPS or ac < GATE:
+                return None
+            return (min(ac, aac), f"app_{action}", app, f"app_{action}", {"app": APP_SAY.get(app, APPS[app])})
         if app not in APPS:
             # "other" / "none": the real name is parsed from the transcript, not from this enum.
             app, conf, display = "other", aac, ""
         elif ac < GATE:
             return None
         else:
-            conf, display = min(ac, aac), APPS[app]
+            conf, display = min(ac, aac), APP_SAY.get(app, APPS[app])
         return (conf, f"app_{action}", app, f"app_{action}", {"app": display or "that app"})
+    if target == "browser":
+        action, conf = ans["browser_action"]
+        if action == "none" or conf < GATE:
+            return None
+        app = ans["app"][0] if ans["app"][0] in BROWSERS and ans["app"][1] >= GATE else None
+        return (conf, f"browser_{action}", app, f"browser_{action}", {})
     key = {"volume": "volume_action", "display": "display_action", "media": "media_action",
            "system": "system_action", "timer": "timer_action", "info": "info_action",
            "shortcut": "shortcut_action"}.get(target)
@@ -732,7 +825,7 @@ def all_scripted_lines():
     for key, lines in REPLIES.items():
         for line in lines:
             if "{app}" in line:
-                yield from (line.format(app=a) for a in APPS.values())
+                yield from (line.format(app=a) for a in APP_SAY.values())
             elif "{level}" in line:
                 yield from (line.format(level=l) for l in LEVELS)
             elif "{" not in line:  # lines with a live value like {left} are generated when needed
@@ -761,6 +854,12 @@ def emit(notify, state, detail=""):
         notify(state, detail)
 
 
+def fix_names(text):
+    for rx, name in HEARD_AS:
+        text = rx.sub(name, text)
+    return text
+
+
 def _speak_result(action, result, reply_key, fmt):
     """A string is spoken as-is. A dict fills the scripted reply (used for {app})."""
     if isinstance(result, str):
@@ -787,9 +886,13 @@ def _finish_confirmed(notify):
     emit(notify, "Ready", line)
 
 
-def handle(text, stt_ms=None, notify=None, reply_sink=None):
+def handle(text, stt_ms=None, notify=None, reply_sink=None, quiet=False):
     global misses
     print(f"\n> heard: {text!r}" + (f"  (stt {stt_ms}ms)" if stt_ms is not None else ""))
+    fixed = fix_names(text)
+    if fixed != text:
+        print(f"  fixed: {fixed!r}")
+        text = fixed
     if not text.strip():
         emit(notify, "Ready", "Didn't catch anything")
         return
@@ -829,6 +932,10 @@ def handle(text, stt_ms=None, notify=None, reply_sink=None):
     elif kind == "actions":
         payload = commands.isolate_confirmations(payload)
     armed = False
+    if kind == "clarify" and quiet:
+        print("  (unclear follow up, staying quiet)")
+        emit(notify, "Ready", "Didn't catch that")
+        return
     if kind == "clarify":
         misses += 1
         line = say_line("give_up") if misses >= 2 else say_line("clarify")
@@ -866,6 +973,8 @@ def handle(text, stt_ms=None, notify=None, reply_sink=None):
                     emit(notify, "Doing it", text)
                     if action.startswith("timer_"):
                         timer_reply = run_timer(action, text)
+                    elif action.startswith("browser_"):
+                        timer_reply = run_browser(action, arg, text)
                     else:
                         result = ACTIONS[action](arg, text)
                         if isinstance(result, commands.LocalSpeech):
@@ -980,15 +1089,45 @@ def _run_local(payload, text, notify, reply_sink):
 class Recorder:
     BLOCK = 1600  # 100ms at 16kHz
 
-    def __init__(self):
+    def __init__(self, mic=""):
         self.frames, self.on = [], False
-        self.wake, self.paused = False, False
+        self.wake, self.paused, self.dictating = False, False, False
         self.segments = queue.Queue()
         self.noise = 0.005
         self._reset_segment()
-        self.stream = sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype="float32",
-                                     blocksize=self.BLOCK, callback=self._cb)
-        self.stream.start()
+        self.stream = self._open(mic)
+        self.mic_lock = threading.Lock()
+
+    def _open(self, mic):
+        if mic:
+            try:
+                return sd.InputStream(device=mic, samplerate=SAMPLE_RATE, channels=1, dtype="float32",
+                                      blocksize=self.BLOCK, callback=self._cb)
+            except Exception as exc:
+                print(f"\n[mic {mic!r} not available, using the default: {exc}]")
+        return sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype="float32",
+                              blocksize=self.BLOCK, callback=self._cb)
+
+    def set_device(self, mic):
+        """Swap to another microphone, carrying on listening if it was."""
+        with self.mic_lock:
+            was_active = self.stream.active
+            self.stream.close()
+            self.stream = self._open(mic)
+            if was_active:
+                self._reset_segment()
+                self.stream.start()
+        print(f"\n[mic: {mic or 'system default'}]")
+
+    def sync_mic(self):
+        """Mic only runs when something needs it, so Hold Option mode doesn't keep the orange dot on."""
+        with self.mic_lock:
+            needed = self.wake or self.dictating or self.on
+            if needed and not self.stream.active:
+                self._reset_segment()
+                self.stream.start()
+            elif not needed and self.stream.active:
+                self.stream.stop()
 
     def _reset_segment(self):
         self.speech, self.silent = [], 0
@@ -997,12 +1136,14 @@ class Recorder:
     def _cb(self, indata, *_):
         if self.on:
             self.frames.append(indata.copy())
-        if not self.wake or self.paused:
+        if not (self.wake or self.dictating) or self.paused:
             if self.speech:
                 self._reset_segment()
             return
         block = indata[:, 0].copy()
         rms = float(np.sqrt(np.mean(block ** 2)))
+        if self.dictating:
+            MIC_LEVELS.append(rms)
         loud = rms > max(self.noise * 3, 0.01)
         if not self.speech:
             if loud:
@@ -1013,42 +1154,60 @@ class Recorder:
             return
         self.speech.append(block)
         self.silent = 0 if loud else self.silent + 1
-        if self.silent >= 8 or len(self.speech) >= 150:  # 0.8s pause ends a phrase, 15s max
+        if self.silent >= 8 or len(self.speech) >= (300 if self.dictating else 150):  # 0.8s pause ends a phrase, 15s max (30s dictating)
             if len(self.speech) - self.silent >= 4:
                 self.segments.put(np.concatenate(self.speech))
             self._reset_segment()
 
     def start(self):
         self.frames, self.on = [], True
+        self.sync_mic()
 
     def stop(self):
         self.on = False
-        return np.concatenate(self.frames)[:, 0] if self.frames else np.zeros(0, dtype="float32")
+        audio = np.concatenate(self.frames)[:, 0] if self.frames else np.zeros(0, dtype="float32")
+        self.sync_mic()
+        return audio
 
 
 def ready_text(wake):
     return "Say \u201cHey Jev\u201d and your command" if wake else "Ready when you are"
 
 
-def run_voice_assistant(notify=None, controls=None, mode="ptt"):
+def run_voice_assistant(notify=None, controls=None, mode="ptt", mic=""):
     from faster_whisper import WhisperModel
     print("loading whisper...")
     emit(notify, "Starting", "Loading Whisper\u2026")
     model = WhisperModel(WHISPER_MODEL, device="cpu", compute_type="int8")
-    rec = Recorder()
+    rec = Recorder(mic)
     busy = threading.Lock()
     armed_until = [0.0]
+    dictation = Dictation(NAMES, lambda: (OA_KEY, OR_KEY), SAMPLE_RATE)
+    late_timers = []  # timers that went off mid-dictation, announced once it stops
 
-    def transcribe(audio, prompt):
+    def transcribe(audio, prompt, drop_noise=False):
         t = time.time()
         segs, _ = model.transcribe(audio, language="en", beam_size=1, vad_filter=True, initial_prompt=prompt)
+        segs = [s for s in segs if not drop_noise or s.no_speech_prob <= NO_SPEECH_MAX]
         return " ".join(s.text.strip() for s in segs).strip(), int((time.time() - t) * 1000)
 
-    def run_turn(text, stt_ms):
+    def save_clip(audio):
+        if not SAVE_CLIPS:
+            return
+        os.makedirs(SAVE_CLIPS, exist_ok=True)
+        path = os.path.join(SAVE_CLIPS, time.strftime("%H-%M-%S") + ".wav")
+        sf.write(path, audio, SAMPLE_RATE)
+        print(f"  clip: {path}")
+
+    def run_turn(text, stt_ms, quiet=False):
         with busy:
             rec.paused = True  # don't hear her own reply
             try:
-                result = handle(text, stt_ms, notify)
+                if DICTATE_START.match(text.strip()):
+                    start_dictation()
+                    result = None
+                else:
+                    result = handle(text, stt_ms, notify, quiet=quiet)
                 # Wake mode: she just asked for a yes/no, so the next phrase doesn't need "Hey Jev".
                 if result == "expect_reply" and rec.wake:
                     armed_until[0] = time.time() + commands.CONFIRM_SECONDS
@@ -1061,6 +1220,51 @@ def run_voice_assistant(notify=None, controls=None, mode="ptt"):
             finally:
                 time.sleep(0.3)
                 rec.paused = False
+
+    def start_dictation():
+        print(f"\n> dictation started")
+        if not (OA_KEY or OR_KEY):
+            say("Add an OpenRouter or OpenAI key first.", notify)
+            emit(notify, "Ready", "Dictation needs an OpenRouter or OpenAI key")
+            return
+        MIC_LEVELS.clear()
+        emit(notify, "Dictating", "Say \u201cstop transcribing\u201d when you\u2019re done")  # bubble shows with the pop
+        subprocess.run(["afplay", DICTATE_CHIME])
+        dictation.start()
+        rec.dictating = True
+        rec.sync_mic()
+
+    def dictate_turn(audio):
+        heard, _ = transcribe(audio, None, drop_noise=True)  # local Whisper only listens for the stop phrase
+        print(f"  (dictating: {heard!r})")
+        if dictation.add(audio, heard):
+            finish_dictation()
+
+    def finish_dictation():
+        rec.dictating = False
+        rec.sync_mic()
+        emit(notify, "Finishing", "Writing it up\u2026")
+        subprocess.run(["afplay", DICTATE_CHIME])
+        try:
+            text, failed, total = dictation.finish()
+            print(f"  dictation: {text!r}")
+            if failed:  # never paste a dictation with holes in it as if it worked
+                if text.replace("[missing part]", "").strip():
+                    subprocess.run(["pbcopy"], input=text.encode(), check=True)
+                emit(notify, "Something went wrong", f"{failed} of {total} parts failed, not pasted. What worked is on your "
+                     "clipboard, and the missing audio is in Logs/Hey Jev dictation failed")
+            elif text:
+                paste(text)
+                emit(notify, "Ready", f"Pasted {len(text.split())} words")
+            else:
+                emit(notify, "Ready", "Didn't catch anything to paste")
+        except Exception as exc:
+            print(f"  dictation failed: {exc}")
+            emit(notify, "Something went wrong", str(exc))
+        if late_timers:
+            time.sleep(2)  # let the dictation result show before she talks over it
+        while late_timers:
+            timer_done(late_timers.pop(0))
 
     def ptt_turn(audio):
         emit(notify, "Transcribing", "Working out what you said\u2026")
@@ -1076,46 +1280,58 @@ def run_voice_assistant(notify=None, controls=None, mode="ptt"):
             try:
                 audio = rec.segments.get(timeout=1)
             except queue.Empty:
+                if dictation.timed_out():
+                    finish_dictation()
                 if armed_until[0] and time.time() > armed_until[0]:
                     armed_until[0] = 0
                     emit(notify, "Ready", ready_text(rec.wake))
                 continue
-            if not rec.wake or busy.locked():
-                continue
-            try:
-                text, ms = transcribe(audio, WAKE_PROMPT)
+            try:  # one bad phrase must never kill the wake thread
+                if rec.dictating:
+                    dictate_turn(audio)
+                elif rec.wake and not busy.locked():
+                    wake_turn(audio)
             except Exception as exc:
-                print(f"\n  transcribe failed: {exc}")
-                continue
-            m = WAKE.match(text)
-            if m:
-                rest = text[m.end():].strip(" .,!?")
-                if rest:
-                    armed_until[0] = 0
-                    run_turn(rest, ms)
-                else:
-                    with busy:
-                        rec.paused = True
-                        say(say_line("wake"), notify)
-                        time.sleep(0.2)
-                        rec.paused = False
-                    armed_until[0] = time.time() + WAKE_WINDOW
-                    emit(notify, "Listening", "Go ahead\u2026")
-            elif armed_until[0] and time.time() < armed_until[0]:
+                print(f"\n  wake turn failed: {exc}")
+
+    def wake_turn(audio):
+        text, ms = transcribe(audio, WAKE_PROMPT, drop_noise=True)
+        m = WAKE.search(text)
+        if m:
+            print(f"\n  (wake: {text!r})")
+            rest = text[m.end():].strip(" .,!?")
+            if rest:
                 armed_until[0] = 0
-                run_turn(text, ms)
-            elif text:
-                print(f"\n  (not for me: {text!r})")
+                run_turn(rest, ms, quiet=bool(text[:m.start()].strip(" .,!?")))  # mid-sentence "hey Jeff" might just be chat
+            else:
+                with busy:
+                    rec.paused = True
+                    try:
+                        subprocess.run(["afplay", WAKE_CHIME])
+                        time.sleep(0.2)
+                    finally:
+                        rec.paused = False
+                armed_until[0] = time.time() + WAKE_WINDOW
+                emit(notify, "Listening", "Go ahead\u2026")
+        elif armed_until[0] and time.time() < armed_until[0]:
+            armed_until[0] = 0
+            run_turn(text, ms, quiet=True)
+        elif text:
+            print(f"\n  (not for me: {text!r})")
+            save_clip(audio)
 
     def set_mode(new):
         rec.wake = new == "wake"
+        rec.sync_mic()
         armed_until[0] = 0
         print(f"\n[mode: {'always listening' if rec.wake else 'hold right Option'}]")
-        if not busy.locked():
+        if rec.dictating:  # dictation carries on in either mode, so keep the bubble up until it's stopped
+            emit(notify, "Dictating", "Say \u201cstop transcribing\u201d when you\u2019re done")
+        elif not busy.locked():
             emit(notify, "Ready", ready_text(rec.wake))
 
     def start_recording():
-        if not rec.wake and not rec.on and not busy.locked():
+        if not rec.wake and not rec.on and not rec.dictating and not busy.locked():
             rec.start()
             print("\n[listening]", end="", flush=True)
             emit(notify, "Listening", "Release right Option when you\u2019re done")
@@ -1127,6 +1343,11 @@ def run_voice_assistant(notify=None, controls=None, mode="ptt"):
                 threading.Thread(target=ptt_turn, args=(audio,), daemon=True).start()
 
     def timer_done(t):
+        if rec.dictating:  # don't pause the mic or talk over a dictation, just chime and tell her afterwards
+            late_timers.append(t)
+            emit(notify, "Dictating", f"\u23f0 {t['label'] or 'Timer finished'}, I'll tell you when you stop")
+            subprocess.run(["afplay", "/System/Library/Sounds/Glass.aiff"])
+            return
         with busy:
             rec.paused = True
             try:
@@ -1136,7 +1357,10 @@ def run_voice_assistant(notify=None, controls=None, mode="ptt"):
             finally:
                 time.sleep(0.3)
                 rec.paused = False
-        emit(notify, "Ready", ready_text(rec.wake))
+        if rec.dictating:
+            emit(notify, "Dictating", "Say \u201cstop transcribing\u201d when you\u2019re done")
+        else:
+            emit(notify, "Ready", ready_text(rec.wake))
 
     start_timer_loop(timer_done)
 
@@ -1164,6 +1388,8 @@ def run_voice_assistant(notify=None, controls=None, mode="ptt"):
             command = controls.get()
             if isinstance(command, tuple) and command[0] == "mode":
                 set_mode(command[1])
+            elif isinstance(command, tuple) and command[0] == "mic":
+                rec.set_device(command[1])
             elif command == "press":
                 start_recording()
             elif command == "release":
