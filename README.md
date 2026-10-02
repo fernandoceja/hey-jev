@@ -24,8 +24,8 @@ Shortcuts run only from a Shortcuts folder named `Jev`: "run shortcut Leaving fo
 These are also answered on the Mac, with no TypeSafe or LLM call:
 
 - **Weather:** "weather", "what's the weather". Current conditions, high, low, and chance of rain for Upland, CA, from Open-Meteo. No API key. If the request takes more than about 4 seconds, or it fails, she says she couldn't check the weather.
-- **Brief me:** the date, that weather, today's events, the next shift, and the first few items from the due list. Gmail is an optional step. It stays off unless a Google OAuth token is stored in the Keychain under service `com.jevsiri.keys`, account `GOOGLE_OAUTH_TOKEN`. This build does not include a Google client library and does not call Google. `gmail_brief_line()` in `commands.py` is the stub to replace if you add that later.
-- **Messages from My Love:** "check my messages from My Love". Reads the latest 3 incoming messages from the handles at the top of `commands.py` (`MY_LOVE_HANDLES`: `+15623616724` and `cgarcilazo6724@icloud.com`). When the `text` column is empty, the body is decoded from `attributedBody`. She speaks them with the Mac `say` command only. They are not sent to Fish Audio, TypeSafe, or an LLM, and the iPhone bridge will not run this command. Full Disk Access is optional and is the only reason to grant it. Without it, she says how to turn it on.
+- **Brief me:** the date, that weather, today's events, the next shift, and the first few items from the due list. Gmail is an optional step. It stays off unless a Google OAuth token is stored in the Keychain under service `com.jevsiri.keys`, account `GOOGLE_OAUTH_TOKEN`. This build does not include a Google client library and does not call Google. `gmail_brief_line()` in `commands/weather.py` is the stub to replace if you add that later.
+- **Messages from My Love:** "check my messages from My Love". Reads the latest 3 incoming messages from the handles in `commands/config.py` (`MY_LOVE_HANDLES`: `+15623616724` and `cgarcilazo6724@icloud.com`). When the `text` column is empty, the body is decoded from `attributedBody`. She speaks them with the Mac `say` command only. They are not sent to Fish Audio, TypeSafe, or an LLM, and the iPhone bridge will not run this command. Full Disk Access is optional and is the only reason to grant it. Without it, she says how to turn it on.
 - **Notes:** "take a note: buy oat milk" appends a timestamped line to `~/Documents/Jev/notes.md`, creating the file if needed.
 - **Due this week:** "what's due this week" reads `~/Documents/Jev/due.md`. See the format below.
 - **Focus:** "start focus mode" or "start focus mode for 10 minutes" runs the shortcut `Jev Focus On`, then a timer. The default is 25 minutes. When it ends, she runs `Jev Focus Off` and says focus is off. Hey Jev has to stay open for the off shortcut. Both shortcuts must live in the Jev folder. See below.
@@ -37,7 +37,7 @@ Timers and reminders: "set a timer for 5 minutes", "remind me in 20 minutes to c
 
 ## Round 2 commands
 
-These are chosen from the transcript before any TypeSafe or LLM call. A sentence that only resembles one of them ("how long until summer", "help me write an email", "what's the weather in paris") still goes to the LLM. Edit the maps at the top of `commands.py`: `KNOWN_APPS`, `APP_NICKNAMES`, `SITE_CONFIG`, and `SHIFT_TITLE_PATTERNS`.
+These are chosen from the transcript before any TypeSafe or LLM call. A sentence that only resembles one of them ("how long until summer", "help me write an email", "what's the weather in paris") still goes to the LLM. Edit the maps in `commands/config.py`: `KNOWN_APPS`, `APP_NICKNAMES`, `SITE_CONFIG`, and `SHIFT_TITLE_PATTERNS`.
 
 - **Apps.** "Open settings", "open business email", "open my phone", "open numbers", "open clean my mac". Nicknames live in `APP_NICKNAMES` (business email and Zoho are Zoho Mail - Desktop, my phone and mirroring are iPhone Mirroring, numbers and budget app are Numbers Creator Studio, settings is System Settings). She launches with `open -a` and says the app isn't installed when that fails.
 - **Sites, in Google Chrome.** WorkJam, UKG, the Apple employee portal, UMGC (`learn.umgc.edu`), Shopify admin, the store site, Cal.com bookings, the IHSS timesheet portal, USCIS case status, Bank of America, Fidelity, Capital One, and GitHub. URLs marked editable in `SITE_CONFIG` are a public login page you should replace with the one you use. She does not fetch those pages, and she does not sign in.
@@ -68,7 +68,7 @@ ihss: semi-monthly
 
 ### Shift titles and the due list
 
-Add a pattern to `SHIFT_TITLE_PATTERNS` in `commands.py` if a store name should count as a shift. School and bill questions also look at tags on the due line:
+Add a pattern to `SHIFT_TITLE_PATTERNS` in `commands/config.py` if a store name should count as a shift. School and bill questions also look at tags on the due line:
 
 ```markdown
 - 2026-10-01 Pay rent
@@ -275,7 +275,7 @@ Below 0.65 confidence it asks you to say it again, twice in a row and it gives u
 ## Files
 
 - `siri.py` all the logic: questions, actions, replies, Whisper, Fish, LLM fallback
-- `commands.py` open and quit any app, sites, time and date, calendar and shifts, weather, the brief, messages, notes, the due list, school, bills, payday, focus, IHSS, case status, Zoe, Mac controls, the iPhone bridge, the verified Jev shortcuts folder, and the yes/no confirmation
+- `commands/` local commands, split by area. `commands/config.py` holds the maps you edit (`KNOWN_APPS`, `APP_NICKNAMES`, `SITE_CONFIG`, `SHIFT_TITLE_PATTERNS`, `MY_LOVE_HANDLES`, `PRINCESS_ACADEMY_URL`, `SHOPIFY_ORDERS_URL`). The other modules cover time and date, calendar and shifts, money, notes and the due list, messages, media, Mac controls, the verified Jev shortcuts folder, yes/no confirmation, and the iPhone bridge. `import commands` is unchanged, so `siri.py` and the alias build keep the same entry points.
 - `tests/test_round2.py` routing tests and the shortcut-folder safety check. They mock `shortcuts` and `osascript`, so they run without macOS: `python3 -m unittest tests.test_round2`
 - `assistant_ui.py` the status window, mode switch and Keys panel
 - `secrets_store.py` Keychain read / write
