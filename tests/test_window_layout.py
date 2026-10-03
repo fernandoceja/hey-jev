@@ -7,14 +7,23 @@ from assistant_layout import (
     DEFAULT_W,
     FRAME_AUTOSAVE_NAME,
     HEADER,
+    HOME_CARD_SUBS,
+    HOME_CARD_VALUES,
     MIN_H,
     MIN_W,
     OLD_H,
     OLD_W,
     SIDEBAR,
+    SUB_EM,
+    VALUE_EM,
+    VALUE_FLOOR,
+    VALUE_PREFERRED,
     clamp_size,
+    frame_is_usable,
     layout_window,
+    parse_window_frame,
     rects_inside,
+    text_width,
     visible_on_first_screen,
     wrapped_height,
 )
@@ -80,22 +89,99 @@ class TestHomeCards(unittest.TestCase):
                 for other in boxes[i + 1:]:
                     self.assertFalse(_overlaps(box, other))
 
-    def test_narrow_window_uses_two_columns_and_a_wide_one_uses_three(self):
+    def test_default_and_minimum_use_two_columns_and_the_old_size_uses_three(self):
+        # 720 is wide enough for three skinny cards, and that is what ellipsized
+        # "None yet". Two columns until the page itself is wide.
         narrow = self._spec(MIN_W, MIN_H)
-        wide = self._spec(DEFAULT_W, DEFAULT_H)
+        default = self._spec(DEFAULT_W, DEFAULT_H)
+        wide = self._spec(OLD_W, OLD_H)
         self.assertLess(narrow["page"][0], COLUMN_BREAK)
+        self.assertLess(default["page"][0], COLUMN_BREAK)
         self.assertGreaterEqual(wide["page"][0], COLUMN_BREAK)
         self.assertEqual(narrow["home"]["columns"], 2)
+        self.assertEqual(default["home"]["columns"], 2)
         self.assertEqual(wide["home"]["columns"], 3)
-        # Two columns means the first and second cards share a row.
-        first, second, third = [card["box"] for card in narrow["home"]["cards"][:3]]
+        first, second, third = [card["box"] for card in default["home"]["cards"][:3]]
         self.assertEqual(first[1], second[1])
         self.assertNotEqual(first[1], third[1])
+        first, second, third = [card["box"] for card in wide["home"]["cards"][:3]]
+        self.assertEqual(first[1], second[1])
+        self.assertEqual(second[1], third[1])
+
+    def test_card_values_and_subtitles_fit_at_default_and_minimum(self):
+        """The strings that ellipsized at 720x460, and the same cards at 640x420."""
+        self.assertIn("None yet", HOME_CARD_VALUES)
+        self.assertIn("$0.0000", HOME_CARD_VALUES)
+        self.assertIn("vs typing at 40 words a minute", HOME_CARD_SUBS)
+        for width, height in ((MIN_W, MIN_H), (DEFAULT_W, DEFAULT_H), (OLD_W, OLD_H)):
+            spec = self._spec(width, height)
+            for card in spec["home"]["cards"]:
+                value_w, value_h = card["value"][2], card["value"][3]
+                font = card["value_font"]
+                self.assertGreaterEqual(font, VALUE_FLOOR, (width, height))
+                self.assertLessEqual(font, VALUE_PREFERRED)
+                self.assertGreaterEqual(value_h, font + 3, (width, height, font, value_h))
+                for text in HOME_CARD_VALUES:
+                    self.assertLessEqual(
+                        text_width(text, font, VALUE_EM), value_w - 4,
+                        (width, height, text, font, value_w),
+                    )
+                sub_w, sub_h = card["sub"][2], card["sub"][3]
+                sub_font = card["sub_font"]
+                for text in HOME_CARD_SUBS:
+                    one = text_width(text, sub_font, SUB_EM)
+                    lines = 1 if one <= sub_w - 8 else 2
+                    self.assertLessEqual(lines, 2)
+                    self.assertLessEqual(one, lines * (sub_w - 8), (width, height, text, one, sub_w))
+                    self.assertGreaterEqual(sub_h, lines * (sub_font + 3), (width, height, text, sub_h))
 
     def test_wider_window_gives_the_cards_more_width(self):
         small = self._spec(MIN_W, MIN_H)["home"]["cards"][0]["box"][2]
         large = self._spec(1000, 700)["home"]["cards"][0]["box"][2]
         self.assertGreater(large, small)
+
+
+# A 13-inch MacBook Air: menu bar on top, Dock about 70pt, visible frame origin (0, 70).
+AIR = (0.0, 70.0, 1440.0, 806.0)
+
+
+class TestSavedFrame(unittest.TestCase):
+    def test_parses_autosave_strings(self):
+        self.assertEqual(parse_window_frame("0 70 720 460"), (0.0, 70.0, 720.0, 460.0))
+        self.assertEqual(parse_window_frame("{{0, 70}, {720, 460}}"), (0.0, 70.0, 720.0, 460.0))
+        self.assertEqual(parse_window_frame("{{360.5, 242}, {720, 460}}"), (360.5, 242.0, 720.0, 460.0))
+        self.assertIsNone(parse_window_frame(None))
+        self.assertIsNone(parse_window_frame(""))
+        self.assertIsNone(parse_window_frame("not a frame"))
+        self.assertIsNone(parse_window_frame("{{0, 70}, {720}}"))
+
+    def test_bottom_left_default_on_a_macbook_air_is_recentered(self):
+        # The frame the owner's first launch saved: created at (0, 0), nudged onto the Dock.
+        corner = parse_window_frame("0 70 720 460")
+        self.assertFalse(frame_is_usable(corner, [AIR]))
+        self.assertFalse(frame_is_usable(parse_window_frame("{{0, 70}, {720, 460}}"), [AIR]))
+        centered = (360.0, 243.0, 720.0, 460.0)
+        self.assertTrue(frame_is_usable(centered, [AIR]))
+
+    def test_offscreen_tiny_and_missing_frames_are_recentered(self):
+        self.assertFalse(frame_is_usable(None, [AIR]))
+        self.assertFalse(frame_is_usable((360.0, 243.0, 720.0, 460.0), []))
+        self.assertFalse(frame_is_usable((100.0, 100.0, 500.0, 400.0), [AIR]))
+        self.assertFalse(frame_is_usable((-800.0, 70.0, 720.0, 460.0), [AIR]))
+        # Less than half the window is on the visible frame.
+        self.assertFalse(frame_is_usable((-400.0, 70.0, 720.0, 460.0), [AIR]))
+        self.assertIsNone(parse_window_frame("nope"))
+        self.assertFalse(frame_is_usable(parse_window_frame("nope"), [AIR]))
+
+    def test_a_moved_or_resized_frame_is_kept(self):
+        # Same corner, but the owner resized it, so this is a real placement.
+        self.assertTrue(frame_is_usable((0.0, 70.0, 800.0, 500.0), [AIR]))
+        # Default size, dragged up from the corner.
+        self.assertTrue(frame_is_usable((40.0, 200.0, 720.0, 460.0), [AIR]))
+        # Mostly on screen, hanging off the left edge.
+        self.assertTrue(frame_is_usable((-100.0, 200.0, 720.0, 460.0), [AIR]))
+        second = (1440.0, 0.0, 1920.0, 1080.0)
+        self.assertTrue(frame_is_usable((1800.0, 200.0, 720.0, 460.0), [AIR, second]))
 
 
 class TestChrome(unittest.TestCase):

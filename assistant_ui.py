@@ -1,7 +1,8 @@
 """Native macOS window for the Jev voice assistant: status on top, sidebar tabs for the dictionary, apps, history and keys.
 
 The window is resizable. Frames come from assistant_layout so a smaller window
-reflows instead of clipping, and the frame is saved under HeyJevMainWindow.
+reflows instead of clipping. The frame is saved under HeyJevMainWindow, and a
+missing or offscreen frame is centered.
 """
 import json
 import os
@@ -29,6 +30,7 @@ from AppKit import (
     NSPasteboard,
     NSPasteboardTypeString,
     NSPopUpButton,
+    NSScreen,
     NSScrollView,
     NSSearchField,
     NSSecureTextField,
@@ -56,6 +58,7 @@ from assistant_layout import (
     MIN_H,
     MIN_W,
     SIDEBAR,
+    frame_is_usable,
     layout_window,
 )
 from bubble import Bubble
@@ -252,14 +255,11 @@ class AppDelegate(NSObject):
         for page in self.pages.values():
             root.addSubview_(page)
         self._select_tab("keys" if missing_secrets() else "home")
-        # Restores the last size and position. A new name, so the old fixed frame is not reused.
-        restored = bool(self.panel.setFrameAutosaveName_(FRAME_AUTOSAVE_NAME))
         root.onResize = self._layout_window
+        self._place_main_window()
         self._layout_window()
         NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(0.5, self, "tick:", None, True)
 
-        if not restored:
-            self.panel.center()
         self.panel.makeKeyAndOrderFront_(None)
         NSApp.activateIgnoringOtherApps_(True)
         self.global_monitor = NSEvent.addGlobalMonitorForEventsMatchingMask_handler_(
@@ -391,6 +391,14 @@ class AppDelegate(NSObject):
             value = label("", NSMakeRect(0, 0, 10, 10), 30, weight=0.6)
             title = label("", NSMakeRect(0, 0, 10, 10), 13, NSColor.labelColor(), 0.2)
             sub = label("", NSMakeRect(0, 0, 10, 10), 11, NSColor.secondaryLabelColor(), 0.0)
+            # Captions wrap onto a second line instead of ending in an ellipsis.
+            sub.setLineBreakMode_(0)  # word wrap
+            sub.setMaximumNumberOfLines_(2)
+            sub.setUsesSingleLineMode_(False)
+            cell = sub.cell()
+            if cell is not None:
+                cell.setWraps_(True)
+                cell.setScrollable_(False)
             for v in (value, title, sub):
                 page.addSubview_(v)
             self.stat_boxes.append(card)
@@ -610,6 +618,31 @@ class AppDelegate(NSObject):
         return page
 
     @objc.python_method
+    def _place_main_window(self):
+        """Center on first launch, and again when the saved frame is offscreen or the uncentered default.
+
+        The window is created at (0, 0). AppKit then nudges it to the visible
+        frame's bottom-left (on a MacBook Air that was "0 70 720 460") and
+        frame autosave can store that before anyone centers it. A frame the
+        user actually moved or resized is left where they put it.
+        """
+        screens = []
+        for screen in NSScreen.screens() or []:
+            rect = screen.visibleFrame()
+            screens.append((float(rect.origin.x), float(rect.origin.y),
+                            float(rect.size.width), float(rect.size.height)))
+        self.panel.center()
+        restored = bool(self.panel.setFrameAutosaveName_(FRAME_AUTOSAVE_NAME))
+        rect = self.panel.frame()
+        current = (float(rect.origin.x), float(rect.origin.y),
+                   float(rect.size.width), float(rect.size.height))
+        if not frame_is_usable(current, screens):
+            self.panel.center()
+            self.panel.saveFrameUsingName_(FRAME_AUTOSAVE_NAME)
+        elif not restored:
+            self.panel.saveFrameUsingName_(FRAME_AUTOSAVE_NAME)
+
+    @objc.python_method
     def _layout_window(self):
         """Reflow every tab to the current content size. Safe to call during a live resize."""
         if not getattr(self, "page_scrolls", None):
@@ -654,7 +687,8 @@ class AppDelegate(NSObject):
                 _place(value, card["value"])
                 _place(title, card["title"])
                 _place(sub, card["sub"])
-                value.setFont_(NSFont.systemFontOfSize_weight_(28 if card["value"][3] >= 40 else 20, 0.6))
+                value.setFont_(NSFont.systemFontOfSize_weight_(card["value_font"], 0.6))
+                sub.setFont_(NSFont.systemFontOfSize_(card["sub_font"]))
             _place(self.most_label, page["most_label"])
             _place(self.top_actions, page["top_actions"])
             _place(self.how_label, page["how_label"])
