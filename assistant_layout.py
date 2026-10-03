@@ -3,6 +3,7 @@
 No AppKit imports, so the resize rules can be tested on Linux. Rectangles are
 (x, y, width, height) in AppKit points, origin at the bottom left of the parent.
 """
+import re
 
 SIDEBAR = 210
 HEADER = 72
@@ -15,8 +16,22 @@ FRAME_AUTOSAVE_NAME = "HeyJevMainWindow"
 
 MARGIN = 24
 GAP = 12
-# Three columns once a card stays about 140pt wide. Narrower than that, two columns.
-COLUMN_BREAK = 480
+# Three columns only once each card is wide enough for a 28pt value such as
+# "None yet" or "$0.0000". The 720-wide default stays on two columns.
+COLUMN_BREAK = 640
+# Semibold system text is wider than the 0.56em used for body copy. 0.72 matches
+# the truncation seen at 28pt in a ~120pt card ("None y…", "$0.00…").
+VALUE_EM = 0.72
+SUB_EM = 0.60
+VALUE_PREFERRED = 28
+VALUE_FLOOR = 15
+SUB_SIZE = 11
+# Lines the Home cards actually show. The layout keeps these from ellipsizing.
+HOME_CARD_VALUES = ("None yet", "$0.0000", "12 h 59 min")
+HOME_CARD_SUBS = (
+    "vs typing at 40 words a minute",
+    "Say \u201cHey Jev, open Spotify\u201d",
+)
 
 
 def clamp_size(width, height):
@@ -118,20 +133,69 @@ def _from_top(doc_h, top, height):
     return doc_h - top - height
 
 
+def text_width(text, size, em):
+    """Estimated rendered width. Spaces count, so a tight card still has slack."""
+    return len(text) * float(size) * float(em)
+
+
+def _fit_font(text, width, preferred, floor, em, max_height):
+    """Largest size in [floor, preferred] whose one line fits `width` and `max_height`.
+
+    A few points of inset and leading keep the glyphs off the card edge. The
+    point size alone is shorter than the line the field actually draws.
+    """
+    usable = max(8.0, float(width) - 4.0)
+    size = int(preferred)
+    while size > int(floor):
+        if text_width(text, size, em) <= usable and size + 3 <= max_height:
+            return size
+        size -= 1
+    return int(floor)
+
+
+def _subtitle_block(text, width):
+    """(font size, height) for one or two wrapped lines. Never more than two.
+
+    A line that only just fits is wrapped, so a slightly wider real font still
+    has a second line instead of an ellipsis.
+    """
+    size = SUB_SIZE
+    slack = 8.0
+    while size > 9 and text_width(text, size, SUB_EM) > 2 * (width - slack):
+        size -= 1
+    lines = 2 if text_width(text, size, SUB_EM) > width - slack else 1
+    return size, lines * (size + 3.0)
+
+
 def _card_labels(card):
-    """Value, title, and caption stacked inside the card without covering each other."""
+    """Value, title, and caption stacked inside the card without covering each other.
+
+    The value stays one line, at a smaller size when the card is narrow or short.
+    The caption is two lines when it does not fit on one, so it wraps instead of
+    ending in an ellipsis.
+    """
     x, y, w, h = card
-    pad = 12.0
-    inner_w = max(20.0, w - 2 * pad)
-    sub_h, title_h = 13.0, 15.0
-    sub_y = y + 4.0
-    title_y = sub_y + sub_h
-    value_y = title_y + title_h + 2.0
-    value_h = max(14.0, (y + h - 6.0) - value_y)
+    pad_x, pad_y, gap = 12.0, 4.0, 2.0
+    inner_w = max(20.0, w - 2 * pad_x)
+    title_h = 15.0
+    longest_sub = max(HOME_CARD_SUBS, key=len)
+    sub_size, sub_h = _subtitle_block(longest_sub, inner_w)
+    value_h = h - (pad_y * 2 + title_h + sub_h + gap * 2)
+    if value_h < VALUE_FLOOR:
+        sub_h = float(sub_size + 3)
+        value_h = h - (pad_y * 2 + title_h + sub_h + gap * 2)
+    value_h = max(1.0, value_h)
+    longest_value = max(HOME_CARD_VALUES, key=len)
+    value_size = _fit_font(longest_value, inner_w, VALUE_PREFERRED, VALUE_FLOOR, VALUE_EM, value_h)
+    sub_y = y + pad_y
+    title_y = sub_y + sub_h + gap
+    value_y = title_y + title_h + gap
     return (
-        (x + pad, value_y, inner_w, value_h),
-        (x + pad, title_y, inner_w, title_h),
-        (x + pad, sub_y, inner_w, sub_h),
+        (x + pad_x, value_y, inner_w, value_h),
+        (x + pad_x, title_y, inner_w, title_h),
+        (x + pad_x, sub_y, inner_w, sub_h),
+        value_size,
+        sub_size,
     )
 
 
@@ -173,8 +237,15 @@ def _home(page_w, page_h, how_to):
     cards_out = []
     for x, top, w, h in cards:
         box = (x, _from_top(doc_h, top, h), w, h)
-        value, title, sub = _card_labels(box)
-        cards_out.append({"box": box, "value": value, "title": title, "sub": sub})
+        value, title, sub, value_font, sub_font = _card_labels(box)
+        cards_out.append({
+            "box": box,
+            "value": value,
+            "title": title,
+            "sub": sub,
+            "value_font": value_font,
+            "sub_font": sub_font,
+        })
     return {
         "document": (0.0, 0.0, page_w, doc_h),
         "title": (float(MARGIN), _from_top(doc_h, 20.0, 30.0), min(420.0, text_w), 30.0),
@@ -355,6 +426,55 @@ def _keys(page_w, page_h, count):
         "save": save,
         "message": message,
     }
+
+
+def parse_window_frame(text):
+    """An autosaved NSWindow frame as (x, y, w, h), or None.
+
+    AppKit stores "{{x, y}, {w, h}}". A plain "x y w h" string is accepted too.
+    """
+    if text is None:
+        return None
+    raw = str(text).strip()
+    if not raw:
+        return None
+    nums = re.findall(r"-?\d+(?:\.\d+)?", raw)
+    if len(nums) != 4:
+        return None
+    return tuple(float(n) for n in nums)
+
+
+def _intersection_area(a, b):
+    ax, ay, aw, ah = a
+    bx, by, bw, bh = b
+    x1, y1 = max(ax, bx), max(ay, by)
+    x2, y2 = min(ax + aw, bx + bw), min(ay + ah, by + bh)
+    if x2 <= x1 or y2 <= y1:
+        return 0.0
+    return (x2 - x1) * (y2 - y1)
+
+
+def frame_is_usable(frame, screens):
+    """False when the frame should be discarded and the window centered.
+
+    `frame` is (x, y, w, h) or None. `screens` are visible frames, origin
+    bottom-left. Missing, tiny, and mostly-offscreen frames are unusable.
+    So is the uncentered default: the window still sitting on a screen's
+    bottom-left corner at the default 720 by 460 size. That is the frame
+    AppKit writes when the window was created at (0, 0) and never centered.
+    """
+    if not frame or not screens:
+        return False
+    x, y, w, h = frame
+    if w < MIN_W or h < MIN_H:
+        return False
+    area = w * h
+    if not any(_intersection_area(frame, screen) >= 0.5 * area for screen in screens):
+        return False
+    for sx, sy, _sw, _sh in screens:
+        if abs(x - sx) <= 2.0 and abs(y - sy) <= 2.0 and abs(w - DEFAULT_W) <= 2.0 and abs(h - DEFAULT_H) <= 2.0:
+            return False
+    return True
 
 
 def rects_inside(rect, bounds):

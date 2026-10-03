@@ -229,7 +229,7 @@ Use Claude Code (the terminal, or the Code tab in the desktop app). The chat sid
 ## Using the window
 
 - **Minimise** with the yellow button or Cmd+M.
-- **Resize** from any edge. It opens a bit smaller than it used to, and it will not go under about 640 by 420, so the sidebar and the stat cards still fit. Pages scroll instead of cutting off when the window is short. The size and position are remembered the next time it opens.
+- **Resize** from any edge. It opens a bit smaller than it used to, centered, and it will not go under about 640 by 420, so the sidebar and the stat cards still fit. Home card values shrink and the captions wrap onto a second line instead of ending in an ellipsis. Pages scroll instead of cutting off when the window is short. The size and position are remembered the next time it opens. A saved frame that is off the screen, or still sitting in the bottom-left corner at the default size, is centered again.
 - **Close** hides the window but keeps it listening. Click the Dock icon to bring it back.
 - **Keep on Top** in the Window menu (Cmd+T) keeps it above other apps. Off by default.
 - **Quit** with Cmd+Q.
