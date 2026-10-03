@@ -227,6 +227,7 @@ Use Claude Code (the terminal, or the Code tab in the desktop app). The chat sid
 ## Using the window
 
 - **Minimise** with the yellow button or Cmd+M.
+- **Resize** from any edge. It opens a bit smaller than it used to, and it will not go under about 640 by 420, so the sidebar and the stat cards still fit. Pages scroll instead of cutting off when the window is short. The size and position are remembered the next time it opens.
 - **Close** hides the window but keeps it listening. Click the Dock icon to bring it back.
 - **Keep on Top** in the Window menu (Cmd+T) keeps it above other apps. Off by default.
 - **Quit** with Cmd+Q.
@@ -308,7 +309,7 @@ Below 0.65 confidence it asks you to say it again, twice in a row and it gives u
 - `tests/` routing tests, the shortcut-folder safety check, and iPhone bridge validation. They mock `shortcuts` and `osascript`, so they run without macOS: `python3 -m unittest discover -s tests` or `python3 -m pytest`. GitHub Actions runs pytest on Python 3.9 and 3.12 for every push and pull request. The workflow does not install `requirements.txt`, because those packages include macOS-only builds and the tests do not import them.
 - `apps.json` the apps Jev can open, quit, hide, minimise, or focus by name. Other installed apps still open and quit from the transcript.
 - `dictation.py` and `bubble.py` dictation and its waveform bubble, `vocabulary.example.json` its word fixes (copy to `vocabulary.json`)
-- `assistant_ui.py` the window: status, mode switch, and the Home (stats), Dictionary, Apps, Dictation history, Privacy, Settings (microphone) and Keys tabs
+- `assistant_ui.py` the window: status, mode switch, and the Home (stats), Dictionary, Apps, Dictation history, Privacy, Settings (microphone) and Keys tabs. `assistant_layout.py` is the size math for that window (default, minimum, and where each control sits when you resize).
 - `secrets_store.py` Keychain read / write
 - `app.py` and `setup.py` the app bundle entry point and the py2app config, output lands in `dist/`
 - `assets/` the app icon
