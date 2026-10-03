@@ -112,6 +112,28 @@ def drag_origin(origin, start, now):
             float(origin[1]) + float(now[1]) - float(start[1]))
 
 
+def reset_origin(visible):
+    """Bottom-center of the main screen. `visible` is that screen, or main first."""
+    return place_bar(None, visible)
+
+
+def background_action(click_count, x, y, controls=None):
+    """What a click on the pill does.
+
+    A double-click on the background or an edge recenters the pill. A single
+    click there is a drag. The text field and the buttons keep their own clicks.
+    """
+    if hit_control(x, y, controls) is not None:
+        return "control"
+    try:
+        count = int(click_count)
+    except (TypeError, ValueError):
+        count = 1
+    if count >= 2:
+        return "reset"
+    return "drag"
+
+
 # NSWindowCollectionBehaviorCanJoinAllSpaces | FullScreenAuxiliary | Stationary.
 # Stationary keeps the pill from hopping when Spaces change; the other two put
 # it on every Space, including over a full-screen app.
@@ -142,7 +164,7 @@ def bar_controls():
 def hit_control(x, y, controls=None):
     """'plus', 'field', or 'mic' when a click lands on that control. Else None.
 
-    None means the pill background or an edge, which is a drag.
+    None means the pill background or an edge. A single click there drags, and a double-click recenters.
     """
     frames = controls or bar_controls()
     for name in ("plus", "field", "mic"):
