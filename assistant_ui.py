@@ -27,6 +27,9 @@ from AppKit import (
     NSEventMaskFlagsChanged,
     NSEventMaskKeyDown,
     NSEventModifierFlagOption,
+    NSEventMaskLeftMouseDragged,
+    NSEventMaskLeftMouseUp,
+    NSEventTypeLeftMouseUp,
     NSFont,
     NSImage,
     NSMakePoint,
@@ -45,6 +48,7 @@ from AppKit import (
     NSTableColumn,
     NSTableView,
     NSTextField,
+    NSTextFieldCell,
     NSView,
     NSVisualEffectBlendingModeBehindWindow,
     NSVisualEffectStateFollowsWindowActiveState,
@@ -54,6 +58,9 @@ from AppKit import (
     NSWindowStyleMaskClosable,
     NSWindowStyleMaskFullSizeContentView,
     NSWindowStyleMaskMiniaturizable,
+    NSWindowCollectionBehaviorCanJoinAllSpaces,
+    NSWindowCollectionBehaviorFullScreenAuxiliary,
+    NSWindowCollectionBehaviorStationary,
     NSWindowStyleMaskNonactivatingPanel,
     NSWindowStyleMaskResizable,
     NSWindowStyleMaskTitled,
@@ -79,7 +86,9 @@ from mini_bar import (
     PLACEHOLDER,
     PREF_KEY,
     BarController,
+    BAR_COLLECTION,
     bar_controls,
+    drag_origin,
     enabled_from_pref,
     format_origin,
     mic_event,
@@ -93,7 +102,6 @@ from secrets_store import KEY_NAMES, OPTIONAL, get_secret, missing_secrets, save
 
 NORMAL, FLOATING = 0, 3  # NSNormalWindowLevel, NSFloatingWindowLevel
 BAR_LEVEL = 25  # NSStatusWindowLevel, above the main window even when that one floats
-BAR_SPACES = 1 | 16 | 256  # canJoinAllSpaces, stationary, fullScreenAuxiliary
 SIDEBAR_MATERIAL = 7  # NSVisualEffectMaterialSidebar
 HINTS = {"ptt": "Hold right Option to talk", "wake": "Say “Hey Jev”, then your command"}
 MODES = ("ptt", "wake")
@@ -221,8 +229,32 @@ def app_key(name):
     return re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")  # "Claude Code" -> claude_code, what Jev matches on
 
 
+class CenteredFieldCell(NSTextFieldCell):
+    """One line of text, vertically centered in the field. Placeholder included."""
+
+    def drawingRectForBounds_(self, bounds):
+        rect = objc.super(CenteredFieldCell, self).drawingRectForBounds_(bounds)
+        font = self.font()
+        if font is None:
+            return rect
+        line = float(font.ascender() - font.descender())
+        extra = float(rect.size.height) - line
+        if extra <= 1.0:
+            return rect
+        return NSMakeRect(float(rect.origin.x), float(rect.origin.y) + extra / 2.0, float(rect.size.width), line)
+
+    def selectWithFrame_inView_editor_delegate_start_length_(self, rect, view, editor, delegate, start, length):
+        objc.super(CenteredFieldCell, self).selectWithFrame_inView_editor_delegate_start_length_(
+            self.drawingRectForBounds_(rect), view, editor, delegate, start, length)
+
+
 class MiniBarBackground(NSView):
-    """Dark rounded pill. Clicks on the empty part drag the bar."""
+    """Dark rounded pill. A click on the background or an edge drags it.
+
+    The + button, the text field, and the mic sit on top and keep their own clicks.
+    A nonactivating panel ignores the normal title-bar drag, so this tracks the
+    mouse in screen coordinates and moves the frame itself. That works across displays.
+    """
 
     def drawRect_(self, _rect):
         try:
@@ -237,7 +269,21 @@ class MiniBarBackground(NSView):
             print(f"  mini bar draw failed: {exc}")
 
     def mouseDown_(self, event):
-        self.window().performWindowDragWithEvent_(event)
+        window = self.window()
+        if window is None:
+            return
+        down = NSEvent.mouseLocation()
+        frame = window.frame()
+        start = (float(down.x), float(down.y))
+        origin = (float(frame.origin.x), float(frame.origin.y))
+        mask = NSEventMaskLeftMouseDragged | NSEventMaskLeftMouseUp
+        while True:
+            nxt = window.nextEventMatchingMask_(mask)
+            if nxt is None or nxt.type() == NSEventTypeLeftMouseUp:
+                break
+            now = NSEvent.mouseLocation()
+            x, y = drag_origin(origin, start, (float(now.x), float(now.y)))
+            window.setFrameOrigin_(NSMakePoint(x, y))
 
 
 class HoldMicButton(NSButton):
@@ -1104,7 +1150,19 @@ class AppDelegate(NSObject):
         self.mini_panel.setHidesOnDeactivate_(False)
         self.mini_panel.setBecomesKeyOnlyIfNeeded_(True)
         self.mini_panel.setMovableByWindowBackground_(True)
-        self.mini_panel.setCollectionBehavior_(BAR_SPACES)
+        # Every Space, including over full-screen apps. The numeric mask matches
+        # these AppKit flags; Stationary stops the pill hopping between Spaces.
+        self.mini_panel.setCollectionBehavior_(
+            NSWindowCollectionBehaviorCanJoinAllSpaces
+            | NSWindowCollectionBehaviorFullScreenAuxiliary
+            | NSWindowCollectionBehaviorStationary
+        )
+        if BAR_COLLECTION != (
+            int(NSWindowCollectionBehaviorCanJoinAllSpaces)
+            | int(NSWindowCollectionBehaviorFullScreenAuxiliary)
+            | int(NSWindowCollectionBehaviorStationary)
+        ):
+            self.mini_panel.setCollectionBehavior_(BAR_COLLECTION)
         self.mini_panel.setReleasedWhenClosed_(False)
         self.mini_panel.setRestorable_(False)
         appearance = NSAppearance.appearanceNamed_("NSAppearanceNameDarkAqua")
@@ -1122,9 +1180,12 @@ class AppDelegate(NSObject):
         root.addSubview_(self.mini_plus)
         _place(self.mini_plus, frames["plus"])
         self.mini_field = NSTextField.alloc().initWithFrame_(NSMakeRect(0, 0, 10, 10))
+        self.mini_field.setCell_(CenteredFieldCell.alloc().initTextCell_(""))
         self.mini_field.setBezeled_(False)
         self.mini_field.setDrawsBackground_(False)
         self.mini_field.setFocusRingType_(1)  # none
+        self.mini_field.setEditable_(True)
+        self.mini_field.setSelectable_(True)
         self.mini_field.setPlaceholderString_(PLACEHOLDER)
         self.mini_field.setFont_(NSFont.systemFontOfSize_(14))
         self.mini_field.setTextColor_(NSColor.whiteColor())
@@ -1177,14 +1238,26 @@ class AppDelegate(NSObject):
             panel.orderOut_(None)
 
     @objc.python_method
+    def _visible_screens(self):
+        """Visible frames, main screen first, then any other display."""
+        main = NSScreen.mainScreen()
+        screens = list(NSScreen.screens() or [])
+        if main is not None:
+            screens = [main] + [screen for screen in screens if screen != main]
+        frames = []
+        for screen in screens:
+            rect = screen.visibleFrame()
+            frames.append((float(rect.origin.x), float(rect.origin.y),
+                           float(rect.size.width), float(rect.size.height)))
+        return frames
+
+    @objc.python_method
     def _order_bar_front(self):
-        screen = NSScreen.mainScreen()
-        if screen is None:
+        screens = self._visible_screens()
+        if not screens:
             return
-        rect = screen.visibleFrame()
-        visible = (float(rect.origin.x), float(rect.origin.y), float(rect.size.width), float(rect.size.height))
         saved = parse_origin(NSUserDefaults.standardUserDefaults().stringForKey_(ORIGIN_KEY))
-        x, y = place_bar(saved, visible)
+        x, y = place_bar(saved, screens)
         self.mini_panel.setFrameOrigin_(NSMakePoint(x, y))
         self.mini_panel.orderFrontRegardless()
 
