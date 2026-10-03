@@ -11,7 +11,15 @@ A voice assistant for your Mac. Say "Hey Jev" or hold right Option, say a thing,
 
 ## What it can do
 
-Open or quit apps, Mac volume up / down / mute / set, Apple Music play / pause / next / previous / what's playing, dark mode, lock or sleep the Mac. Spotify volume and playback stay available only when the Spotify app is installed and you name Spotify. Two things in one sentence work too: "pause the music and open Notes".
+Open, quit, hide, minimise or switch to apps, open a new browser tab or a website ("open youtube.com in Brave"), Mac volume up / down / mute / set, Apple Music play / pause / next / previous / what's playing, dark mode, lock or sleep the Mac. Spotify volume and playback stay available only when the Spotify app is installed and you name Spotify. Two things in one sentence work too: "pause the music and open Notes".
+
+### Adding apps
+
+Add, remove or fix apps in the **Apps** tab of the window, then restart Jev. They're saved to `apps.json`, where you can also add a line by hand like `"notion": "Notion"` (the name you say, then the app's name in /Applications) and restart. For apps the transcriber gets wrong, use the longer form with a `heard_as` list:
+
+```json
+"claude_code": {"app": "Claude", "say": "Claude Code", "heard_as": ["cloud code", "clawed code"]}
+```
 
 Open and quit work for any installed app, not just a fixed list. "Open cap cut", "launch ChatGPT", "start Cursor", and "open the Claude app" are matched against `/Applications`, `/System/Applications` (including Utilities), and `~/Applications`. Quit is a polite quit. It will not quit Finder or Hey Jev. "Quit all" asks you to say yes within about 10 seconds, and it has to be its own command.
 
@@ -24,8 +32,8 @@ Shortcuts run only from a Shortcuts folder named `Jev`: "run shortcut Leaving fo
 These are also answered on the Mac, with no TypeSafe or LLM call:
 
 - **Weather:** "weather", "what's the weather". Current conditions, high, low, and chance of rain for Upland, CA, from Open-Meteo. No API key. If the request takes more than about 4 seconds, or it fails, she says she couldn't check the weather.
-- **Brief me:** the date, that weather, today's events, the next shift, and the first few items from the due list. Gmail is an optional step. It stays off unless a Google OAuth token is stored in the Keychain under service `com.jevsiri.keys`, account `GOOGLE_OAUTH_TOKEN`. This build does not include a Google client library and does not call Google. `gmail_brief_line()` in `commands.py` is the stub to replace if you add that later.
-- **Messages from My Love:** "check my messages from My Love". Reads the latest 3 incoming messages from the handles at the top of `commands.py` (`MY_LOVE_HANDLES`: `+15623616724` and `cgarcilazo6724@icloud.com`). When the `text` column is empty, the body is decoded from `attributedBody`. She speaks them with the Mac `say` command only. They are not sent to Fish Audio, TypeSafe, or an LLM, and the iPhone bridge will not run this command. Full Disk Access is optional and is the only reason to grant it. Without it, she says how to turn it on.
+- **Brief me:** the date, that weather, today's events, the next shift, and the first few items from the due list. Gmail is an optional step. It stays off unless a Google OAuth token is stored in the Keychain under service `com.jevsiri.keys`, account `GOOGLE_OAUTH_TOKEN`. This build does not include a Google client library and does not call Google. `gmail_brief_line()` in `commands/weather.py` is the stub to replace if you add that later.
+- **Messages from My Love:** "check my messages from My Love". Reads the latest 3 incoming messages from the handles in `commands/config.py` (`MY_LOVE_HANDLES`: `+15623616724` and `cgarcilazo6724@icloud.com`). When the `text` column is empty, the body is decoded from `attributedBody`. She speaks them with the Mac `say` command only. They are not sent to Fish Audio, TypeSafe, or an LLM, and the iPhone bridge will not run this command. Full Disk Access is optional and is the only reason to grant it. Without it, she says how to turn it on.
 - **Notes:** "take a note: buy oat milk" appends a timestamped line to `~/Documents/Jev/notes.md`, creating the file if needed.
 - **Due this week:** "what's due this week" reads `~/Documents/Jev/due.md`. See the format below.
 - **Focus:** "start focus mode" or "start focus mode for 10 minutes" runs the shortcut `Jev Focus On`, then a timer. The default is 25 minutes. When it ends, she runs `Jev Focus Off` and says focus is off. Hey Jev has to stay open for the off shortcut. Both shortcuts must live in the Jev folder. See below.
@@ -37,7 +45,7 @@ Timers and reminders: "set a timer for 5 minutes", "remind me in 20 minutes to c
 
 ## Round 2 commands
 
-These are chosen from the transcript before any TypeSafe or LLM call. A sentence that only resembles one of them ("how long until summer", "help me write an email", "what's the weather in paris") still goes to the LLM. Edit the maps at the top of `commands.py`: `KNOWN_APPS`, `APP_NICKNAMES`, `SITE_CONFIG`, and `SHIFT_TITLE_PATTERNS`.
+These are chosen from the transcript before any TypeSafe or LLM call. A sentence that only resembles one of them ("how long until summer", "help me write an email", "what's the weather in paris") still goes to the LLM. Edit the maps in `commands/config.py`: `KNOWN_APPS`, `APP_NICKNAMES`, `SITE_CONFIG`, and `SHIFT_TITLE_PATTERNS`.
 
 - **Apps.** "Open settings", "open business email", "open my phone", "open numbers", "open clean my mac". Nicknames live in `APP_NICKNAMES` (business email and Zoho are Zoho Mail - Desktop, my phone and mirroring are iPhone Mirroring, numbers and budget app are Numbers Creator Studio, settings is System Settings). She launches with `open -a` and says the app isn't installed when that fails.
 - **Sites, in Google Chrome.** WorkJam, UKG, the Apple employee portal, UMGC (`learn.umgc.edu`), Shopify admin, the store site, Cal.com bookings, the IHSS timesheet portal, USCIS case status, Bank of America, Fidelity, Capital One, and GitHub. URLs marked editable in `SITE_CONFIG` are a public login page you should replace with the one you use. She does not fetch those pages, and she does not sign in.
@@ -68,7 +76,7 @@ ihss: semi-monthly
 
 ### Shift titles and the due list
 
-Add a pattern to `SHIFT_TITLE_PATTERNS` in `commands.py` if a store name should count as a shift. School and bill questions also look at tags on the due line:
+Add a pattern to `SHIFT_TITLE_PATTERNS` in `commands/config.py` if a store name should count as a shift. School and bill questions also look at tags on the due line:
 
 ```markdown
 - 2026-10-01 Pay rent
@@ -119,7 +127,7 @@ The secret is only in the Mac Keychain, service `com.jevsiri.keys`, account `JEV
 .venv/bin/python siri.py --bridge-secret
 ```
 
-That prints the secret once. Copy it into the iPhone Shortcut and do not commit it. A file is rejected when the signature is wrong, when `ts` is more than 120 seconds from the Mac's clock, or when that nonce was already used. The inbox file is deleted after it is handled. Quit-all, reading messages, and anything that needs a spoken confirmation are refused. Allowed phrases are the local ones: time, date, what's today, weather, calendar, shift, open apps, brief me, due, Zoe, take a note, focus, IHSS hours, and case status.
+That prints the secret once. Copy it into the iPhone Shortcut and do not commit it. A file is rejected when the signature is wrong, when `ts` is more than 120 seconds from the Mac's clock, when that nonce was already used, or when `cmd` is longer than 2000 characters (`BRIDGE_MAX_CMD`). The inbox file is deleted after it is handled. Quit-all, reading messages (including My Love), and anything that needs a spoken confirmation are refused. Allowed phrases are the local ones: time, date, what's today, weather, calendar, shift, open apps, brief me, due, Zoe, take a note, focus, IHSS hours, and case status.
 
 ### iPhone Shortcut
 
@@ -135,9 +143,15 @@ That prints the secret once. Copy it into the iPhone Shortcut and do not commit 
 10. **Wait** 4 seconds. iCloud can be slow; if the next step misses, wait 8 seconds or repeat the wait a couple of times.
 11. **Get File** `iCloud Drive/Jev/outbox/Nonce.json`.
 12. **Get Dictionary from Input**, then **Get Dictionary Value** for the key `reply`.
-13. **Speak Text** that reply. Optionally delete the outbox file.
+13. **Speak Text** that reply. Optionally delete the outbox file. If the shortcut never does, the Mac deletes that reply after about 10 minutes.
 
-The Mac also speaks the reply while the shortcut reads it back. Message text is never written to the outbox.
+The Mac also speaks the reply while the shortcut reads it back. Message text is never written to the outbox. Each inbox poll, and the moment the bridge thread starts, deletes reply files in that outbox that are older than 10 minutes (`OUTBOX_TTL_SECONDS` in `commands/config.py`). Only a regular file directly in the outbox, named like the nonce plus `.json`, is removed. A shortcut can still delete a reply after it reads it. It does not have to.
+
+Dictation: say "Hey Jev, transcribe" and a little waveform bubble shows at the bottom of the screen. Talk as long as you like, then say "Hey Jev, stop transcribing" and the text is pasted where your cursor is (and left on the clipboard). It uses `gpt-4o-mini-transcribe` through your OpenRouter key, so no extra key. Every dictation is saved to `~/Library/Logs/Hey Jev dictation.jsonl`.
+
+To fix words it gets wrong, open the **Dictionary** tab in the window: add a word and the ways it gets misheard, and it's used straight away. It saves to `vocabulary.json`, which is gitignored so your words stay private (`vocabulary.example.json` is the starter list).
+
+**Privacy note:** dictation is optional, and it's the one feature that sends your voice off your Mac. The audio between "transcribe" and "stop transcribing" is uploaded to OpenRouter, which passes it to OpenAI's `gpt-4o-mini-transcribe`. Add an OpenAI key in Keys and it goes straight to OpenAI instead, so only one company sees it. If you don't want your audio leaving your Mac, just don't use dictation. Everything else Jev hears is transcribed locally by Whisper, and only the text of your commands after "Hey Jev" is sent to TypeSafe. Messages from My Love stay on the Mac: the `say` command speaks them, and that command is refused on the iPhone bridge.
 
 Anything that isn't a command ("who wrote Hamlet") goes to Claude Haiku via OpenRouter and gets spoken back. Haiku is told the current local date and time, so "tomorrow" in a reminder lines up with today.
 
@@ -149,7 +163,10 @@ Anything that isn't a command ("who wrote Hamlet") goes to Claude Haiku via Open
 - Three API keys:
   - **TypeSafe (Jev):** [https://typesafe.ai](https://typesafe.ai)
   - **Fish Audio:** [https://fish.audio/?fpr=henryk](https://fish.audio/?fpr=henryk). Sign in, then create a key on the API keys page in your account. You don't need a paid plan or API credit: the `s2.1-pro-free` model this app uses is free on the API until the end of November 2026.
-  - **OpenRouter (optional):** [https://openrouter.ai](https://openrouter.ai), only used to answer questions
+  - **OpenRouter:** [https://openrouter.ai](https://openrouter.ai), answers questions and does dictation
+  - **OpenAI (optional):** [https://platform.openai.com](https://platform.openai.com), sends dictation straight to OpenAI instead of through OpenRouter
+
+
 
 ### Don't have Python?
 
@@ -164,6 +181,8 @@ If that prints a version, you're set. If not, pick one:
 - **Easiest:** download the macOS installer from [python.org/downloads](https://www.python.org/downloads/) and run it.
 - **With Homebrew:** `brew install python`
 
+
+
 ## Setup
 
 ```bash
@@ -175,13 +194,13 @@ python3 -m venv .venv
 open "dist/Hey Jev - Fish Audio.app"
 ```
 
-The py2app line builds the app bundle in alias mode, so it runs the code straight from this folder. Build it once, and again if you move the folder or if `setup.py` changes. Calendar access is one of those `setup.py` changes: rebuild, then quit and reopen, or macOS never shows the new permission prompt. `py2app` itself is not in the runtime requirements; install it with `.venv/bin/pip install py2app` when you build.
+The py2app line builds the app bundle in alias mode, so it runs the code straight from this folder. Build it once, and again if you move the folder or if `setup.py` changes. Calendar access is one of those `setup.py` changes: rebuild, then quit and reopen, or macOS never shows the new permission prompt. `py2app` itself is not in the runtime requirements; install it with `.venv/bin/pip install 'py2app~=0.28.9'` when you build. `0.28.10` requires Python 3.10. `requirements.txt` uses compatible-release pins (`~=`) chosen for this Python 3.9 venv. After pulling a pin change, reinstall with `.venv/bin/pip install -r requirements.txt`.
 
 First launch:
 
-1. The Keys panel opens. Paste your three keys, they're saved in your Mac Keychain. Change them any time with the **Keys…** button.
+1. The window opens on the **Keys** tab. Paste your keys and hit Save keys, they're saved in your Mac Keychain. Change them any time in the same tab.
 2. Whisper downloads its `small.en` model (about 250MB), one time.
-3. macOS will ask for **Microphone** access. Say yes.
+3. macOS will ask for **Microphone** access. Say yes. To use a different mic, pick it in the **Settings** tab.
 4. Add "Hey Jev - Fish Audio" (or your terminal, if you run from the terminal) under **System Settings > Privacy & Security > Accessibility**, or key presses are ignored.
 5. The first time it controls Music, Reminders, ChatGPT, Finder, or System Events (brightness, show desktop, dark mode, typing into ChatGPT) you'll get an **Automation** prompt. Say yes. Quitting an app does not ask once per app. Screenshots need **Screen Recording**. Rebuild with `python setup.py py2app -A` after this round so the app's Apple Events description matches; `setup.py` changed and `requirements.txt` did not.
 6. The first calendar question ("what's next", "what's my schedule today", "when's my next shift", "brief me", "what's Zoe got tomorrow") asks for **Calendars → Full Access**. Allow it. That string is in the app bundle, so rebuild with `python setup.py py2app -A` after pulling a `setup.py` change, then quit and reopen. A `--text` run from Terminal asks Terminal (or Cursor) for calendar access, not the Hey Jev bundle.
@@ -189,16 +208,18 @@ First launch:
 8. **Full Disk Access is optional.** Grant it only if you want "check my messages from My Love". System Settings > Privacy & Security > Full Disk Access, add Hey Jev (or Terminal, if you use `--text`). Everything else works without it.
 9. Weather calls `api.open-meteo.com` (no key). The iPhone bridge does not open a port. It only reads and writes the iCloud Drive folder described above.
 
-The window goes green when it's ready. The switch in the bottom right picks how you talk to it:
+The dot at the top goes green when it's ready. The switch in the top right picks how you talk to it:
 
 - **Hold Option:** hold right Option, talk, let go.
 - **Hey Jev:** always listening. Say "Hey Jev, open Spotify" in one go, or say "Hey Jev", wait for her reply, then give the command.
+
+
 
 ### Or let Claude Code set it up
 
 Paste this into Claude Code with the repo link:
 
-> Clone https://github.com/henryklunaris/hey-jev and set it up on my Mac. Check Python 3 is installed and help me install it if not. Create a venv from requirements.txt, build the app with `python setup.py py2app -A`, then tell me which API keys I need, where to get them, and which macOS permissions to grant. Then open the app from the dist folder.
+> Clone [https://github.com/henryklunaris/hey-jev](https://github.com/henryklunaris/hey-jev) and set it up on my Mac. Check Python 3 is installed and help me install it if not. Create a venv from requirements.txt, build the app with `python setup.py py2app -A`, then tell me which API keys I need, where to get them, and which macOS permissions to grant. Then open the app from the dist folder.
 
 Use Claude Code (the terminal, or the Code tab in the desktop app). The chat side of Claude Desktop runs commands in a Linux sandbox, not on your Mac, so the Mac only packages fail there.
 
@@ -208,6 +229,8 @@ Use Claude Code (the terminal, or the Code tab in the desktop app). The chat sid
 - **Close** hides the window but keeps it listening. Click the Dock icon to bring it back.
 - **Keep on Top** in the Window menu (Cmd+T) keeps it above other apps. Off by default.
 - **Quit** with Cmd+Q.
+
+
 
 ## Running from the terminal
 
@@ -242,7 +265,7 @@ Useful for seeing the Jev trace (every question, answer and confidence per turn)
 
 "Check my messages from My Love" speaks with `say` and needs Full Disk Access on whichever app you run it from. "Check my case status" opens a browser. "Start focus mode" turns focus on; the off shortcut only runs if Hey Jev stays open, so a one-shot `--text` run will not turn it off. `--bridge-secret` prints a new Keychain secret. The trace for the local phrases above should not show a Jev or Haiku call.
 
-Keys can also go in a `.env` file in this folder (`TYPESAFE_API_KEY`, `FISH_AUDIO_API_KEY`, `OPENROUTER_API_KEY`). A key in `.env` takes priority over the one saved in the Keychain.
+Keys can also go in a `.env` file in this folder (`TYPESAFE_API_KEY`, `FISH_AUDIO_API_KEY`, `OPENROUTER_API_KEY`, `OPENAI_API_KEY`). A key in `.env` takes priority over the one saved in the Keychain. The bridge secret is the exception: `JEV_BRIDGE_SECRET` is read from the Keychain only, not from `.env`.
 
 ## How it works
 
@@ -251,7 +274,7 @@ Keys can also go in a `.env` file in this folder (`TYPESAFE_API_KEY`, `FISH_AUDI
 3. Local commands (weather, today, calendar, the brief, messages, notes, due, focus, IHSS, case status, Zoe, time, date, open apps, and a named Jev shortcut) are chosen in `decide()` from the transcript alone, before any TypeSafe or LLM call. Anything else is one Jev call that asks every question at once (category, is it compound, target, which app, which action, volume level, and so on). The code ignores the answers that don't apply. This is the speculative fan-out pattern from the TypeSafe docs.
 4. If Jev says the request is two things, a second Jev call asks the same questions twice, scoped to "the first action" and "the second action". No LLM needed to split.
 5. The action runs as a one line `osascript` or shell command. Opening an app uses `open -a`. Quitting uses a polite terminate, not AppleScript. Spoken text is never pasted into an AppleScript string.
-6. A scripted reply with emotion tags is picked at random and played. Fixed lines are pre-rendered into `cache/tts/` on first launch, so replies are instant. `{app}` is only filled in for the favourite list (Spotify, Slack, Chrome, VS Code, Finder, Safari, Messages, Notes, Cursor, Claude, ChatGPT, CapCut). The time, a calendar title, and any other app name are generated when you ask. LLM answers are generated live too.
+6. A scripted reply with emotion tags is picked at random and played. Fixed lines are pre-rendered into `cache/tts/` on first launch, so replies are instant. `{app}` is filled from `apps.json`, using the `say` name when one is set. The time, a calendar title, and any other app name are generated when you ask. LLM answers are generated live too.
 
 Below 0.65 confidence it asks you to say it again, twice in a row and it gives up.
 
@@ -260,28 +283,37 @@ Below 0.65 confidence it asks you to say it again, twice in a row and it gives u
 - **Fish Audio:** $0. The `s2.1-pro-free` model string on the API is free until the end of November 2026. You don't need to top up API credits. (Their MCP and web playground bill your plan credits instead, this app doesn't use those.) After November the paid `s2.1-pro` is $15 per million characters, and the cached replies mean a normal day of use is a few cents.
 - **Jev:** $0.042 per million input tokens, output free. One command is about $0.00004, a two part command about $0.00011.
 - **Whisper:** free, runs on your Mac.
-- **OpenRouter (questions only):** Claude Haiku, about $0.0002 per answer.
+- **OpenRouter:** Claude Haiku for questions, about $0.0002 per answer. Dictation, if you use it, also goes through OpenRouter unless an OpenAI key is saved.
+
+
 
 ## Troubleshooting
 
 - **Holding Option does nothing.** The app needs Accessibility access. Add it under System Settings > Privacy & Security > Accessibility, then quit and reopen it.
-- **"401 Unauthorized" in the window.** One of your keys is wrong or expired. Re-paste it with the Keys… button. If you also have a `.env`, check the key there, because it wins over the Keychain.
+- **"401 Unauthorized" in the window.** One of your keys is wrong or expired. Re-paste it in the Keys tab. If you also have a `.env`, check the key there, because it wins over the Keychain.
 - **The app won't open again.** It's probably still running with the window closed. Click its Dock icon, or quit it properly with Cmd+Q and open it again.
+- **Checking what happened.** Every phrase it heard, what Jev decided and what she said is logged to `~/Library/Logs/Hey Jev.log`.
 - **It stopped controlling apps after a macOS update.** Updates can reset permissions. Check Microphone, Accessibility, Automation, and Calendars under Privacy & Security again.
 - **Calendar says it doesn't have access.** System Settings > Privacy & Security > Calendars, set Hey Jev to Full Access, then ask again. Write-only access is not enough. If you asked from `python siri.py --text`, the grant is on Terminal or Cursor, not on the app bundle.
 - **Messages says to turn on Full Disk Access.** That command is the only one that needs it. Add Hey Jev (or Terminal / Cursor, if you used `--text`) under Privacy & Security > Full Disk Access, then ask again. Leave it off and the rest of the app still works.
-- **The iPhone shortcut never speaks a reply.** Hey Jev has to be running on the Mac. The JSON file has to land in `iCloud Drive/Jev/inbox`, the signature has to be the HMAC of `cmd|ts|nonce`, and the phone's clock has to be within 2 minutes of the Mac. A reused nonce is ignored.
+- **The iPhone shortcut never speaks a reply.** Hey Jev has to be running on the Mac. The JSON file has to land in `iCloud Drive/Jev/inbox`, the signature has to be the HMAC of `cmd|ts|nonce`, and the phone's clock has to be within 2 minutes of the Mac. A reused nonce is ignored. A reply file older than 10 minutes is deleted on the Mac.
+
+
 
 ## Files
 
 - `siri.py` all the logic: questions, actions, replies, Whisper, Fish, LLM fallback
-- `commands.py` open and quit any app, sites, time and date, calendar and shifts, weather, the brief, messages, notes, the due list, school, bills, payday, focus, IHSS, case status, Zoe, Mac controls, the iPhone bridge, the verified Jev shortcuts folder, and the yes/no confirmation
-- `tests/test_round2.py` routing tests and the shortcut-folder safety check. They mock `shortcuts` and `osascript`, so they run without macOS: `python3 -m unittest tests.test_round2`
-- `assistant_ui.py` the status window, mode switch and Keys panel
+- `commands/` local commands, split by area. `commands/config.py` holds the maps you edit (`KNOWN_APPS`, `APP_NICKNAMES`, `SITE_CONFIG`, `SHIFT_TITLE_PATTERNS`, `MY_LOVE_HANDLES`, `PRINCESS_ACADEMY_URL`, `SHOPIFY_ORDERS_URL`). The other modules cover time and date, calendar and shifts, money, notes and the due list, messages, media, Mac controls, the verified Jev shortcuts folder, yes/no confirmation, and the iPhone bridge. `import commands` is unchanged, so `siri.py` and the alias build keep the same entry points.
+- `tests/` routing tests, the shortcut-folder safety check, and iPhone bridge validation. They mock `shortcuts` and `osascript`, so they run without macOS: `python3 -m unittest discover -s tests` or `python3 -m pytest`. GitHub Actions runs pytest on Python 3.9 and 3.12 for every push and pull request. The workflow does not install `requirements.txt`, because those packages include macOS-only builds and the tests do not import them.
+- `apps.json` the apps Jev can open, quit, hide, minimise, or focus by name. Other installed apps still open and quit from the transcript.
+- `dictation.py` and `bubble.py` dictation and its waveform bubble, `vocabulary.example.json` its word fixes (copy to `vocabulary.json`)
+- `assistant_ui.py` the window: status, mode switch, and the Home (stats), Dictionary, Apps, Dictation history, Privacy, Settings (microphone) and Keys tabs
 - `secrets_store.py` Keychain read / write
 - `app.py` and `setup.py` the app bundle entry point and the py2app config, output lands in `dist/`
 - `assets/` the app icon
 
+
+
 ## Change the voice
 
-`VOICE_ID` at the top of `siri.py`. Find voices at [https://fish.audio](https://fish.audio), open one and copy its ID from the page link. Her replies re-render in the new voice automatically on the next launch.
+`VOICE_ID` at the top of `siri.py`. Find voices at [https://fish.audio/?fpr=henryk](https://fish.audio/?fpr=henryk) open one and copy its ID from the page link. Her replies re-render in the new voice automatically on the next launch.
