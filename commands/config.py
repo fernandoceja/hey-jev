@@ -44,10 +44,10 @@ SWEEP_SPOKEN_PATH = os.path.expanduser(
     "~/Library/Application Support/Hey Jev/sweep-spoken.txt"
 )
 PRINCESS_SHORTCUT = "Zoe's Princess Academy"
-# Used only when that shortcut is not in the Jev folder. Leave blank to skip the site.
-PRINCESS_ACADEMY_URL = ""
-# Orders has no store slug here. Paste https://admin.shopify.com/store/YOUR-STORE/orders
-SHOPIFY_ORDERS_URL = "https://admin.shopify.com/"
+# Used when that shortcut is not in the Jev folder.
+PRINCESS_ACADEMY_URL = "https://fernandoceja.github.io/Zoe-s-Princess-Academy/"
+# "any new orders" and "open shopify orders".
+SHOPIFY_ORDERS_URL = "https://admin.shopify.com/store/80-s-obsession-company/orders"
 BRIGHTNESS_UP_CODE = 144
 BRIGHTNESS_DOWN_CODE = 145
 SHOW_DESKTOP_CODE = 103  # F11, the usual Show Desktop shortcut
@@ -189,23 +189,23 @@ APP_NICKNAMES = {
 SITE_CONFIG = (
     {"phrases": ("workjam", "work jam"), "url": "https://app.workjam.com/login",
      "label": "WorkJam", "editable": False},
-    {"phrases": ("ukg",), "url": "https://www.ukg.com/",
-     "label": "UKG", "editable": True},
+    {"phrases": ("ukg",), "url": "https://sso.prd.mykronos.com",
+     "label": "UKG", "editable": False},
     {"phrases": ("apple employee portal", "employee portal", "appleconnect", "apple connect"),
-     "url": "https://appleconnect.apple.com/", "label": "the Apple employee portal", "editable": True},
+     "url": "https://people.apple.com/", "label": "the Apple employee portal", "editable": False},
     {"phrases": ("umgc", "umgc class", "class site", "school site", "learn umgc"),
      "url": "https://learn.umgc.edu/", "label": "UMGC", "editable": False},
     {"phrases": ("shopify", "shopify admin"), "url": "https://admin.shopify.com/",
      "label": "Shopify admin", "editable": False},
     {"phrases": ("shopify orders", "orders"), "url": SHOPIFY_ORDERS_URL,
-     "label": "Shopify orders", "editable": True},
+     "label": "Shopify orders", "editable": False},
     {"phrases": ("80s obsession", "80s obsession company", "store", "store site", "our store",
                  "business site", "our website"),
      "url": "https://80sobsessioncompany.com/", "label": "the store site", "editable": False},
     {"phrases": ("bookings", "cal.com", "cal com", "my bookings"),
      "url": "https://app.cal.com/bookings", "label": "bookings", "editable": False},
     {"phrases": ("ihss", "ihss portal", "ets", "timesheet portal", "timesheets", "ihss timesheet"),
-     "url": "https://etspublic.cdss.ca.gov/", "label": "the IHSS timesheet portal", "editable": True},
+     "url": "https://etimesheets.ihss.ca.gov/login", "label": "the IHSS timesheet portal", "editable": False},
     {"phrases": ("case status", "uscis", "uscis case status"),
      "url": CASE_STATUS_URL, "label": "case status", "editable": False},
     {"phrases": ("bank of america", "bofa", "boa"),
