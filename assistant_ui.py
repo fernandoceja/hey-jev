@@ -87,6 +87,7 @@ from mini_bar import (
     PREF_KEY,
     BarController,
     BAR_COLLECTION,
+    background_action,
     bar_controls,
     drag_origin,
     enabled_from_pref,
@@ -95,6 +96,7 @@ from mini_bar import (
     parse_origin,
     place_bar,
     reply_text,
+    reset_origin,
     submission,
 )
 from secrets_store import KEY_NAMES, OPTIONAL, get_secret, missing_secrets, save_secret
@@ -252,8 +254,9 @@ class MiniBarBackground(NSView):
     """Dark rounded pill. A click on the background or an edge drags it.
 
     The + button, the text field, and the mic sit on top and keep their own clicks.
-    A nonactivating panel ignores the normal title-bar drag, so this tracks the
-    mouse in screen coordinates and moves the frame itself. That works across displays.
+    A double-click on the background recenters the pill. A nonactivating panel
+    ignores the normal title-bar drag, so a single click tracks the mouse in
+    screen coordinates and moves the frame itself. That works across displays.
     """
 
     def drawRect_(self, _rect):
@@ -271,6 +274,15 @@ class MiniBarBackground(NSView):
     def mouseDown_(self, event):
         window = self.window()
         if window is None:
+            return
+        point = self.convertPoint_fromView_(event.locationInWindow(), None)
+        action = background_action(event.clickCount(), float(point.x), float(point.y))
+        if action == "reset":
+            delegate = window.delegate()
+            if delegate is not None:
+                delegate.resetMiniBarPosition_(self)
+            return
+        if action != "drag":
             return
         down = NSEvent.mouseLocation()
         frame = window.frame()
@@ -1109,6 +1121,7 @@ class AppDelegate(NSObject):
         self.on_top_item.setState_(1 if self.on_top else 0)
         menu.addItemWithTitle_action_keyEquivalent_("Show Hey Jev", "showMain:", "1").setTarget_(self)
         menu.addItemWithTitle_action_keyEquivalent_("Hide Mini Bar", "hideMiniBar:", "").setTarget_(self)
+        menu.addItemWithTitle_action_keyEquivalent_("Reset Mini Bar Position", "resetMiniBarPosition:", "").setTarget_(self)
         item.setSubmenu_(menu)
         NSApp.setWindowsMenu_(menu)
 
@@ -1128,6 +1141,15 @@ class AppDelegate(NSObject):
     def hideMiniBar_(self, _sender):
         self.bar.dismiss()
         self._apply_bar_visibility()
+
+    def resetMiniBarPosition_(self, _sender):
+        """Bottom-center of the main screen, remembered for the next launch."""
+        panel = getattr(self, "mini_panel", None)
+        if panel is None:
+            return
+        x, y = reset_origin(self._visible_screens())
+        panel.setFrameOrigin_(NSMakePoint(x, y))
+        NSUserDefaults.standardUserDefaults().setObject_forKey_(format_origin(x, y), ORIGIN_KEY)
 
     def miniBarChanged_(self, sender):
         enabled = sender.state() == 1

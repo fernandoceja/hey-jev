@@ -14,6 +14,7 @@ from mini_bar import (
     PLACEHOLDER,
     REPLY_SECONDS,
     BarController,
+    background_action,
     bar_controls,
     drag_origin,
     enabled_from_pref,
@@ -23,6 +24,7 @@ from mini_bar import (
     parse_origin,
     place_bar,
     reply_text,
+    reset_origin,
     submission,
 )
 
@@ -255,6 +257,40 @@ class TestPlacement(unittest.TestCase):
         self.assertIn("ORIGIN_KEY", moved)
         order = _func(ui, "_order_bar_front")
         self.assertIn("place_bar(saved, screens)", order)
+
+    def test_double_click_on_the_background_recenters_on_the_main_screen(self):
+        screens = (AIR, RIGHT, LEFT)
+        home = place_bar(None, screens)
+        self.assertEqual(reset_origin(screens), home)
+        self.assertEqual(reset_origin(AIR), home)
+        self.assertNotEqual(home, (1600.0, 200.0))
+        self.assertEqual(reset_origin([]), (0.0, DOCK_GAP))
+        frames = bar_controls()
+        field, plus, mic = frames["field"], frames["plus"], frames["mic"]
+        self.assertEqual(background_action(1, 1.0, BAR_H / 2.0), "drag")
+        self.assertEqual(background_action(2, 1.0, BAR_H / 2.0), "reset")
+        self.assertEqual(background_action(2, BAR_W / 2.0, 1.0), "reset")
+        self.assertEqual(background_action(2, BAR_W - 1.0, BAR_H / 2.0), "reset")
+        self.assertEqual(background_action(2, field[0] + 4, field[1] + 4), "control")
+        self.assertEqual(background_action(1, field[0] + 4, field[1] + 4), "control")
+        self.assertEqual(background_action(2, plus[0], plus[1]), "control")
+        self.assertEqual(background_action(2, mic[0] + 1, mic[1] + 1), "control")
+
+    def test_the_window_menu_resets_the_same_saved_position(self):
+        ui = open(os.path.join(ROOT, "assistant_ui.py"), encoding="utf-8").read()
+        self.assertIn(
+            'addItemWithTitle_action_keyEquivalent_("Reset Mini Bar Position", "resetMiniBarPosition:", "")',
+            ui,
+        )
+        reset = _func(ui, "resetMiniBarPosition_")
+        self.assertIn("reset_origin", reset)
+        self.assertIn("ORIGIN_KEY", reset)
+        self.assertIn("setFrameOrigin_", reset)
+        drag = _func(ui, "mouseDown_")
+        self.assertIn("background_action", drag)
+        self.assertIn("resetMiniBarPosition_", drag)
+        self.assertLess(drag.index("resetMiniBarPosition_"), drag.index("drag_origin"))
+        self.assertIn("return", drag[:drag.index("drag_origin")])
 
     def test_settings_toggle_sits_under_the_microphone_row(self):
         for width, height in ((MIN_W, MIN_H), (DEFAULT_W, DEFAULT_H)):
