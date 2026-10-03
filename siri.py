@@ -1420,6 +1420,11 @@ def run_voice_assistant(notify=None, controls=None, mode="ptt", mic=""):
                 start_recording()
             elif command == "release":
                 stop_recording()
+            elif isinstance(command, tuple) and command[0] == "text":
+                # Mini bar. Same turn as a voice command, including TypeSafe or the
+                # LLM when nothing local matches. Does not ask the window to come forward.
+                typed = str(command[1] if len(command) > 1 else "")
+                threading.Thread(target=run_turn, args=(typed, None), daemon=True).start()
 
     if rec.wake:
         threading.Event().wait()
