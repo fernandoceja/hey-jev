@@ -26,6 +26,7 @@ COMMAND_PROMPT = (
     "Open Spotify. Open CapCut. Open ChatGPT. Open Cursor. Open Claude. Quit Safari. "
     "What time is it. What's the date. What's today. What's the weather. Brief me. "
     "What's my schedule today. When's my next meeting. What's on my calendar. When's my next shift. What's next. "
+    "What's due today. Payday check. Any reminders today. "
     "What apps are open. Check my messages from My Love. Take a note. What's due this week. "
     "Start focus mode for 25 minutes. Log IHSS hours. Check my case status. What's Zoe got tomorrow. "
     "Run shortcut Leaving for work. Set a timer for five minutes. "
@@ -363,6 +364,7 @@ ACTIONS = {
     "info_rent": lambda _arg, _text: commands.speak_rent(),
     "info_bills": lambda _arg, _text: commands.speak_bills(),
     "info_payday": lambda _arg, _text: commands.speak_payday(),
+    "info_payday_check": lambda _arg, _text: commands.speak_payday_check(),
     "info_battery": lambda _arg, _text: commands.speak_battery(),
     "ihss_hours": lambda _arg, _text: commands.speak_ihss_period(),
     "ihss_remind": lambda _arg, _text: commands.remind_timesheet(),
@@ -1174,6 +1176,25 @@ def ready_text(wake):
     return "Say \u201cHey Jev\u201d and your command" if wake else "Ready when you are"
 
 
+def _speak_launch_sweep(notify):
+    """On the first launch of a sweep day, say the reminder once.
+
+    claim_daily_sweep writes the date before this returns, so a second launch
+    the same day gets nothing to say. A quiet day is silent and leaves no stamp.
+    """
+    try:
+        line = commands.claim_daily_sweep()
+    except Exception as exc:
+        print(f"  sweep: {type(exc).__name__}")
+        return
+    if not line:
+        return
+    try:
+        say(line, notify)
+    except Exception as exc:
+        print(f"  sweep: {type(exc).__name__}")
+
+
 def run_voice_assistant(notify=None, controls=None, mode="ptt", mic=""):
     from faster_whisper import WhisperModel
     print("loading whisper...")
@@ -1382,6 +1403,7 @@ def run_voice_assistant(notify=None, controls=None, mode="ptt", mic=""):
     threading.Thread(target=warm_cache, daemon=True).start()
     threading.Thread(target=wake_loop, daemon=True).start()
     set_mode(mode)
+    _speak_launch_sweep(notify)
     print("ready. ctrl+c to quit.")
     if controls is not None:
         while True:

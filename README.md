@@ -32,7 +32,7 @@ Shortcuts run only from a Shortcuts folder named `Jev`: "run shortcut Leaving fo
 These are also answered on the Mac, with no TypeSafe or LLM call:
 
 - **Weather:** "weather", "what's the weather". Current conditions, high, low, and chance of rain for Upland, CA, from Open-Meteo. No API key. If the request takes more than about 4 seconds, or it fails, she says she couldn't check the weather.
-- **Brief me:** the date, that weather, today's events, the next shift, and the first few items from the due list. Gmail is an optional step. It stays off unless a Google OAuth token is stored in the Keychain under service `com.jevsiri.keys`, account `GOOGLE_OAUTH_TOKEN`. This build does not include a Google client library and does not call Google. `gmail_brief_line()` in `commands/weather.py` is the stub to replace if you add that later.
+- **Brief me:** the date, that weather, today's events, the next shift, and the first few items from the due list. On an Apple payday, an IHSS deposit date, or an IHSS timesheet day, she adds that reminder. Gmail is an optional step. It stays off unless a Google OAuth token is stored in the Keychain under service `com.jevsiri.keys`, account `GOOGLE_OAUTH_TOKEN`. This build does not include a Google client library and does not call Google. `gmail_brief_line()` in `commands/weather.py` is the stub to replace if you add that later.
 - **Messages from My Love:** "check my messages from My Love". Reads the latest 3 incoming messages from the handles in `commands/config.py` (`MY_LOVE_HANDLES`: `+15623616724` and `cgarcilazo6724@icloud.com`). When the `text` column is empty, the body is decoded from `attributedBody`. She speaks them with the Mac `say` command only. They are not sent to Fish Audio, TypeSafe, or an LLM, and the iPhone bridge will not run this command. Full Disk Access is optional and is the only reason to grant it. Without it, she says how to turn it on.
 - **Notes:** "take a note: buy oat milk" appends a timestamped line to `~/Documents/Jev/notes.md`, creating the file if needed.
 - **Due this week:** "what's due this week" reads `~/Documents/Jev/due.md`. See the format below.
@@ -53,6 +53,7 @@ These are chosen from the transcript before any TypeSafe or LLM call. A sentence
 - **Shifts.** "When's my next shift", "am I working this weekend", "how long is my shift". A shift is a calendar event whose title matches `SHIFT_TITLE_PATTERNS` (an R-number such as R345, the word shift, Brea, or Apple). "When do I start at Brea" reads a Brea line in `due.md`, and a Brea event on the calendar when there is one.
 - **School.** "What's due for UMGC" or "what's due for school" reads `due.md` lines that mention UMGC, school, or class, or that carry `#umgc`, `#school`, or `#class`, for the next 30 days.
 - **Money, read-only.** "When's rent due" and "what bills are coming up" read `due.md` only. "How long until payday" uses `~/Documents/Jev/money.md` when that file exists, otherwise a default: Apple every other Friday anchored on 2026-09-25, and IHSS on the 15th and the last day of the month. She never opens a bank from these questions. Opening a bank site is a separate "open Bank of America" command, and that only launches Chrome.
+- **Payday sweep, date only.** "What's due today", "payday check", or "any reminders today" looks at the calendar, not a bank. On an Apple Friday she says "Apple payday today — move $600 to Zoe …4157." On the 15th or the last day of the month she says the same kind of line for IHSS. If both land on one day, she names both in one line. The 14th and the last day of the month also get "Time to submit your timesheet." A day that is none of those is silent inside "brief me", and the check command says nothing is due to sweep. The amount and the account label are `SWEEP_AMOUNT` and `SWEEP_ACCOUNT_LABEL` in `commands/config.py`. The Apple Friday is `DEFAULT_APPLE_PAY_ANCHOR` there, or `apple:` in money.md. The first launch of Hey Jev on a sweep day speaks the line once. The date is stored in `~/Library/Application Support/Hey Jev/sweep-spoken.txt`, so opening the app again that day does not repeat it. She does not look up a balance and she does not move the money.
 - **IHSS.** "Log 3 hours for grandma" appends to `ihss_hours.csv`, same as "log IHSS hours". "How many hours this pay period" totals the current 1st–15th or 16th–end period. "Remind me to submit my timesheet" creates a Reminders item titled Submit IHSS timesheet and says so.
 - **The LLC.** "Open Shopify admin", "open bookings", "open the store site", "any new orders" (opens the Shopify orders URL in `SHOPIFY_ORDERS_URL`; paste your store's orders link there), "open business email".
 - **Zoe.** "What's Zoe got tomorrow", "open Princess Academy" (runs the shortcut `Zoe's Princess Academy` when it is in the Jev folder, otherwise the URL in `PRINCESS_ACADEMY_URL` if you set one), "start a 10 minute timer for Zoe".
@@ -72,7 +73,7 @@ apple: 2026-09-25
 ihss: semi-monthly
 ```
 
-`apple:` is one payday, and it should be a Friday. The next payday is every 14 days from that date.
+`apple:` is one payday, and it should be a Friday. The next payday is every 14 days from that date. The $600 sweep and the "Zoe …4157" label are not read from this file. Change those in `commands/config.py`.
 
 ### Shift titles and the due list
 
@@ -127,7 +128,7 @@ The secret is only in the Mac Keychain, service `com.jevsiri.keys`, account `JEV
 .venv/bin/python siri.py --bridge-secret
 ```
 
-That prints the secret once. Copy it into the iPhone Shortcut and do not commit it. A file is rejected when the signature is wrong, when `ts` is more than 120 seconds from the Mac's clock, when that nonce was already used, or when `cmd` is longer than 2000 characters (`BRIDGE_MAX_CMD`). The inbox file is deleted after it is handled. Quit-all, reading messages (including My Love), and anything that needs a spoken confirmation are refused. Allowed phrases are the local ones: time, date, what's today, weather, calendar, shift, open apps, brief me, due, Zoe, take a note, focus, IHSS hours, and case status.
+That prints the secret once. Copy it into the iPhone Shortcut and do not commit it. A file is rejected when the signature is wrong, when `ts` is more than 120 seconds from the Mac's clock, when that nonce was already used, or when `cmd` is longer than 2000 characters (`BRIDGE_MAX_CMD`). The inbox file is deleted after it is handled. Quit-all, reading messages (including My Love), and anything that needs a spoken confirmation are refused. Anything that would move money is refused too. The payday check only speaks a reminder, and that one command is allowed by its own name (`info_payday_check`), not by a category. Allowed phrases are the local ones: time, date, what's today, weather, calendar, shift, open apps, brief me, due, payday check, Zoe, take a note, focus, IHSS hours, and case status.
 
 ### iPhone Shortcut
 

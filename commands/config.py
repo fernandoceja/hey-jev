@@ -23,6 +23,14 @@ SCHOOL_HORIZON_DAYS = 30
 BILL_HORIZON_DAYS = 45
 # Apple pay is every other Friday. This date is one payday. Override it in money.md.
 DEFAULT_APPLE_PAY_ANCHOR = "2026-09-25"
+# Spoken sweep reminder only. Jev never looks up a balance and never moves this money.
+# One place for the amount and the account label the payday line says out loud.
+SWEEP_AMOUNT = 600
+SWEEP_ACCOUNT_LABEL = "Zoe …4157"
+# The launch reminder writes the date here so the same day is not spoken again.
+SWEEP_SPOKEN_PATH = os.path.expanduser(
+    "~/Library/Application Support/Hey Jev/sweep-spoken.txt"
+)
 PRINCESS_SHORTCUT = "Zoe's Princess Academy"
 # Used only when that shortcut is not in the Jev folder. Leave blank to skip the site.
 PRINCESS_ACADEMY_URL = ""
@@ -102,6 +110,8 @@ BRIDGE_ALLOW = frozenset({
     "info_rent",
     "info_bills",
     "info_payday",
+    # Spoken date check only. It does not look up a balance or move money.
+    "info_payday_check",
     "info_battery",
     "info_help",
     "media_now",
@@ -262,6 +272,9 @@ STRICT_PATTERNS = (
     (re.compile(rf"^{_PLEASE}what(?:'s| is)\s+due(?:\s+this\s+week)?\s+for\s+(?:umgc|school|class|my\s+class){_TAIL}", re.I), "info_school"),
     (re.compile(rf"^{_PLEASE}what(?:'s| is)\s+due\s+for\s+(?:umgc|school|class|my\s+class){_TAIL}", re.I), "info_school"),
     (re.compile(rf"^{_PLEASE}(?:any|what(?:'s| is))\s+(?:umgc|school)\s+(?:work\s+)?due{_TAIL}", re.I), "info_school"),
+    (re.compile(rf"^{_PLEASE}what(?:'s| is)\s+due\s+today{_TAIL}", re.I), "info_payday_check"),
+    (re.compile(rf"^{_PLEASE}payday\s+check{_TAIL}", re.I), "info_payday_check"),
+    (re.compile(rf"^{_PLEASE}any\s+reminders?\s+today{_TAIL}", re.I), "info_payday_check"),
     (re.compile(rf"^{_PLEASE}what(?:'s| is) due(?: this week)?{_TAIL}", re.I), "info_due"),
     (re.compile(rf"^{_PLEASE}when(?:'s| is)\s+rent\s+due{_TAIL}", re.I), "info_rent"),
     (re.compile(rf"^{_PLEASE}what\s+bills\s+are\s+coming\s+up{_TAIL}", re.I), "info_bills"),
@@ -326,7 +339,7 @@ LOCAL_PATTERNS = (
 HELP_TEXT = (
     "I can open your apps and work sites, control volume, brightness, and the Mac, "
     "and play Apple Music or a YouTube search. I can read your calendar, shifts, school, "
-    "and bills, log IHSS hours, and run shortcuts that are in the Jev folder. "
+    "and bills, log IHSS hours, remind you on payday, and run shortcuts that are in the Jev folder. "
     "I can also help with Zoe. I won't send a message or move money."
 )
 SCHOOL_RE = re.compile(r"(?:#|\b)(?:umgc|school|class)\b", re.I)
