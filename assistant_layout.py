@@ -369,6 +369,7 @@ def _settings(page_w, page_h):
         hint = (float(MARGIN), _from_top(doc_h, top + 22.0, 18.0), text_w, 18.0)
         popup = (float(MARGIN), _from_top(doc_h, top + 46.0, 26.0), text_w, 26.0)
         message = (float(MARGIN), _from_top(doc_h, top + 80.0, 20.0), text_w, 20.0)
+        mini_top = top + 112.0
     else:
         label_w = min(220.0, text_w * 0.46)
         popup_w = text_w - label_w - GAP
@@ -376,6 +377,10 @@ def _settings(page_w, page_h):
         hint = (float(MARGIN), _from_top(doc_h, top + 22.0, 18.0), label_w, 18.0)
         popup = (MARGIN + label_w + GAP, _from_top(doc_h, top + 8.0, 26.0), popup_w, 26.0)
         message = (float(MARGIN), _from_top(doc_h, top + 56.0, 20.0), text_w, 20.0)
+        mini_top = top + 90.0
+    mini_name = (float(MARGIN), _from_top(doc_h, mini_top, 20.0), text_w, 20.0)
+    mini_hint = (float(MARGIN), _from_top(doc_h, mini_top + 22.0, 18.0), text_w, 18.0)
+    mini_toggle = (float(MARGIN), _from_top(doc_h, mini_top + 46.0, 26.0), text_w, 26.0)
     return {
         "document": (0.0, 0.0, page_w, doc_h),
         "title": header["title"],
@@ -384,6 +389,9 @@ def _settings(page_w, page_h):
         "hint": hint,
         "popup": popup,
         "message": message,
+        "mini_name": mini_name,
+        "mini_hint": mini_hint,
+        "mini_toggle": mini_toggle,
     }
 
 

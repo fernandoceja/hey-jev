@@ -9,6 +9,7 @@ import numpy as np, requests, sounddevice as sd, soundfile as sf
 from dotenv import load_dotenv
 from pynput import keyboard
 import commands
+from mini_bar import TYPED_REFUSAL
 from secrets_store import get_secret
 from dictation import Dictation, START as DICTATE_START, paste
 
@@ -892,7 +893,7 @@ def _finish_confirmed(notify):
     emit(notify, "Ready", line)
 
 
-def handle(text, stt_ms=None, notify=None, reply_sink=None, quiet=False):
+def handle(text, stt_ms=None, notify=None, reply_sink=None, quiet=False, local_only=False):
     global misses
     print(f"\n> heard: {text!r}" + (f"  (stt {stt_ms}ms)" if stt_ms is not None else ""))
     fixed = fix_names(text)
@@ -925,6 +926,12 @@ def handle(text, stt_ms=None, notify=None, reply_sink=None, quiet=False):
     if early is not None:
         misses = 0
         return _run_local(early[1], text, notify, reply_sink)
+    if local_only:
+        # Typed text never goes to TypeSafe or an LLM. Voice still does, when nothing local matched.
+        misses = 0
+        say(TYPED_REFUSAL, notify)
+        emit(notify, "Ready", TYPED_REFUSAL)
+        return
     emit(notify, "Thinking", text)
     ans, jev_ms, cost = jev(text)
     for k, (v, c) in ans.items():
@@ -1224,7 +1231,7 @@ def run_voice_assistant(notify=None, controls=None, mode="ptt", mic=""):
         sf.write(path, audio, SAMPLE_RATE)
         print(f"  clip: {path}")
 
-    def run_turn(text, stt_ms, quiet=False):
+    def run_turn(text, stt_ms, quiet=False, local_only=False):
         with busy:
             rec.paused = True  # don't hear her own reply
             try:
@@ -1232,7 +1239,7 @@ def run_voice_assistant(notify=None, controls=None, mode="ptt", mic=""):
                     start_dictation()
                     result = None
                 else:
-                    result = handle(text, stt_ms, notify, quiet=quiet)
+                    result = handle(text, stt_ms, notify, quiet=quiet, local_only=local_only)
                 # Wake mode: she just asked for a yes/no, so the next phrase doesn't need "Hey Jev".
                 if result == "expect_reply" and rec.wake:
                     armed_until[0] = time.time() + commands.CONFIRM_SECONDS
@@ -1420,6 +1427,13 @@ def run_voice_assistant(notify=None, controls=None, mode="ptt", mic=""):
                 start_recording()
             elif command == "release":
                 stop_recording()
+            elif isinstance(command, tuple) and command[0] == "text":
+                # Mini bar. Same turn as a voice command, local routing only, and it
+                # does not ask the window to come forward.
+                typed = str(command[1] if len(command) > 1 else "")
+                threading.Thread(
+                    target=run_turn, args=(typed, None), kwargs={"local_only": True}, daemon=True,
+                ).start()
 
     if rec.wake:
         threading.Event().wait()

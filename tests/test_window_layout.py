@@ -233,7 +233,8 @@ class TestPagesReflow(unittest.TestCase):
                     rects.extend((title, use, field))
                 rects.extend((page["save"], page["message"]))
             if name == "settings":
-                rects.extend((page["name"], page["hint"], page["popup"], page["message"]))
+                rects.extend((page["name"], page["hint"], page["popup"], page["message"],
+                              page["mini_name"], page["mini_hint"], page["mini_toggle"]))
             if name == "privacy":
                 for title, body in page["blocks"]:
                     rects.extend((title, body))

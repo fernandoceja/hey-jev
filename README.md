@@ -231,6 +231,7 @@ Use Claude Code (the terminal, or the Code tab in the desktop app). The chat sid
 - **Minimise** with the yellow button or Cmd+M.
 - **Resize** from any edge. It opens a bit smaller than it used to, centered, and it will not go under about 640 by 420, so the sidebar and the stat cards still fit. Home card values shrink and the captions wrap onto a second line instead of ending in an ellipsis. Pages scroll instead of cutting off when the window is short. The size and position are remembered the next time it opens. A saved frame that is off the screen, or still sitting in the bottom-left corner at the default size, is centered again.
 - **Close** hides the window but keeps it listening. Click the Dock icon to bring it back.
+- **Mini bar.** Minimizing or closing the window shows a small bar at the bottom of the screen. It is on by default; turn it off in Settings. Type a command and press Return, or hold the mic button the same way you hold right Option. She speaks the reply, and it shows in the bar for a moment. Return does not open this window again. The + button does. Esc, or Window > Hide Mini Bar, hides the bar until you open this window and hide it again. Quitting the app hides the bar and leaves it hidden. Typed commands stay on this Mac: a phrase she would otherwise send out has to be spoken.
 - **Keep on Top** in the Window menu (Cmd+T) keeps it above other apps. Off by default.
 - **Quit** with Cmd+Q.
 
@@ -311,7 +312,7 @@ Below 0.65 confidence it asks you to say it again, twice in a row and it gives u
 - `tests/` routing tests, the shortcut-folder safety check, and iPhone bridge validation. They mock `shortcuts` and `osascript`, so they run without macOS: `python3 -m unittest discover -s tests` or `python3 -m pytest`. GitHub Actions runs pytest on Python 3.9 and 3.12 for every push and pull request. The workflow does not install `requirements.txt`, because those packages include macOS-only builds and the tests do not import them.
 - `apps.json` the apps Jev can open, quit, hide, minimise, or focus by name. Other installed apps still open and quit from the transcript.
 - `dictation.py` and `bubble.py` dictation and its waveform bubble, `vocabulary.example.json` its word fixes (copy to `vocabulary.json`)
-- `assistant_ui.py` the window: status, mode switch, and the Home (stats), Dictionary, Apps, Dictation history, Privacy, Settings (microphone) and Keys tabs. `assistant_layout.py` is the size math for that window (default, minimum, and where each control sits when you resize).
+- `assistant_ui.py` the window: status, mode switch, and the Home (stats), Dictionary, Apps, Dictation history, Privacy, Settings (microphone and the mini bar switch) and Keys tabs. `assistant_layout.py` is the size math for that window (default, minimum, and where each control sits when you resize). `mini_bar.py` decides when the floating command bar is shown and how a typed line is queued. It does not import AppKit.
 - `secrets_store.py` Keychain read / write
 - `app.py` and `setup.py` the app bundle entry point and the py2app config, output lands in `dist/`
 - `assets/` the app icon

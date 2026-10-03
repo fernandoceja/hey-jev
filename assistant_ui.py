@@ -10,23 +10,30 @@ import re
 import queue
 import sys
 import threading
+import time
 
 import objc
 from AppKit import (
     NSApp,
+    NSAppearance,
     NSApplication,
     NSApplicationActivationPolicyRegular,
     NSBackingStoreBuffered,
+    NSBezierPath,
     NSBox,
     NSButton,
     NSColor,
     NSEvent,
     NSEventMaskFlagsChanged,
+    NSEventMaskKeyDown,
     NSEventModifierFlagOption,
     NSFont,
+    NSImage,
+    NSMakePoint,
     NSMakeRect,
     NSMenu,
     NSMenuItem,
+    NSPanel,
     NSPasteboard,
     NSPasteboardTypeString,
     NSPopUpButton,
@@ -43,9 +50,11 @@ from AppKit import (
     NSVisualEffectStateFollowsWindowActiveState,
     NSVisualEffectView,
     NSWindow,
+    NSWindowStyleMaskBorderless,
     NSWindowStyleMaskClosable,
     NSWindowStyleMaskFullSizeContentView,
     NSWindowStyleMaskMiniaturizable,
+    NSWindowStyleMaskNonactivatingPanel,
     NSWindowStyleMaskResizable,
     NSWindowStyleMaskTitled,
 )
@@ -63,10 +72,28 @@ from assistant_layout import (
 )
 from bubble import Bubble
 from dictation import HISTORY, read_vocab, save_vocab
+from mini_bar import (
+    BAR_H,
+    BAR_W,
+    ORIGIN_KEY,
+    PLACEHOLDER,
+    PREF_KEY,
+    BarController,
+    bar_controls,
+    enabled_from_pref,
+    format_origin,
+    mic_event,
+    parse_origin,
+    place_bar,
+    reply_text,
+    submission,
+)
 from secrets_store import KEY_NAMES, OPTIONAL, get_secret, missing_secrets, save_secret
 
 
 NORMAL, FLOATING = 0, 3  # NSNormalWindowLevel, NSFloatingWindowLevel
+BAR_LEVEL = 25  # NSStatusWindowLevel, above the main window even when that one floats
+BAR_SPACES = 1 | 16 | 256  # canJoinAllSpaces, stationary, fullScreenAuxiliary
 SIDEBAR_MATERIAL = 7  # NSVisualEffectMaterialSidebar
 HINTS = {"ptt": "Hold right Option to talk", "wake": "Say “Hey Jev”, then your command"}
 MODES = ("ptt", "wake")
@@ -194,6 +221,39 @@ def app_key(name):
     return re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")  # "Claude Code" -> claude_code, what Jev matches on
 
 
+class MiniBarBackground(NSView):
+    """Dark rounded pill. Clicks on the empty part drag the bar."""
+
+    def drawRect_(self, _rect):
+        try:
+            bounds = self.bounds()
+            path = NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(bounds, bounds.size.height / 2, bounds.size.height / 2)
+            NSColor.colorWithCalibratedWhite_alpha_(0.10, 0.94).setFill()
+            path.fill()
+            NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.18).setStroke()
+            path.setLineWidth_(1.0)
+            path.stroke()
+        except Exception as exc:
+            print(f"  mini bar draw failed: {exc}")
+
+    def mouseDown_(self, event):
+        self.window().performWindowDragWithEvent_(event)
+
+
+class HoldMicButton(NSButton):
+    """Mouse down and up map to the same press and release as right Option."""
+
+    def mouseDown_(self, event):
+        target = self.target()
+        if target is not None:
+            target.miniMicDown_(self)
+        try:
+            objc.super(HoldMicButton, self).mouseDown_(event)
+        finally:
+            if target is not None:
+                target.miniMicUp_(self)
+
+
 class ClickAwayView(NSView):
     def mouseDown_(self, event):
         self.window().makeFirstResponder_(None)  # clicking empty space takes focus out of the search and text boxes
@@ -228,6 +288,9 @@ class AppDelegate(NSObject):
         self.panel.setReleasedWhenClosed_(False)  # closing just hides it, the Dock icon brings it back
         self.panel.setContentMinSize_(NSMakeSize(MIN_W, MIN_H))
         self.panel.setMinSize_(NSMakeSize(MIN_W, MIN_H))
+        self.panel.setDelegate_(self)
+        self._main_closing = False
+        self.bar = BarController(enabled=enabled_from_pref(defaults.objectForKey_(PREF_KEY)))
         self.on_top = defaults.boolForKey_("keep_on_top")
         self.panel.setLevel_(FLOATING if self.on_top else NORMAL)
         self._add_window_menu()
@@ -239,6 +302,7 @@ class AppDelegate(NSObject):
         self.backdrop.setFillColor_(NSColor.windowBackgroundColor())
         root.addSubview_(self.backdrop)
         self.bubble = Bubble()
+        self._build_mini_bar()
 
         self.page_titles, self.page_subs = {}, {}
         self.page_docs, self.page_scrolls = {}, {}
@@ -268,6 +332,10 @@ class AppDelegate(NSObject):
         self.local_monitor = NSEvent.addLocalMonitorForEventsMatchingMask_handler_(
             NSEventMaskFlagsChanged, self._local_flags_changed
         )
+        self.key_monitor = NSEvent.addLocalMonitorForEventsMatchingMask_handler_(
+            NSEventMaskKeyDown, self._local_key
+        )
+        self._sync_mini_bar()
         if missing_secrets():
             self.updateStatus_({"state": "Starting", "detail": "Add your API keys to begin"})
         else:
@@ -570,6 +638,18 @@ class AppDelegate(NSObject):
         page.addSubview_(self.mic_menu)
         self.mic_message = label("", NSMakeRect(0, 0, 10, 10), 12, NSColor.secondaryLabelColor(), 0.0)
         page.addSubview_(self.mic_message)
+        self.mini_name = label("Mini bar", NSMakeRect(0, 0, 10, 10), 14, weight=0.6)
+        self.mini_hint = label("On when this window is minimized or closed. Esc hides it.", NSMakeRect(0, 0, 10, 10), 11,
+                               NSColor.secondaryLabelColor(), 0.0)
+        page.addSubview_(self.mini_name)
+        page.addSubview_(self.mini_hint)
+        self.mini_toggle = NSButton.alloc().initWithFrame_(NSMakeRect(0, 0, 10, 10))
+        self.mini_toggle.setButtonType_(3)  # switch
+        self.mini_toggle.setTitle_("Show the mini bar")
+        self.mini_toggle.setTarget_(self)
+        self.mini_toggle.setAction_("miniBarChanged:")
+        self.mini_toggle.setState_(1 if self.bar.enabled else 0)
+        page.addSubview_(self.mini_toggle)
         return page
 
     @objc.python_method
@@ -721,6 +801,9 @@ class AppDelegate(NSObject):
             _place(self.settings_hint, page["hint"])
             _place(self.mic_menu, page["popup"])
             _place(self.mic_message, page["message"])
+            _place(self.mini_name, page["mini_name"])
+            _place(self.mini_hint, page["mini_hint"])
+            _place(self.mini_toggle, page["mini_toggle"])
         elif key == "keys":
             for views, frames in zip(self.key_rows, page["rows"]):
                 for view, rect in zip(views, frames):
@@ -938,6 +1021,14 @@ class AppDelegate(NSObject):
         return event
 
     @objc.python_method
+    def _local_key(self, event):
+        panel = getattr(self, "mini_panel", None)
+        if event.keyCode() == 53 and panel is not None and panel.isKeyWindow():
+            self.miniDismiss_(None)
+            return None
+        return event
+
+    @objc.python_method
     def _handle_flags(self, event):
         if event.keyCode() != 61:
             return
@@ -971,6 +1062,7 @@ class AppDelegate(NSObject):
         self.on_top_item.setTarget_(self)
         self.on_top_item.setState_(1 if self.on_top else 0)
         menu.addItemWithTitle_action_keyEquivalent_("Show Hey Jev", "showMain:", "1").setTarget_(self)
+        menu.addItemWithTitle_action_keyEquivalent_("Hide Mini Bar", "hideMiniBar:", "").setTarget_(self)
         item.setSubmenu_(menu)
         NSApp.setWindowsMenu_(menu)
 
@@ -981,9 +1073,187 @@ class AppDelegate(NSObject):
         self.on_top_item.setState_(1 if self.on_top else 0)
 
     def showMain_(self, _sender):
+        self._main_closing = False
         self.panel.deminiaturize_(None)
         self.panel.makeKeyAndOrderFront_(None)
         NSApp.activateIgnoringOtherApps_(True)
+        self._sync_mini_bar()
+
+    def hideMiniBar_(self, _sender):
+        self.bar.dismiss()
+        self._apply_bar_visibility()
+
+    def miniBarChanged_(self, sender):
+        enabled = sender.state() == 1
+        NSUserDefaults.standardUserDefaults().setBool_forKey_(enabled, PREF_KEY)
+        self.bar.set_enabled(enabled)
+        self._sync_mini_bar()
+
+    @objc.python_method
+    def _build_mini_bar(self):
+        """Always-on-top pill. Nonactivating, so typing in it does not raise the main window."""
+        style = NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel
+        self.mini_panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
+            NSMakeRect(0, 0, BAR_W, BAR_H), style, NSBackingStoreBuffered, False
+        )
+        self.mini_panel.setLevel_(BAR_LEVEL)
+        self.mini_panel.setOpaque_(False)
+        self.mini_panel.setBackgroundColor_(NSColor.clearColor())
+        self.mini_panel.setHasShadow_(True)
+        self.mini_panel.setFloatingPanel_(True)
+        self.mini_panel.setHidesOnDeactivate_(False)
+        self.mini_panel.setBecomesKeyOnlyIfNeeded_(True)
+        self.mini_panel.setMovableByWindowBackground_(True)
+        self.mini_panel.setCollectionBehavior_(BAR_SPACES)
+        self.mini_panel.setReleasedWhenClosed_(False)
+        self.mini_panel.setRestorable_(False)
+        appearance = NSAppearance.appearanceNamed_("NSAppearanceNameDarkAqua")
+        if appearance is not None:
+            self.mini_panel.setAppearance_(appearance)
+        self.mini_panel.setDelegate_(self)
+        root = MiniBarBackground.alloc().initWithFrame_(NSMakeRect(0, 0, BAR_W, BAR_H))
+        self.mini_panel.setContentView_(root)
+        frames = bar_controls()
+        self.mini_plus = NSButton.buttonWithTitle_target_action_("+", self, "showMain:")
+        self.mini_plus.setBordered_(False)
+        self.mini_plus.setFont_(NSFont.systemFontOfSize_weight_(20, 0.3))
+        if hasattr(self.mini_plus, "setContentTintColor_"):
+            self.mini_plus.setContentTintColor_(NSColor.whiteColor())
+        root.addSubview_(self.mini_plus)
+        _place(self.mini_plus, frames["plus"])
+        self.mini_field = NSTextField.alloc().initWithFrame_(NSMakeRect(0, 0, 10, 10))
+        self.mini_field.setBezeled_(False)
+        self.mini_field.setDrawsBackground_(False)
+        self.mini_field.setFocusRingType_(1)  # none
+        self.mini_field.setPlaceholderString_(PLACEHOLDER)
+        self.mini_field.setFont_(NSFont.systemFontOfSize_(14))
+        self.mini_field.setTextColor_(NSColor.whiteColor())
+        self.mini_field.setTarget_(self)
+        self.mini_field.setAction_("miniSubmit:")
+        self.mini_field.setDelegate_(self)
+        root.addSubview_(self.mini_field)
+        _place(self.mini_field, frames["field"])
+        self.mini_mic = HoldMicButton.alloc().initWithFrame_(NSMakeRect(0, 0, 10, 10))
+        self.mini_mic.setBordered_(False)
+        self.mini_mic.setTarget_(self)
+        symbol = None
+        try:
+            symbol = NSImage.imageWithSystemSymbolName_accessibilityDescription_("mic.fill", "Listen")
+        except Exception:
+            symbol = None
+        if symbol is not None:
+            self.mini_mic.setImage_(symbol)
+            self.mini_mic.setImagePosition_(1)  # image only
+            if hasattr(self.mini_mic, "setContentTintColor_"):
+                self.mini_mic.setContentTintColor_(NSColor.whiteColor())
+        else:
+            self.mini_mic.setTitle_("Mic")
+        root.addSubview_(self.mini_mic)
+        _place(self.mini_mic, frames["mic"])
+        self._mini_mic_held = False
+
+    @objc.python_method
+    def _main_on_screen(self):
+        if self.bar.quitting or self._main_closing:
+            return False
+        return bool(self.panel.isVisible()) and not bool(self.panel.isMiniaturized())
+
+    @objc.python_method
+    def _sync_mini_bar(self):
+        if not hasattr(self, "bar"):
+            return
+        self.bar.main_window_changed(self._main_on_screen())
+        self._apply_bar_visibility()
+
+    @objc.python_method
+    def _apply_bar_visibility(self):
+        panel = getattr(self, "mini_panel", None)
+        if panel is None:
+            return
+        if self.bar.should_show():
+            if not panel.isVisible():
+                self._order_bar_front()
+        else:
+            panel.orderOut_(None)
+
+    @objc.python_method
+    def _order_bar_front(self):
+        screen = NSScreen.mainScreen()
+        if screen is None:
+            return
+        rect = screen.visibleFrame()
+        visible = (float(rect.origin.x), float(rect.origin.y), float(rect.size.width), float(rect.size.height))
+        saved = parse_origin(NSUserDefaults.standardUserDefaults().stringForKey_(ORIGIN_KEY))
+        x, y = place_bar(saved, visible)
+        self.mini_panel.setFrameOrigin_(NSMakePoint(x, y))
+        self.mini_panel.orderFrontRegardless()
+
+    @objc.python_method
+    def _show_bar_reply(self, text):
+        self.bar.note_reply(text, time.time())
+        self.mini_field.setStringValue_(text)
+
+    def miniSubmit_(self, _sender):
+        # Runs the line where it was typed. Does not deminiaturize or order the main window front.
+        plan = submission(self.mini_field.stringValue(), self.bar.reply)
+        if plan is None:
+            return
+        self.bar.reply = ""
+        self.mini_field.setStringValue_("")
+        if plan["kind"] != "run":
+            return
+        if not self.worker_started:
+            self._show_bar_reply("Add your API keys in the main window first.")
+            return
+        self.controls.put(plan["control"])
+
+    def miniMicDown_(self, _sender):
+        if self._mini_mic_held:
+            return
+        self._mini_mic_held = True
+        self.controls.put(mic_event("down"))
+
+    def miniMicUp_(self, _sender):
+        if not self._mini_mic_held:
+            return
+        self._mini_mic_held = False
+        self.controls.put(mic_event("up"))
+
+    def miniDismiss_(self, _sender):
+        self.bar.dismiss()
+        self._apply_bar_visibility()
+
+    def control_textView_doCommandBySelector_(self, control, _view, selector):
+        if control == getattr(self, "mini_field", None) and str(selector) == "cancelOperation:":
+            self.miniDismiss_(control)
+            return True
+        return False
+
+    def windowDidMiniaturize_(self, notification):
+        if notification.object() == self.panel:
+            self._sync_mini_bar()
+
+    def windowDidDeminiaturize_(self, notification):
+        if notification.object() == self.panel:
+            self._main_closing = False
+            self._sync_mini_bar()
+
+    def windowWillClose_(self, notification):
+        if notification.object() == self.panel:
+            self._main_closing = True
+            self._sync_mini_bar()
+
+    def windowDidBecomeKey_(self, notification):
+        if notification.object() == self.panel:
+            self._main_closing = False
+            self._sync_mini_bar()
+
+    def windowDidMove_(self, notification):
+        panel = getattr(self, "mini_panel", None)
+        if panel is None or notification.object() != panel or not panel.isVisible():
+            return
+        origin = panel.frame().origin
+        NSUserDefaults.standardUserDefaults().setObject_forKey_(format_origin(origin.x, origin.y), ORIGIN_KEY)
 
     def applicationShouldHandleReopen_hasVisibleWindows_(self, _app, _visible):
         self.showMain_(None)
@@ -1013,6 +1283,9 @@ class AppDelegate(NSObject):
                 h, m = divmod(m, 60)
                 name_view.setStringValue_(name)
                 time_view.setStringValue_(f"{h}:{m:02d}:{sec:02d}" if h else f"{m}:{sec:02d}")
+        field = getattr(self, "mini_field", None)
+        if field is not None and self.bar.reply_due_clear(time.time(), field.stringValue()):
+            field.setStringValue_("")
 
     def updateStatus_(self, payload):
         state = str(payload["state"])
@@ -1024,15 +1297,29 @@ class AppDelegate(NSObject):
             self.bubble.show(working=state == "Finishing")
         else:
             self.bubble.hide()
+        shown = reply_text(state, detail)
+        if shown and getattr(self, "mini_panel", None) is not None and self.mini_panel.isVisible():
+            self._show_bar_reply(shown)
 
     def applicationShouldTerminateAfterLastWindowClosed_(self, _application):
         return False  # keep listening with the window closed, the Dock icon reopens it
 
+    def applicationShouldTerminate_(self, _sender):
+        if hasattr(self, "bar"):
+            self.bar.quit()
+            self._apply_bar_visibility()
+        return 1  # NSTerminateNow. Closing the window is not quitting.
+
     def applicationWillTerminate_(self, _notification):
+        if hasattr(self, "bar"):
+            self.bar.quit()
+            self._apply_bar_visibility()
         if getattr(self, "global_monitor", None):
             NSEvent.removeMonitor_(self.global_monitor)
         if getattr(self, "local_monitor", None):
             NSEvent.removeMonitor_(self.local_monitor)
+        if getattr(self, "key_monitor", None):
+            NSEvent.removeMonitor_(self.key_monitor)
 
 
 def build_menu():
