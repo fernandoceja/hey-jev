@@ -77,27 +77,79 @@ def default_origin(visible):
     return (vx + (vw - BAR_W) / 2.0, vy + DOCK_GAP)
 
 
+def _as_screens(visible):
+    """One (x, y, w, h) frame, or a list of them. The first is the fallback screen."""
+    if not visible:
+        return []
+    first = visible[0]
+    if isinstance(first, (int, float)):
+        return [tuple(float(v) for v in visible)]
+    return [tuple(float(v) for v in screen) for screen in visible]
+
+
 def place_bar(saved, visible):
-    """Remembered origin when most of the pill is still on that screen."""
-    fallback = default_origin(visible)
-    if not saved or not visible:
+    """Remembered origin when most of the pill is still on any screen.
+
+    `visible` is one screen's visible frame, or several (a second display
+    included). An origin that misses every screen is bottom-center of the first.
+    """
+    screens = _as_screens(visible)
+    if not screens:
+        return (0.0, DOCK_GAP)
+    fallback = default_origin(screens[0])
+    if not saved:
         return fallback
     frame = (float(saved[0]), float(saved[1]), BAR_W, BAR_H)
-    if _intersection_area(frame, visible) >= 0.5 * BAR_W * BAR_H:
+    needed = 0.5 * BAR_W * BAR_H
+    if any(_intersection_area(frame, screen) >= needed for screen in screens):
         return (frame[0], frame[1])
     return fallback
 
 
+def drag_origin(origin, start, now):
+    """Window origin after a drag. All three are screen points (x, y). No clamping."""
+    return (float(origin[0]) + float(now[0]) - float(start[0]),
+            float(origin[1]) + float(now[1]) - float(start[1]))
+
+
+# NSWindowCollectionBehaviorCanJoinAllSpaces | FullScreenAuxiliary | Stationary.
+# Stationary keeps the pill from hopping when Spaces change; the other two put
+# it on every Space, including over a full-screen app.
+CAN_JOIN_ALL_SPACES = 1
+FULL_SCREEN_AUXILIARY = 256
+BAR_COLLECTION = CAN_JOIN_ALL_SPACES | FULL_SCREEN_AUXILIARY | 16
+
+
 def bar_controls():
-    """Plus, field, and mic inside the pill. Origin is the pill's bottom left."""
-    button = 28.0
-    pad = 8.0
+    """Plus, field, and mic inside the pill. Origin is the pill's bottom left.
+
+    The controls sit inset, so the rounded ends and the bands above and below
+    them are background. Those bands are what a drag grabs. The field is only
+    as tall as one line and is centered, so the placeholder sits in the middle.
+    """
+    button = 24.0
+    edge = 10.0
+    gap = 8.0
     y = (BAR_H - button) / 2.0
-    plus = (pad, y, button, button)
-    mic = (BAR_W - pad - button, y, button, button)
-    field_x = pad + button + 6.0
-    field = (field_x, 6.0, mic[0] - 6.0 - field_x, BAR_H - 12.0)
+    plus = (edge, y, button, button)
+    mic = (BAR_W - edge - button, y, button, button)
+    field_h = 22.0
+    field_x = edge + button + gap
+    field = (field_x, (BAR_H - field_h) / 2.0, mic[0] - gap - field_x, field_h)
     return {"plus": plus, "field": field, "mic": mic}
+
+
+def hit_control(x, y, controls=None):
+    """'plus', 'field', or 'mic' when a click lands on that control. Else None.
+
+    None means the pill background or an edge, which is a drag.
+    """
+    frames = controls or bar_controls()
+    for name in ("plus", "field", "mic"):
+        rx, ry, rw, rh = frames[name]
+        if rx <= x < rx + rw and ry <= y < ry + rh:
+            return name
+    return None
 
 
 def mic_event(phase):

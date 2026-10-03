@@ -5,15 +5,20 @@ import unittest
 import commands
 from assistant_layout import DEFAULT_H, DEFAULT_W, MIN_H, MIN_W, layout_window, rects_inside
 from mini_bar import (
+    BAR_COLLECTION,
     BAR_H,
     BAR_W,
+    CAN_JOIN_ALL_SPACES,
     DOCK_GAP,
+    FULL_SCREEN_AUXILIARY,
     PLACEHOLDER,
     REPLY_SECONDS,
     BarController,
     bar_controls,
+    drag_origin,
     enabled_from_pref,
     format_origin,
+    hit_control,
     mic_event,
     parse_origin,
     place_bar,
@@ -24,6 +29,9 @@ from mini_bar import (
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # A MacBook Air visible frame: Dock about 70pt, menu bar already excluded.
 AIR = (0.0, 70.0, 1440.0, 806.0)
+# A display to the right, and one whose origin is left of the main screen.
+RIGHT = (1440.0, 0.0, 1920.0, 1080.0)
+LEFT = (-1920.0, 0.0, 1920.0, 1080.0)
 
 
 def _overlaps(a, b):
@@ -174,6 +182,27 @@ class TestPlacement(unittest.TestCase):
         self.assertIsNone(parse_origin(None))
         self.assertIsNone(parse_origin(""))
 
+    def test_a_spot_on_another_display_is_kept_and_one_off_every_screen_is_not(self):
+        screens = (AIR, RIGHT, LEFT)
+        fallback = place_bar(None, screens)
+        self.assertEqual(fallback, place_bar(None, AIR))
+        self.assertEqual(place_bar((1600.0, 200.0), screens), (1600.0, 200.0))
+        self.assertEqual(place_bar((-1800.0, 100.0), screens), (-1800.0, 100.0))
+        self.assertEqual(place_bar((9000.0, 9000.0), screens), fallback)
+        self.assertEqual(place_bar(None, []), (0.0, DOCK_GAP))
+        # Half the pill still on a screen stays. Less than that goes back to the bottom.
+        kept_x = AIR[2] - BAR_W / 2.0
+        self.assertEqual(place_bar((kept_x, 400.0), AIR)[0], kept_x)
+        self.assertEqual(place_bar((kept_x + 1.0, 400.0), AIR), fallback)
+
+    def test_a_drag_follows_the_mouse_onto_any_screen(self):
+        self.assertEqual(drag_origin((510.0, 142.0), (100.0, 200.0), (1600.0, 400.0)), (2010.0, 342.0))
+        self.assertEqual(drag_origin((0.0, 70.0), (50.0, 80.0), (-400.0, 90.0)), (-450.0, 80.0))
+        self.assertEqual(CAN_JOIN_ALL_SPACES, 1)
+        self.assertEqual(FULL_SCREEN_AUXILIARY, 256)
+        self.assertEqual(BAR_COLLECTION & CAN_JOIN_ALL_SPACES, CAN_JOIN_ALL_SPACES)
+        self.assertEqual(BAR_COLLECTION & FULL_SCREEN_AUXILIARY, FULL_SCREEN_AUXILIARY)
+
     def test_plus_field_and_mic_fit_in_the_pill(self):
         frames = list(bar_controls().values())
         self.assertEqual(len(frames), 3)
@@ -184,6 +213,48 @@ class TestPlacement(unittest.TestCase):
         for i, rect in enumerate(frames):
             for other in frames[i + 1:]:
                 self.assertFalse(_overlaps(rect, other))
+
+    def test_edges_drag_and_the_controls_do_not(self):
+        frames = bar_controls()
+        plus, field, mic = frames["plus"], frames["field"], frames["mic"]
+        self.assertEqual(hit_control(plus[0], plus[1]), "plus")
+        self.assertEqual(hit_control(field[0] + 4, field[1] + 4), "field")
+        self.assertEqual(hit_control(mic[0] + 1, mic[1] + 1), "mic")
+        # Rounded ends and the bands above and below the controls are background.
+        self.assertGreaterEqual(plus[0], 8.0)
+        self.assertGreaterEqual(plus[1], 8.0)
+        self.assertGreaterEqual(BAR_W - (mic[0] + mic[2]), 8.0)
+        self.assertGreaterEqual(BAR_H - (plus[1] + plus[3]), 8.0)
+        self.assertGreaterEqual(field[1], 8.0)
+        self.assertEqual(field[1] + field[3] / 2.0, BAR_H / 2.0)
+        self.assertIsNone(hit_control(1.0, BAR_H / 2.0))
+        self.assertIsNone(hit_control(BAR_W - 1.0, BAR_H / 2.0))
+        self.assertIsNone(hit_control(BAR_W / 2.0, 1.0))
+        self.assertIsNone(hit_control(BAR_W / 2.0, BAR_H - 1.0))
+        self.assertIsNone(hit_control(field[0] + field[2] + 2.0, field[1] + 4.0))
+
+    def test_the_panel_drags_from_its_background_and_joins_every_space(self):
+        ui = open(os.path.join(ROOT, "assistant_ui.py"), encoding="utf-8").read()
+        self.assertNotIn("performWindowDragWithEvent_", ui)
+        self.assertIn("setMovableByWindowBackground_(True)", ui)
+        self.assertIn("NSWindowCollectionBehaviorCanJoinAllSpaces", ui)
+        self.assertIn("NSWindowCollectionBehaviorFullScreenAuxiliary", ui)
+        self.assertIn("self.mini_panel.setLevel_(BAR_LEVEL)", ui)
+        drag = _func(ui, "mouseDown_")
+        self.assertIn("class MiniBarBackground", ui[:ui.index("def mouseDown_")])
+        self.assertIn("drag_origin", drag)
+        self.assertIn("setFrameOrigin_", drag)
+        self.assertIn("NSEvent.mouseLocation()", drag)
+        self.assertIn("CenteredFieldCell", ui)
+        cell = _func(ui, "drawingRectForBounds_")
+        self.assertIn("ascender", cell)
+        self.assertIn("descender", cell)
+        self.assertIn("setEditable_(True)", ui)
+        self.assertIn("setSelectable_(True)", ui)
+        moved = _func(ui, "windowDidMove_")
+        self.assertIn("ORIGIN_KEY", moved)
+        order = _func(ui, "_order_bar_front")
+        self.assertIn("place_bar(saved, screens)", order)
 
     def test_settings_toggle_sits_under_the_microphone_row(self):
         for width, height in ((MIN_W, MIN_H), (DEFAULT_W, DEFAULT_H)):
