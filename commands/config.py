@@ -19,6 +19,18 @@ SHIFT_TITLE_PATTERNS = (
     r"\bApple\b",
 )
 SHIFT_HORIZON_DAYS = 14
+# A spoken shift for one date. Plain JSON in the app support folder. No secrets.
+# That date replaces the calendar shift. Clearing the date restores the calendar.
+SHIFT_OVERRIDE_PATH = os.path.expanduser(
+    "~/Library/Application Support/Hey Jev/shift-overrides.json"
+)
+# "When should I leave for work" drives from home to the Brea store.
+# Apple's retail page lists the store as 1016C. 1065 is the mall building.
+HOME_ADDRESS = "Upland, CA"
+BREA_STORE_ADDRESS = "Apple Brea Mall, 1016C Brea Mall, Brea, CA 92821"
+LEAVE_BUFFER_MINUTES = 15
+# Used only when MapKit can't return a drive time. The reply says it is an estimate.
+LEAVE_TYPICAL_DRIVE_MINUTES = 35
 SCHOOL_HORIZON_DAYS = 30
 BILL_HORIZON_DAYS = 45
 # Apple pay is every other Friday. This date is one payday. Override it in money.md.
@@ -107,6 +119,10 @@ BRIDGE_ALLOW = frozenset({
     "info_weekend",
     "info_shift_length",
     "info_brea",
+    # One name each. The override is a local file. Leave time is a spoken ETA.
+    "shift_set",
+    "shift_clear",
+    "info_leave",
     "info_rent",
     "info_bills",
     "info_payday",
@@ -254,6 +270,13 @@ JOINER_RE = re.compile(r"\b(?:and|then)\b", re.I)
 # Whole-utterance commands. Checked before the looser patterns below.
 _PLEASE = r"(?:please\s+)?"
 _TAIL = r"(?:\s+please)?[.!?]*$"
+# "my shift Monday is 9:30 to 6:30 at Brea" and "clear my shift Monday".
+_SHIFT_WHEN = (
+    r"(?:today|tomorrow|(?:this|next)\s+"
+    r"(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)|"
+    r"monday|tuesday|wednesday|thursday|friday|saturday|sunday)"
+)
+_SHIFT_TIME = r"\d{1,2}(?:[:.]\d{2})?\s*(?:a\.?m\.?|p\.?m\.?)?"
 _PLAY = (
     rf"^{_PLEASE}(?:play|resume)"
     rf"(?:\s+spotify|\s+(?:the\s+)?(?:music|song)|\s+apple\s+music|\s+on\s+apple\s+music)?{_TAIL}"
@@ -286,6 +309,22 @@ STRICT_PATTERNS = (
     (re.compile(rf"^{_PLEASE}when\s+do\s+i\s+start(?:\s+work)?\s+at\s+brea{_TAIL}", re.I), "info_brea"),
     (re.compile(rf"^{_PLEASE}when\s+does\s+brea\s+start{_TAIL}", re.I), "info_brea"),
     (re.compile(rf"^{_PLEASE}what\s+time\s+do\s+i\s+start\s+at\s+brea{_TAIL}", re.I), "info_brea"),
+    (re.compile(
+        rf"^{_PLEASE}my\s+shift(?:\s+on)?\s+{_SHIFT_WHEN}\s+is\s+{_SHIFT_TIME}\s+(?:to|until)\s+{_SHIFT_TIME}(?:\s+at\s+.+)?{_TAIL}",
+        re.I), "shift_set"),
+    (re.compile(
+        rf"^{_PLEASE}(?:clear|forget)\s+my\s+shift(?:\s+on)?\s+{_SHIFT_WHEN}{_TAIL}"
+        rf"|^{_PLEASE}(?:clear|forget)\s+my\s+{_SHIFT_WHEN}\s+shift{_TAIL}",
+        re.I), "shift_clear"),
+    (re.compile(
+        rf"^{_PLEASE}(?:clear|forget)\s+(?:all\s+)?my\s+shift\s+overrides?{_TAIL}"
+        rf"|^{_PLEASE}(?:clear|forget)\s+my\s+shift{_TAIL}",
+        re.I), "shift_clear"),
+    (re.compile(
+        rf"^{_PLEASE}when\s+should\s+i\s+leave(?:\s+for\s+(?:work|brea))?{_TAIL}"
+        rf"|^{_PLEASE}what\s+time\s+should\s+i\s+leave(?:\s+for\s+(?:work|brea))?{_TAIL}"
+        rf"|^{_PLEASE}when\s+do\s+i\s+(?:need\s+to\s+)?leave\s+for\s+(?:work|brea){_TAIL}",
+        re.I), "info_leave"),
     (re.compile(rf"^{_PLEASE}how\s+many\s+(?:ihss\s+)?hours(?:\s+do\s+i\s+have)?\s+this\s+pay\s+period{_TAIL}", re.I), "ihss_hours"),
     (re.compile(rf"^{_PLEASE}how\s+many\s+hours\s+have\s+i\s+logged(?:\s+this\s+pay\s+period)?{_TAIL}", re.I), "ihss_hours"),
     (re.compile(rf"^{_PLEASE}remind\s+me\s+to\s+submit\s+(?:my\s+)?(?:ihss\s+)?timesheet{_TAIL}", re.I), "ihss_remind"),
@@ -339,7 +378,8 @@ LOCAL_PATTERNS = (
 HELP_TEXT = (
     "I can open your apps and work sites, control volume, brightness, and the Mac, "
     "and play Apple Music or a YouTube search. I can read your calendar, shifts, school, "
-    "and bills, log IHSS hours, remind you on payday, and run shortcuts that are in the Jev folder. "
+    "and bills, log IHSS hours, remind you on payday, save a shift for one day, "
+    "and say when to leave for Brea. I can run shortcuts that are in the Jev folder. "
     "I can also help with Zoe. I won't send a message or move money."
 )
 SCHOOL_RE = re.compile(r"(?:#|\b)(?:umgc|school|class)\b", re.I)

@@ -25,6 +25,11 @@ from .config import (
     SCHOOL_HORIZON_DAYS,
     BILL_HORIZON_DAYS,
     DEFAULT_APPLE_PAY_ANCHOR,
+    SHIFT_OVERRIDE_PATH,
+    HOME_ADDRESS,
+    BREA_STORE_ADDRESS,
+    LEAVE_BUFFER_MINUTES,
+    LEAVE_TYPICAL_DRIVE_MINUTES,
     SWEEP_AMOUNT,
     SWEEP_ACCOUNT_LABEL,
     SWEEP_SPOKEN_PATH,
@@ -193,6 +198,28 @@ from .calendar_shift import (
     describe_shift_length,
     speak_working_weekend,
     speak_shift_length,
+    _plain_shifts_from_calendar,
+    _speak_plain_shift,
+)
+
+from .shift_override import (
+    clear_shift_override,
+    events_with_overrides,
+    load_shift_overrides,
+    merge_shift_overrides,
+    override_events,
+    parse_shift_clear,
+    parse_shift_set,
+    resolve_shift_day,
+    set_shift_override,
+)
+
+from .travel import (
+    expected_travel_seconds,
+)
+
+from .leave import (
+    speak_leave_time,
 )
 
 from .weather import (

@@ -33,6 +33,7 @@ COMMAND_PROMPT = (
     "Play. Pause. Next track. What's playing. Play the song on YouTube. "
     "Turn the volume up. Set the volume to 40. Mute. Lock the screen. What's my battery. "
     "When's my next shift. Am I working this weekend. How long until payday. "
+    "My shift Monday is 9:30 to 6:30 at Brea. Clear my shift Monday. When should I leave for work. "
     "Open settings. Open business email. Run shortcut Leaving for work. What can you do."
 )
 # No prompt in wake mode: on noise Whisper echoes the prompt back, which looked like a real "Hey Jev"
@@ -360,6 +361,9 @@ ACTIONS = {
     "info_weekend": lambda _arg, _text: commands.speak_working_weekend(),
     "info_shift_length": lambda _arg, _text: commands.speak_shift_length(),
     "info_brea": lambda _arg, _text: commands.speak_brea_start(),
+    "shift_set": lambda _arg, text: commands.set_shift_override(text),
+    "shift_clear": lambda _arg, text: commands.clear_shift_override(text),
+    "info_leave": lambda _arg, _text: commands.speak_leave_time(),
     "info_school": lambda _arg, _text: commands.speak_school_due(),
     "info_rent": lambda _arg, _text: commands.speak_rent(),
     "info_bills": lambda _arg, _text: commands.speak_bills(),

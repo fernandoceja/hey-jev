@@ -217,27 +217,51 @@ def is_shift_title(title):
     return any(re.search(pattern, text, re.I) for pattern in SHIFT_TITLE_PATTERNS)
 
 
-def speak_next_shift():
-    """Next event in 14 days whose title matches a shift pattern."""
+def _plain_shifts_from_calendar(now):
+    """EventKit events in the shift window, as plain dicts, or a spoken error.
+
+    The read is the same one this module already used. Overrides are applied
+    by the caller, not here.
+    """
     problem = _calendar_problem()
     if problem:
         return problem
-    now = datetime.now().astimezone()
     horizon = now + timedelta(days=SHIFT_HORIZON_DAYS)
     try:
-        events = _upcoming(_events_between(now - timedelta(hours=12), horizon), now, horizon, skip_all_day=False)
+        raw = _upcoming(
+            _events_between(now - timedelta(hours=12), horizon),
+            now, horizon, skip_all_day=False)
     except Exception:
         return _CAL_FAILED
-    shifts = [ev for ev in events if is_shift_title(_title(ev))]
-    if not shifts:
-        return "No shift in the next two weeks."
-    ev = shifts[0]
-    title, start, finish = _title(ev), _stamp(ev.startDate()), _stamp(ev.endDate())
-    if _all_day(ev):
+    return [_plain_event(ev) for ev in raw]
+
+
+def _speak_plain_shift(ev, now):
+    title, start, finish = ev["title"], ev["start"], ev["end"]
+    if ev.get("all_day"):
         return f"Your next shift is {title} {_day_phrase(start, now)}, all day."
     if start <= now:
         return f"You're on {title} until {_clock(finish)}."
     return f"Your next shift is {title} {_day_phrase(start, now)} at {_clock(start)}."
+
+
+def speak_next_shift(now=None, path=None):
+    """Next shift in 14 days. A saved override replaces the calendar that day."""
+    now = now or datetime.now().astimezone()
+    horizon = now + timedelta(days=SHIFT_HORIZON_DAYS)
+    from .shift_override import events_with_overrides
+
+    loaded, error = events_with_overrides(_plain_shifts_from_calendar(now), now, horizon, path=path)
+    if error and not loaded:
+        return error
+    shifts = [
+        ev for ev in loaded
+        if is_shift_title(ev.get("title", "")) and ev["end"] > now and ev["start"] <= horizon
+    ]
+    shifts.sort(key=lambda ev: ev["start"])
+    if not shifts:
+        return "No shift in the next two weeks."
+    return _speak_plain_shift(shifts[0], now)
 
 
 def _calendar_name(ev):
@@ -380,21 +404,27 @@ def describe_shift_length(events, now):
     )
 
 
-def speak_working_weekend():
-    now = datetime.now().astimezone()
+def speak_working_weekend(now=None, path=None):
+    now = now or datetime.now().astimezone()
     saturday, sunday = weekend_bounds(now)
     start = datetime.combine(saturday, datetime.min.time()).astimezone()
     end = datetime.combine(sunday + timedelta(days=1), datetime.min.time()).astimezone()
     loaded = _load_plain_events(start, end)
-    if isinstance(loaded, str):
-        return loaded
-    return describe_work_weekend(loaded, now)
+    from .shift_override import events_with_overrides
+
+    events, error = events_with_overrides(loaded, now, end, path=path)
+    if error and not events:
+        return error
+    return describe_work_weekend(events, now)
 
 
-def speak_shift_length():
-    now = datetime.now().astimezone()
+def speak_shift_length(now=None, path=None):
+    now = now or datetime.now().astimezone()
     horizon = now + timedelta(days=SHIFT_HORIZON_DAYS)
     loaded = _load_plain_events(now - timedelta(hours=18), horizon)
-    if isinstance(loaded, str):
-        return loaded
-    return describe_shift_length(loaded, now)
+    from .shift_override import events_with_overrides
+
+    events, error = events_with_overrides(loaded, now, horizon, path=path)
+    if error and not events:
+        return error
+    return describe_shift_length(events, now)

@@ -115,17 +115,29 @@ def brea_from_due(path=None, today=None):
     return f"The due list says {title} on {_month_day(day)}, {_until_day(day, today)}."
 
 
-def speak_brea_start():
-    today = datetime.now().astimezone().date()
+def speak_brea_start(now=None, path=None, events=None):
+    now = now or datetime.now().astimezone()
+    today = now.date()
     due_line = brea_from_due(today=today)
-    now = datetime.now().astimezone()
-    loaded = _load_plain_events(now - timedelta(days=2), now + timedelta(days=60))
+    horizon = now + timedelta(days=60)
+    if events is None:
+        loaded = _load_plain_events(now - timedelta(days=2), horizon)
+    else:
+        loaded = events
+    from .shift_override import events_with_overrides
+
+    events, _error = events_with_overrides(loaded, now, horizon, path=path)
     cal_line = None
-    if not isinstance(loaded, str):
-        brea = [ev for ev in loaded if re.search(r"\bbrea\b", ev["title"], re.I) and ev["end"] > now]
-        brea.sort(key=lambda ev: ev["start"])
-        if brea:
-            ev = brea[0]
+    brea = [ev for ev in events if re.search(r"\bbrea\b", f"{ev.get('title', '')} {ev.get('place', '')}", re.I) and ev["end"] > now]
+    brea.sort(key=lambda ev: ev["start"])
+    if brea:
+        ev = brea[0]
+        if ev.get("source") == "override":
+            cal_line = (
+                f"Your saved shift is {ev.get('place') or 'Brea'} "
+                f"{_day_phrase(ev['start'], now)} at {_clock(ev['start'])}."
+            )
+        else:
             cal_line = f"The calendar has {ev['title']} {_day_phrase(ev['start'], now)} at {_clock(ev['start'])}."
     parts = [part for part in (due_line, cal_line) if part]
     if parts:
