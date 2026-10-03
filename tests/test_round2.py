@@ -61,11 +61,20 @@ class TestRouting(unittest.TestCase):
             "how long is my shift": "info_shift_length",
             "when do I start at Brea": "info_brea",
             "what time do I start at Brea": "info_brea",
+            "my shift Monday is 9:30 to 6:30 at Brea": "shift_set",
+            "my shift on Monday is 9:30 to 6:30 at Brea": "shift_set",
+            "clear my shift Monday": "shift_clear",
+            "clear my shift overrides": "shift_clear",
+            "when should I leave for work": "info_leave",
+            "what time should I leave for Brea": "info_leave",
             "what's due for school": "info_school",
             "what's due for UMGC": "info_school",
             "what's due this week for my class": "info_school",
             "what's due": "info_due",
             "what's due this week": "info_due",
+            "what's due today": "info_payday_check",
+            "payday check": "info_payday_check",
+            "any reminders today": "info_payday_check",
             "when's rent due": "info_rent",
             "what bills are coming up": "info_bills",
             "how long until payday": "info_payday",
@@ -137,6 +146,8 @@ class TestRouting(unittest.TestCase):
             "what can you do about my back",
             "what's due to change in the tax law",
             "when is payday for teachers in california",
+            "move $600 to Zoe",
+            "confirm the transfer",
             "am I working this weekend on a novel",
             "how long is my shift if traffic is bad",
             "open the pod bay doors",
@@ -192,8 +203,20 @@ class TestRouting(unittest.TestCase):
         self.assertEqual(commands.known_app_name("calculater"), "Calculator")
         self.assertIsNone(commands.resolve_site("books"))
         self.assertEqual(commands.resolve_site("bookings")["label"], "bookings")
-        self.assertTrue(commands.resolve_site("ukg")["editable"])
-        self.assertTrue(commands.resolve_site("apple employee portal")["editable"])
+        self.assertEqual(commands.resolve_site("ukg")["url"], "https://sso.prd.mykronos.com")
+        self.assertEqual(
+            commands.resolve_site("apple employee portal")["url"], "https://people.apple.com/")
+        self.assertEqual(
+            commands.resolve_site("ihss timesheet")["url"], "https://etimesheets.ihss.ca.gov/login")
+        self.assertEqual(
+            commands.resolve_site("orders")["url"],
+            "https://admin.shopify.com/store/80-s-obsession-company/orders")
+        self.assertEqual(
+            commands.PRINCESS_ACADEMY_URL,
+            "https://fernandoceja.github.io/Zoe-s-Princess-Academy/")
+        self.assertEqual(commands.SHOPIFY_ORDERS_URL, commands.resolve_site("orders")["url"])
+        for phrase in ("ukg", "apple employee portal", "orders", "ihss"):
+            self.assertFalse(commands.resolve_site(phrase)["editable"], phrase)
 
     def test_sites_are_https_and_chrome_gets_an_argument_list(self):
         calls = []

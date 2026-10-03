@@ -129,6 +129,9 @@ class TestBridgeValidation(unittest.TestCase):
         self.assertFalse(os.path.exists(path))
         self.assertIn("phone", self._reply("nonce1234")["reply"].lower())
 
+        self.assertIsNone(commands.bridge_allowed("confirm the transfer"))
+        self.assertIsNone(commands.bridge_allowed("move $600 to Zoe"))
+
         cynthia = "check my messages from Cynthia"
         self.assertIsNone(commands.route_before_api(cynthia))
         self.assertIsNone(commands.bridge_allowed(cynthia))
@@ -136,3 +139,71 @@ class TestBridgeValidation(unittest.TestCase):
         self.assertEqual(calls, [])
         self.assertFalse(os.path.exists(path))
         self.assertIn("phone", self._reply("cynthia1")["reply"].lower())
+
+    def test_payday_check_is_allowlisted_individually_and_my_love_stays_blocked(self):
+        """Each payday-check phrase is one named allowlist entry. My Love is not.
+
+        BRIDGE_ALLOW has no wildcard and no category prefix. info_payday_check
+        is listed by itself. info_messages is absent, and a signed My Love
+        file still never reaches run_text.
+        """
+        self.assertIn("info_payday_check", commands.BRIDGE_ALLOW)
+        self.assertNotIn("info_messages", commands.BRIDGE_ALLOW)
+        self.assertIsInstance(commands.BRIDGE_ALLOW, frozenset)
+        for item in commands.BRIDGE_ALLOW:
+            self.assertNotIn("*", item)
+            self.assertNotIn("?", item)
+            self.assertFalse(item.endswith("*"))
+
+        phrases = (
+            ("what's due today", "duetoday1"),
+            ("payday check", "paydaychk"),
+            ("any reminders today", "reminders"),
+        )
+        for phrase, nonce in phrases:
+            self.assertEqual(commands.route_before_api(phrase), "info_payday_check", phrase)
+            self.assertEqual(commands.bridge_allowed(phrase), "info_payday_check", phrase)
+            calls, path = self._process(phrase, nonce, name=nonce + ".json")
+            self.assertEqual(calls, [phrase], phrase)
+            self.assertFalse(os.path.exists(path))
+            reply = self._reply(nonce)
+            self.assertTrue(reply["ok"], phrase)
+            self.assertEqual(reply["reply"], "Handled on the Mac.")
+
+        love = "check my messages from My Love"
+        self.assertEqual(commands.route_before_api(love), "info_messages")
+        self.assertIsNone(commands.bridge_allowed(love))
+        calls, path = self._process(love, "lovecheck")
+        self.assertEqual(calls, [])
+        self.assertFalse(os.path.exists(path))
+        self.assertIn("phone", self._reply("lovecheck")["reply"].lower())
+
+    def test_shift_and_leave_are_allowlisted_individually(self):
+        """Each new phrase is its own allowlist name. My Love and money stay off."""
+        self.assertIn("shift_set", commands.BRIDGE_ALLOW)
+        self.assertIn("shift_clear", commands.BRIDGE_ALLOW)
+        self.assertIn("info_leave", commands.BRIDGE_ALLOW)
+        self.assertNotIn("info_messages", commands.BRIDGE_ALLOW)
+        self.assertIsInstance(commands.BRIDGE_ALLOW, frozenset)
+        for item in commands.BRIDGE_ALLOW:
+            self.assertNotIn("*", item)
+            self.assertNotIn("?", item)
+
+        phrases = (
+            ("my shift Monday is 9:30 to 6:30 at Brea", "shiftmon1", "shift_set"),
+            ("clear my shift Monday", "shiftclr1", "shift_clear"),
+            ("when should I leave for work", "leavewrk1", "info_leave"),
+        )
+        for phrase, nonce, key in phrases:
+            self.assertEqual(commands.route_before_api(phrase), key, phrase)
+            self.assertEqual(commands.bridge_allowed(phrase), key, phrase)
+            calls, path = self._process(phrase, nonce, name=nonce + ".json")
+            self.assertEqual(calls, [phrase], phrase)
+            self.assertFalse(os.path.exists(path))
+            reply = self._reply(nonce)
+            self.assertTrue(reply["ok"], phrase)
+            self.assertEqual(reply["reply"], "Handled on the Mac.")
+
+        self.assertIsNone(commands.bridge_allowed("check my messages from My Love"))
+        self.assertIsNone(commands.bridge_allowed("move $600 to Zoe"))
+        self.assertIsNone(commands.bridge_allowed("confirm the transfer"))

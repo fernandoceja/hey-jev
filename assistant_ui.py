@@ -1,4 +1,8 @@
-"""Native macOS window for the Jev voice assistant: status on top, sidebar tabs for the dictionary, apps, history and keys."""
+"""Native macOS window for the Jev voice assistant: status on top, sidebar tabs for the dictionary, apps, history and keys.
+
+The window is resizable. Frames come from assistant_layout so a smaller window
+reflows instead of clipping, and the frame is saved under HeyJevMainWindow.
+"""
 import json
 import os
 import re
@@ -40,16 +44,25 @@ from AppKit import (
     NSWindowStyleMaskClosable,
     NSWindowStyleMaskFullSizeContentView,
     NSWindowStyleMaskMiniaturizable,
+    NSWindowStyleMaskResizable,
     NSWindowStyleMaskTitled,
 )
-from Foundation import NSObject, NSTimer, NSUserDefaults
+from Foundation import NSMakeSize, NSObject, NSTimer, NSUserDefaults
+from assistant_layout import (
+    DEFAULT_H,
+    DEFAULT_W,
+    FRAME_AUTOSAVE_NAME,
+    HEADER,
+    MIN_H,
+    MIN_W,
+    SIDEBAR,
+    layout_window,
+)
 from bubble import Bubble
 from dictation import HISTORY, read_vocab, save_vocab
 from secrets_store import KEY_NAMES, OPTIONAL, get_secret, missing_secrets, save_secret
 
 
-W, H, SIDEBAR, HEADER = 900, 600, 210, 72
-PAGE_W, PAGE_H = W - SIDEBAR, H - HEADER
 NORMAL, FLOATING = 0, 3  # NSNormalWindowLevel, NSFloatingWindowLevel
 SIDEBAR_MATERIAL = 7  # NSVisualEffectMaterialSidebar
 HINTS = {"ptt": "Hold right Option to talk", "wake": "Say “Hey Jev”, then your command"}
@@ -115,6 +128,65 @@ def button(title, target, action, frame):
     return b
 
 
+def _place(view, frame):
+    view.setFrame_(NSMakeRect(frame[0], frame[1], frame[2], frame[3]))
+
+
+def _scroll_from_top(scroll):
+    doc = scroll.documentView()
+    if doc is None:
+        return 0.0
+    clip = scroll.contentView()
+    doc_h = float(doc.frame().size.height)
+    origin_y = float(clip.bounds().origin.y)
+    clip_h = float(clip.bounds().size.height)
+    return max(0.0, doc_h - (origin_y + clip_h))
+
+
+def _restore_scroll_from_top(scroll, offset):
+    doc = scroll.documentView()
+    clip = scroll.contentView()
+    if doc is None or clip is None:
+        return
+    doc_h = float(doc.frame().size.height)
+    clip_h = float(clip.bounds().size.height)
+    origin_y = doc_h - clip_h - float(offset)
+    if origin_y < 0.0:
+        origin_y = 0.0
+    clip.scrollToPoint_((0.0, origin_y))
+    scroll.reflectScrolledClipView_(clip)
+
+
+def _set_column_widths(table, widths):
+    for column, width in zip(list(table.tableColumns()), widths):
+        column.setWidth_(float(width))
+
+
+def _place_table(scroll, frame, table, widths):
+    """Size the table's scroll view, then the columns, so rows scroll inside the new width."""
+    _place(scroll, frame)
+    height = max(float(frame[3]), float(table.frame().size.height))
+    table.setFrame_(NSMakeRect(0, 0, frame[2], height))
+    _set_column_widths(table, widths)
+
+
+# Layout keys are longer than the tab keys the rest of the window uses.
+_PAGE_SPECS = (
+    ("home", "home"),
+    ("dict", "dictionary"),
+    ("apps", "apps"),
+    ("hist", "history"),
+    ("priv", "privacy"),
+    ("settings", "settings"),
+    ("keys", "keys"),
+)
+
+
+def spec_pages(spec):
+    for ui_key, layout_key in _PAGE_SPECS:
+        yield ui_key, spec[layout_key]
+
+
 def app_key(name):
     return re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")  # "Claude Code" -> claude_code, what Jev matches on
 
@@ -123,6 +195,12 @@ class ClickAwayView(NSView):
     def mouseDown_(self, event):
         self.window().makeFirstResponder_(None)  # clicking empty space takes focus out of the search and text boxes
         objc.super(ClickAwayView, self).mouseDown_(event)
+
+    def setFrameSize_(self, size):
+        objc.super(ClickAwayView, self).setFrameSize_(size)
+        on_resize = getattr(self, "onResize", None)
+        if on_resize is not None:
+            on_resize()
 
 
 class AppDelegate(NSObject):
@@ -136,37 +214,52 @@ class AppDelegate(NSObject):
             self.mode = "ptt"
         self.mic = defaults.stringForKey_("mic") or ""
         style = (NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable
-                 | NSWindowStyleMaskFullSizeContentView)
+                 | NSWindowStyleMaskResizable | NSWindowStyleMaskFullSizeContentView)
         self.panel = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
-            NSMakeRect(0, 0, W, H), style, NSBackingStoreBuffered, False
+            NSMakeRect(0, 0, DEFAULT_W, DEFAULT_H), style, NSBackingStoreBuffered, False
         )
         self.panel.setTitle_("Hey Jev - Fish Audio")
         self.panel.setTitleVisibility_(1)  # hidden, the sidebar says it
         self.panel.setTitlebarAppearsTransparent_(True)
         self.panel.setMovableByWindowBackground_(True)
         self.panel.setReleasedWhenClosed_(False)  # closing just hides it, the Dock icon brings it back
+        self.panel.setContentMinSize_(NSMakeSize(MIN_W, MIN_H))
+        self.panel.setMinSize_(NSMakeSize(MIN_W, MIN_H))
         self.on_top = defaults.boolForKey_("keep_on_top")
         self.panel.setLevel_(FLOATING if self.on_top else NORMAL)
         self._add_window_menu()
-        root = ClickAwayView.alloc().initWithFrame_(NSMakeRect(0, 0, W, H))
+        root = ClickAwayView.alloc().initWithFrame_(NSMakeRect(0, 0, DEFAULT_W, DEFAULT_H))
         self.panel.setContentView_(root)
-        backdrop = NSBox.alloc().initWithFrame_(NSMakeRect(SIDEBAR, 0, W - SIDEBAR, H))
-        backdrop.setBoxType_(4)  # custom, filled with the normal window colour
-        backdrop.setBorderWidth_(0)
-        backdrop.setFillColor_(NSColor.windowBackgroundColor())
-        root.addSubview_(backdrop)
+        self.backdrop = NSBox.alloc().initWithFrame_(NSMakeRect(SIDEBAR, 0, DEFAULT_W - SIDEBAR, DEFAULT_H))
+        self.backdrop.setBoxType_(4)  # custom, filled with the normal window colour
+        self.backdrop.setBorderWidth_(0)
+        self.backdrop.setFillColor_(NSColor.windowBackgroundColor())
+        root.addSubview_(self.backdrop)
         self.bubble = Bubble()
 
+        self.page_titles, self.page_subs = {}, {}
+        self.page_docs, self.page_scrolls = {}, {}
         self._build_sidebar(root)
         self._build_header(root)
-        self.pages = {"home": self._build_home(), "dict": self._build_dictionary(), "apps": self._build_apps(), "hist": self._build_history(),
-                      "priv": self._build_privacy(), "settings": self._build_settings(), "keys": self._build_keys()}
+        self._build_home()
+        self._build_dictionary()
+        self._build_apps()
+        self._build_history()
+        self._build_privacy()
+        self._build_settings()
+        self._build_keys()
+        self.pages = self.page_scrolls
         for page in self.pages.values():
             root.addSubview_(page)
         self._select_tab("keys" if missing_secrets() else "home")
+        # Restores the last size and position. A new name, so the old fixed frame is not reused.
+        restored = bool(self.panel.setFrameAutosaveName_(FRAME_AUTOSAVE_NAME))
+        root.onResize = self._layout_window
+        self._layout_window()
         NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(0.5, self, "tick:", None, True)
 
-        self.panel.center()
+        if not restored:
+            self.panel.center()
         self.panel.makeKeyAndOrderFront_(None)
         NSApp.activateIgnoringOtherApps_(True)
         self.global_monitor = NSEvent.addGlobalMonitorForEventsMatchingMask_handler_(
@@ -183,33 +276,33 @@ class AppDelegate(NSObject):
     # ------------------------------------------------------------------ layout
     @objc.python_method
     def _build_sidebar(self, root):
-        side = NSVisualEffectView.alloc().initWithFrame_(NSMakeRect(0, 0, SIDEBAR, H))
+        side = NSVisualEffectView.alloc().initWithFrame_(NSMakeRect(0, 0, SIDEBAR, DEFAULT_H))
         side.setMaterial_(SIDEBAR_MATERIAL)
         side.setBlendingMode_(NSVisualEffectBlendingModeBehindWindow)
         side.setState_(NSVisualEffectStateFollowsWindowActiveState)
         root.addSubview_(side)
-        side.addSubview_(label("Hey Jev", NSMakeRect(20, H - 82, 170, 22), 15, weight=0.6))
+        self.sidebar = side
+        self.sidebar_title = label("Hey Jev", NSMakeRect(20, DEFAULT_H - 82, 170, 22), 15, weight=0.6)
+        side.addSubview_(self.sidebar_title)
         self.tab_rows = {}
         for i, (key, title) in enumerate(TABS):
-            y = H - 124 - i * 34
-            box = NSBox.alloc().initWithFrame_(NSMakeRect(10, y, SIDEBAR - 20, 30))
+            box = NSBox.alloc().initWithFrame_(NSMakeRect(10, 0, SIDEBAR - 20, 30))
             box.setBoxType_(4)  # custom, so it can be filled
             box.setBorderWidth_(0)
             box.setCornerRadius_(7)
             box.setTitlePosition_(0)  # no title
             side.addSubview_(box)
             tab = NSButton.buttonWithTitle_target_action_(title, self, "tabClicked:")
-            tab.setFrame_(NSMakeRect(20, y + 3, SIDEBAR - 40, 24))
+            tab.setFrame_(NSMakeRect(20, 0, SIDEBAR - 40, 24))
             tab.setBordered_(False)
             tab.setAlignment_(0)  # left
             tab.setTag_(i)
             side.addSubview_(tab)
             self.tab_rows[key] = (box, tab)
         self.timer_rows = []
-        for i in range(3):  # up to 3 timers, soonest on top
-            y = 52 + (2 - i) * 22
-            name_view = label("", NSMakeRect(20, y, 110, 20), 12, NSColor.secondaryLabelColor())
-            time_view = label("", NSMakeRect(126, y, 64, 20), 13, NSColor.systemTealColor())
+        for _i in range(3):  # up to 3 timers, soonest on top
+            name_view = label("", NSMakeRect(20, 0, 110, 20), 12, NSColor.secondaryLabelColor())
+            time_view = label("", NSMakeRect(130, 0, 60, 20), 13, NSColor.systemTealColor())
             time_view.setFont_(NSFont.monospacedDigitSystemFontOfSize_weight_(13, 0.4))
             time_view.setAlignment_(2)  # right
             for v in (name_view, time_view):
@@ -224,28 +317,41 @@ class AppDelegate(NSObject):
 
     @objc.python_method
     def _build_header(self, root):
-        x = SIDEBAR + 24
-        self.dot = label("●", NSMakeRect(x, H - 42, 20, 24), 15, NSColor.systemOrangeColor())
-        self.status = label("Starting", NSMakeRect(x + 22, H - 42, 300, 24), 17, weight=0.6)
-        self.detail = label("Loading Whisper…", NSMakeRect(x, H - 64, 440, 20), 13, NSColor.secondaryLabelColor(), 0.0)
+        self.dot = label("●", NSMakeRect(0, 0, 20, 24), 15, NSColor.systemOrangeColor())
+        self.status = label("Starting", NSMakeRect(0, 0, 300, 24), 17, weight=0.6)
+        self.detail = label("Loading Whisper…", NSMakeRect(0, 0, 440, 20), 13, NSColor.secondaryLabelColor(), 0.0)
         for v in (self.dot, self.status, self.detail):
             root.addSubview_(v)
         self.mode_switch = NSSegmentedControl.segmentedControlWithLabels_trackingMode_target_action_(
             ["Hold Option", "Hey Jev"], 0, self, "modeChanged:"
         )
-        self.mode_switch.setFrame_(NSMakeRect(W - 196, H - 46, 172, 26))
         self.mode_switch.setSelectedSegment_(MODES.index(self.mode))
         root.addSubview_(self.mode_switch)
-        line = NSBox.alloc().initWithFrame_(NSMakeRect(SIDEBAR, H - HEADER, W - SIDEBAR, 1))
-        line.setBoxType_(2)  # separator
-        root.addSubview_(line)
+        self.header_line = NSBox.alloc().initWithFrame_(NSMakeRect(SIDEBAR, DEFAULT_H - HEADER, DEFAULT_W - SIDEBAR, 1))
+        self.header_line.setBoxType_(2)  # separator
+        root.addSubview_(self.header_line)
 
     @objc.python_method
-    def _page(self, title, subtitle):
-        page = NSView.alloc().initWithFrame_(NSMakeRect(SIDEBAR, 0, PAGE_W, PAGE_H))
-        page.addSubview_(label(title, NSMakeRect(24, PAGE_H - 50, 400, 30), 22, weight=0.6))
-        sub = label(subtitle, NSMakeRect(24, PAGE_H - 74, PAGE_W - 48, 20), 13, NSColor.secondaryLabelColor(), 0.0)
-        page.addSubview_(sub)
+    def _page(self, key, title, subtitle):
+        """A scrolling page. The scroll view is what gets shown and hidden."""
+        page = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, 10, 10))
+        title_view = label(title, NSMakeRect(0, 0, 10, 10), 22, weight=0.6)
+        sub_view = NSTextField.wrappingLabelWithString_(subtitle)
+        sub_view.setFont_(NSFont.systemFontOfSize_(13))
+        sub_view.setTextColor_(NSColor.secondaryLabelColor())
+        page.addSubview_(title_view)
+        page.addSubview_(sub_view)
+        scroll = NSScrollView.alloc().initWithFrame_(NSMakeRect(0, 0, 10, 10))
+        scroll.setDrawsBackground_(False)
+        scroll.setHasVerticalScroller_(True)
+        scroll.setHasHorizontalScroller_(False)
+        scroll.setAutohidesScrollers_(True)
+        scroll.setBorderType_(0)
+        scroll.setDocumentView_(page)
+        self.page_titles[key] = title_view
+        self.page_subs[key] = sub_view
+        self.page_docs[key] = page
+        self.page_scrolls[key] = scroll
         return page
 
     @objc.python_method
@@ -264,43 +370,43 @@ class AppDelegate(NSObject):
         table.setDelegate_(self)
         scroll.setDocumentView_(table)
         scroll.setHasVerticalScroller_(True)
+        scroll.setHasHorizontalScroller_(False)
+        scroll.setAutohidesScrollers_(True)
         scroll.setBorderType_(2)  # bezel
         page.addSubview_(scroll)
-        return table
+        return table, scroll
 
     @objc.python_method
     def _build_home(self):
-        page = self._page("Your Jev stats", "Everything since you started using Jev. Refreshes each time you open this tab.")
+        page = self._page("home", "Your Jev stats", "Everything since you started using Jev. Refreshes each time you open this tab.")
         self.stat_cards = []
-        card_w, card_h, gap = (PAGE_W - 48 - 32) / 3, 104, 16
-        for i in range(6):
-            x = 24 + (i % 3) * (card_w + gap)
-            y = PAGE_H - 106 - card_h - (i // 3) * (card_h + gap)
-            card = NSBox.alloc().initWithFrame_(NSMakeRect(x, y, card_w, card_h))
+        self.stat_boxes = []
+        for _i in range(6):
+            card = NSBox.alloc().initWithFrame_(NSMakeRect(0, 0, 10, 10))
             card.setBoxType_(4)
             card.setBorderWidth_(0)
             card.setCornerRadius_(12)
             card.setFillColor_(NSColor.quaternaryLabelColor().colorWithAlphaComponent_(0.12))
             page.addSubview_(card)
-            value = label("", NSMakeRect(x + 16, y + 52, card_w - 32, 40), 30, weight=0.6)
-            title = label("", NSMakeRect(x + 16, y + 30, card_w - 32, 20), 13, NSColor.labelColor(), 0.2)
-            sub = label("", NSMakeRect(x + 16, y + 12, card_w - 32, 18), 11, NSColor.secondaryLabelColor(), 0.0)
+            value = label("", NSMakeRect(0, 0, 10, 10), 30, weight=0.6)
+            title = label("", NSMakeRect(0, 0, 10, 10), 13, NSColor.labelColor(), 0.2)
+            sub = label("", NSMakeRect(0, 0, 10, 10), 11, NSColor.secondaryLabelColor(), 0.0)
             for v in (value, title, sub):
                 page.addSubview_(v)
+            self.stat_boxes.append(card)
             self.stat_cards.append((value, title, sub))
-        top_y = PAGE_H - 106 - 2 * card_h - gap - 40
-        page.addSubview_(label("Most used", NSMakeRect(24, top_y, 200, 20), 14, weight=0.6))
+        self.most_label = label("Most used", NSMakeRect(0, 0, 10, 10), 14, weight=0.6)
+        page.addSubview_(self.most_label)
         self.top_actions = NSTextField.wrappingLabelWithString_("")
-        self.top_actions.setFrame_(NSMakeRect(24, top_y - 40, PAGE_W - 48, 38))
         self.top_actions.setFont_(NSFont.systemFontOfSize_(13))
         self.top_actions.setTextColor_(NSColor.secondaryLabelColor())
         page.addSubview_(self.top_actions)
-        page.addSubview_(label("How to use", NSMakeRect(24, top_y - 70, 200, 20), 14, weight=0.6))
-        how = NSTextField.wrappingLabelWithString_(HOW_TO)
-        how.setFrame_(NSMakeRect(24, 10, PAGE_W - 48, top_y - 82))
-        how.setFont_(NSFont.systemFontOfSize_(13))
-        how.setTextColor_(NSColor.secondaryLabelColor())
-        page.addSubview_(how)
+        self.how_label = label("How to use", NSMakeRect(0, 0, 10, 10), 14, weight=0.6)
+        page.addSubview_(self.how_label)
+        self.how_text = NSTextField.wrappingLabelWithString_(HOW_TO)
+        self.how_text.setFont_(NSFont.systemFontOfSize_(13))
+        self.how_text.setTextColor_(NSColor.secondaryLabelColor())
+        page.addSubview_(self.how_text)
         return page
 
     @objc.python_method
@@ -358,27 +464,30 @@ class AppDelegate(NSObject):
 
     @objc.python_method
     def _build_dictionary(self):
-        page = self._page("Dictionary", "Words the transcriber gets wrong. Anything under “heard as” is swapped for the word.")
-        self.search = NSSearchField.alloc().initWithFrame_(NSMakeRect(PAGE_W - 224, PAGE_H - 48, 200, 26))
+        page = self._page("dict", "Dictionary", "Words the transcriber gets wrong. Anything under “heard as” is swapped for the word.")
+        self.search = NSSearchField.alloc().initWithFrame_(NSMakeRect(0, 0, 10, 10))
         self.search.setPlaceholderString_("Search")
         self.search.setTarget_(self)
         self.search.setAction_("searchChanged:")
         page.addSubview_(self.search)
 
-        top = PAGE_H - 118
-        self.new_word = text_field(NSMakeRect(24, top, 170, 26), "Correct word")
-        self.new_alts = text_field(NSMakeRect(202, top, 340, 26), "Heard as, comma separated")
+        self.new_word = text_field(NSMakeRect(0, 0, 10, 10), "Correct word")
+        self.new_alts = text_field(NSMakeRect(0, 0, 10, 10), "Heard as, comma separated")
         self.new_alts.setTarget_(self)
         self.new_alts.setAction_("addWord:")  # Return in the second box adds it
         for v in (self.new_word, self.new_alts):
             page.addSubview_(v)
-        page.addSubview_(button("Add word", self, "addWord:", NSMakeRect(550, top - 2, 116, 30)))
+        self.add_word_button = button("Add word", self, "addWord:", NSMakeRect(0, 0, 10, 10))
+        page.addSubview_(self.add_word_button)
 
-        self.table = self._table(page, NSMakeRect(24, 56, PAGE_W - 48, top - 70),
-                                 (("word", "Word", 170), ("heard", "Heard as (double-click to edit)", 440)))
+        self.table, self.table_scroll = self._table(
+            page, NSMakeRect(0, 0, 10, 10),
+            (("word", "Word", 170), ("heard", "Heard as (double-click to edit)", 440)),
+        )
 
-        page.addSubview_(button("Remove", self, "removeWord:", NSMakeRect(20, 14, 100, 30)))
-        self.dict_message = label("", NSMakeRect(130, 20, 400, 20), 12, NSColor.secondaryLabelColor(), 0.0)
+        self.remove_word_button = button("Remove", self, "removeWord:", NSMakeRect(0, 0, 10, 10))
+        page.addSubview_(self.remove_word_button)
+        self.dict_message = label("", NSMakeRect(0, 0, 10, 10), 12, NSColor.secondaryLabelColor(), 0.0)
         page.addSubview_(self.dict_message)
         self.vocab = [[w, list(alts)] for w, alts in read_vocab().items()]
         self._filter_vocab()
@@ -386,20 +495,23 @@ class AppDelegate(NSObject):
 
     @objc.python_method
     def _build_apps(self):
-        page = self._page("Apps", "What Jev can open, quit, hide, minimise or switch to. Restart Jev after changes (Cmd+Q, reopen).")
-        top = PAGE_H - 118
-        self.new_say = text_field(NSMakeRect(24, top, 140, 26), "Name you say")
-        self.new_app = text_field(NSMakeRect(172, top, 170, 26), "App name")
-        self.new_heard = text_field(NSMakeRect(350, top, 192, 26), "Heard as (optional)")
+        page = self._page("apps", "Apps", "What Jev can open, quit, hide, minimise or switch to. Restart Jev after changes (Cmd+Q, reopen).")
+        self.new_say = text_field(NSMakeRect(0, 0, 10, 10), "Name you say")
+        self.new_app = text_field(NSMakeRect(0, 0, 10, 10), "App name")
+        self.new_heard = text_field(NSMakeRect(0, 0, 10, 10), "Heard as (optional)")
         self.new_heard.setTarget_(self)
         self.new_heard.setAction_("addApp:")
         for v in (self.new_say, self.new_app, self.new_heard):
             page.addSubview_(v)
-        page.addSubview_(button("Add app", self, "addApp:", NSMakeRect(550, top - 2, 116, 30)))
-        self.apps_table = self._table(page, NSMakeRect(24, 56, PAGE_W - 48, top - 70),
-                                      (("say", "Name you say", 130), ("app", "App", 170), ("heard", "Heard as (double-click to edit)", 310)))
-        page.addSubview_(button("Remove", self, "removeApp:", NSMakeRect(20, 14, 100, 30)))
-        self.apps_message = label("", NSMakeRect(130, 20, 500, 20), 12, NSColor.secondaryLabelColor(), 0.0)
+        self.add_app_button = button("Add app", self, "addApp:", NSMakeRect(0, 0, 10, 10))
+        page.addSubview_(self.add_app_button)
+        self.apps_table, self.apps_scroll = self._table(
+            page, NSMakeRect(0, 0, 10, 10),
+            (("say", "Name you say", 130), ("app", "App", 170), ("heard", "Heard as (double-click to edit)", 310)),
+        )
+        self.remove_app_button = button("Remove", self, "removeApp:", NSMakeRect(0, 0, 10, 10))
+        page.addSubview_(self.remove_app_button)
+        self.apps_message = label("", NSMakeRect(0, 0, 10, 10), 12, NSColor.secondaryLabelColor(), 0.0)
         page.addSubview_(self.apps_message)
         with open(APPS_FILE, encoding="utf-8") as f:
             raw = json.load(f)
@@ -410,41 +522,45 @@ class AppDelegate(NSObject):
 
     @objc.python_method
     def _build_history(self):
-        page = self._page("Dictation history", "Everything you\u2019ve dictated, newest first. Kept on this Mac only.")
-        self.hist_table = self._table(page, NSMakeRect(24, 56, PAGE_W - 48, PAGE_H - 146),
-                                      (("time", "When", 130), ("text", "Text", 480)), editable=False)
-        page.addSubview_(button("Copy", self, "copyHistory:", NSMakeRect(20, 14, 100, 30)))
-        self.hist_message = label("", NSMakeRect(130, 20, 500, 20), 12, NSColor.secondaryLabelColor(), 0.0)
+        page = self._page("hist", "Dictation history", "Everything you\u2019ve dictated, newest first. Kept on this Mac only.")
+        self.hist_table, self.hist_scroll = self._table(
+            page, NSMakeRect(0, 0, 10, 10),
+            (("time", "When", 130), ("text", "Text", 480)), editable=False,
+        )
+        self.copy_button = button("Copy", self, "copyHistory:", NSMakeRect(0, 0, 10, 10))
+        page.addSubview_(self.copy_button)
+        self.hist_message = label("", NSMakeRect(0, 0, 10, 10), 12, NSColor.secondaryLabelColor(), 0.0)
         page.addSubview_(self.hist_message)
         self.history = []
         return page
 
     @objc.python_method
     def _build_privacy(self):
-        page = self._page("Privacy", "In Hey Jev mode the mic is always on, but it\u2019s heard on your Mac first. Only this ever leaves it.")
-        y = PAGE_H - 110
+        page = self._page("priv", "Privacy", "In Hey Jev mode the mic is always on, but it\u2019s heard on your Mac first. Only this ever leaves it.")
+        self.privacy_blocks = []
         for title, body in PRIVACY:
-            page.addSubview_(label(title, NSMakeRect(24, y, PAGE_W - 48, 20), 14, weight=0.6))
+            title_view = label(title, NSMakeRect(0, 0, 10, 10), 14, weight=0.6)
             text = NSTextField.wrappingLabelWithString_(body)
-            text.setFrame_(NSMakeRect(24, y - 58, PAGE_W - 48, 56))
             text.setFont_(NSFont.systemFontOfSize_(13))
             text.setTextColor_(NSColor.secondaryLabelColor())
+            page.addSubview_(title_view)
             page.addSubview_(text)
-            y -= 96
+            self.privacy_blocks.append((title_view, text))
         return page
 
     @objc.python_method
     def _build_settings(self):
-        page = self._page("Settings", "Pick the microphone Jev listens with. It switches straight away.")
-        y = PAGE_H - 140
-        page.addSubview_(label("Microphone", NSMakeRect(24, y + 16, 160, 20), 14, weight=0.6))
-        page.addSubview_(label("Plugged in a new one? Restart Jev to see it here.", NSMakeRect(24, y - 2, 330, 18), 11,
-                               NSColor.secondaryLabelColor(), 0.0))
-        self.mic_menu = NSPopUpButton.alloc().initWithFrame_pullsDown_(NSMakeRect(360, y + 4, 306, 26), False)
+        page = self._page("settings", "Settings", "Pick the microphone Jev listens with. It switches straight away.")
+        self.settings_name = label("Microphone", NSMakeRect(0, 0, 10, 10), 14, weight=0.6)
+        self.settings_hint = label("Plugged in a new one? Restart Jev to see it here.", NSMakeRect(0, 0, 10, 10), 11,
+                                   NSColor.secondaryLabelColor(), 0.0)
+        page.addSubview_(self.settings_name)
+        page.addSubview_(self.settings_hint)
+        self.mic_menu = NSPopUpButton.alloc().initWithFrame_pullsDown_(NSMakeRect(0, 0, 10, 10), False)
         self.mic_menu.setTarget_(self)
         self.mic_menu.setAction_("micChanged:")
         page.addSubview_(self.mic_menu)
-        self.mic_message = label("", NSMakeRect(24, y - 40, PAGE_W - 48, 20), 12, NSColor.secondaryLabelColor(), 0.0)
+        self.mic_message = label("", NSMakeRect(0, 0, 10, 10), 12, NSColor.secondaryLabelColor(), 0.0)
         page.addSubview_(self.mic_message)
         return page
 
@@ -475,21 +591,109 @@ class AppDelegate(NSObject):
 
     @objc.python_method
     def _build_keys(self):
-        page = self._page("Keys", "Saved in your Mac Keychain. A key in .env wins over these. Existing keys stay hidden.")
+        page = self._page("keys", "Keys", "Saved in your Mac Keychain. A key in .env wins over these. Existing keys stay hidden.")
         self.key_fields = {}
-        for i, (title, key_name, use) in enumerate(KEY_ROWS):
-            y = PAGE_H - 140 - i * 64
-            page.addSubview_(label(title, NSMakeRect(24, y + 16, 160, 20), 14, weight=0.6))
-            page.addSubview_(label(use, NSMakeRect(24, y - 2, 330, 18), 11, NSColor.secondaryLabelColor(), 0.0))
+        self.key_rows = []
+        for title, key_name, use in KEY_ROWS:
+            title_view = label(title, NSMakeRect(0, 0, 10, 10), 14, weight=0.6)
+            use_view = label(use, NSMakeRect(0, 0, 10, 10), 11, NSColor.secondaryLabelColor(), 0.0)
             placeholder = "Already configured" if get_secret(key_name) else ("Optional" if key_name in OPTIONAL else "Paste key")
-            field = text_field(NSMakeRect(360, y + 4, 306, 26), placeholder, secure=True)
-            page.addSubview_(field)
+            field = text_field(NSMakeRect(0, 0, 10, 10), placeholder, secure=True)
+            for view in (title_view, use_view, field):
+                page.addSubview_(view)
             self.key_fields[key_name] = field
-        y = PAGE_H - 140 - len(KEY_ROWS) * 64
-        page.addSubview_(button("Save keys", self, "saveSettings:", NSMakeRect(PAGE_W - 136, y + 8, 116, 30)))
-        self.settings_message = label("", NSMakeRect(24, y + 14, 480, 20), 12, NSColor.systemRedColor(), 0.0)
+            self.key_rows.append((title_view, use_view, field))
+        self.save_keys_button = button("Save keys", self, "saveSettings:", NSMakeRect(0, 0, 10, 10))
+        page.addSubview_(self.save_keys_button)
+        self.settings_message = label("", NSMakeRect(0, 0, 10, 10), 12, NSColor.systemRedColor(), 0.0)
         page.addSubview_(self.settings_message)
         return page
+
+    @objc.python_method
+    def _layout_window(self):
+        """Reflow every tab to the current content size. Safe to call during a live resize."""
+        if not getattr(self, "page_scrolls", None):
+            return
+        size = self.panel.contentView().frame().size
+        spec = layout_window(
+            size.width, size.height, how_to=HOW_TO, privacy=tuple(body for _title, body in PRIVACY),
+        )
+        chrome = spec["chrome"]
+        _place(self.sidebar, chrome["sidebar"])
+        _place(self.backdrop, chrome["backdrop"])
+        _place(self.dot, chrome["dot"])
+        _place(self.status, chrome["status"])
+        _place(self.detail, chrome["detail"])
+        _place(self.mode_switch, chrome["mode"])
+        _place(self.header_line, chrome["separator"])
+        side = spec["sidebar"]
+        _place(self.sidebar_title, side["title"])
+        _place(self.hint, side["hint"])
+        for (key, _title), frames in zip(TABS, side["tabs"]):
+            box, tab = self.tab_rows[key]
+            _place(box, frames[0])
+            _place(tab, frames[1])
+        for views, frames in zip(self.timer_rows, side["timers"]):
+            _place(views[0], frames[0])
+            _place(views[1], frames[1])
+        for key, page in spec_pages(spec):
+            self._place_page(key, chrome["page_frame"], page)
+
+    @objc.python_method
+    def _place_page(self, key, frame, page):
+        scroll = self.page_scrolls[key]
+        offset = _scroll_from_top(scroll)
+        _place(scroll, frame)
+        _place(self.page_docs[key], page["document"])
+        _place(self.page_titles[key], page["title"])
+        _place(self.page_subs[key], page["subtitle"])
+        if key == "home":
+            for box, card in zip(self.stat_boxes, page["cards"]):
+                _place(box, card["box"])
+            for (value, title, sub), card in zip(self.stat_cards, page["cards"]):
+                _place(value, card["value"])
+                _place(title, card["title"])
+                _place(sub, card["sub"])
+                value.setFont_(NSFont.systemFontOfSize_weight_(28 if card["value"][3] >= 40 else 20, 0.6))
+            _place(self.most_label, page["most_label"])
+            _place(self.top_actions, page["top_actions"])
+            _place(self.how_label, page["how_label"])
+            _place(self.how_text, page["how"])
+        elif key == "dict":
+            _place(self.search, page["search"])
+            _place(self.new_word, page["fields"][0])
+            _place(self.new_alts, page["fields"][1])
+            _place(self.add_word_button, page["button"])
+            _place_table(self.table_scroll, page["table"], self.table, page["columns"])
+            _place(self.remove_word_button, page["remove"])
+            _place(self.dict_message, page["message"])
+        elif key == "apps":
+            for view, rect in zip((self.new_say, self.new_app, self.new_heard), page["fields"]):
+                _place(view, rect)
+            _place(self.add_app_button, page["button"])
+            _place_table(self.apps_scroll, page["table"], self.apps_table, page["columns"])
+            _place(self.remove_app_button, page["remove"])
+            _place(self.apps_message, page["message"])
+        elif key == "hist":
+            _place_table(self.hist_scroll, page["table"], self.hist_table, page["columns"])
+            _place(self.copy_button, page["remove"])
+            _place(self.hist_message, page["message"])
+        elif key == "priv":
+            for (title, body), frames in zip(self.privacy_blocks, page["blocks"]):
+                _place(title, frames[0])
+                _place(body, frames[1])
+        elif key == "settings":
+            _place(self.settings_name, page["name"])
+            _place(self.settings_hint, page["hint"])
+            _place(self.mic_menu, page["popup"])
+            _place(self.mic_message, page["message"])
+        elif key == "keys":
+            for views, frames in zip(self.key_rows, page["rows"]):
+                for view, rect in zip(views, frames):
+                    _place(view, rect)
+            _place(self.save_keys_button, page["save"])
+            _place(self.settings_message, page["message"])
+        _restore_scroll_from_top(scroll, offset)
 
     # ------------------------------------------------------------------ tabs
     def tabClicked_(self, sender):

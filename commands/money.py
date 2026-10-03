@@ -1,9 +1,24 @@
-"""Read-only school, rent, bills, payday, Brea, and IHSS hours."""
+"""Read-only school, rent, bills, payday, Brea, and IHSS hours.
+
+The sweep reminder is date math only. It does not open a bank, look up a
+balance, or move money.
+"""
 from datetime import datetime, timedelta
 import csv
 import os
 import re
-from .config import BILL_HORIZON_DAYS, BILL_RE, DEFAULT_APPLE_PAY_ANCHOR, JEV_DOCS, MONEY_PATH, SCHOOL_HORIZON_DAYS, SCHOOL_RE
+from .config import (
+    BILL_HORIZON_DAYS,
+    BILL_RE,
+    DEFAULT_APPLE_PAY_ANCHOR,
+    JEV_DOCS,
+    MONEY_PATH,
+    SCHOOL_HORIZON_DAYS,
+    SCHOOL_RE,
+    SWEEP_ACCOUNT_LABEL,
+    SWEEP_AMOUNT,
+    SWEEP_SPOKEN_PATH,
+)
 from .textutil import _clean, _clock, _day_phrase, _hours_phrase, _join_names, _month_day, _until_day, _weekday_month
 from .shell import _run
 from .calendar_shift import _load_plain_events
@@ -100,17 +115,29 @@ def brea_from_due(path=None, today=None):
     return f"The due list says {title} on {_month_day(day)}, {_until_day(day, today)}."
 
 
-def speak_brea_start():
-    today = datetime.now().astimezone().date()
+def speak_brea_start(now=None, path=None, events=None):
+    now = now or datetime.now().astimezone()
+    today = now.date()
     due_line = brea_from_due(today=today)
-    now = datetime.now().astimezone()
-    loaded = _load_plain_events(now - timedelta(days=2), now + timedelta(days=60))
+    horizon = now + timedelta(days=60)
+    if events is None:
+        loaded = _load_plain_events(now - timedelta(days=2), horizon)
+    else:
+        loaded = events
+    from .shift_override import events_with_overrides
+
+    events, _error = events_with_overrides(loaded, now, horizon, path=path)
     cal_line = None
-    if not isinstance(loaded, str):
-        brea = [ev for ev in loaded if re.search(r"\bbrea\b", ev["title"], re.I) and ev["end"] > now]
-        brea.sort(key=lambda ev: ev["start"])
-        if brea:
-            ev = brea[0]
+    brea = [ev for ev in events if re.search(r"\bbrea\b", f"{ev.get('title', '')} {ev.get('place', '')}", re.I) and ev["end"] > now]
+    brea.sort(key=lambda ev: ev["start"])
+    if brea:
+        ev = brea[0]
+        if ev.get("source") == "override":
+            cal_line = (
+                f"Your saved shift is {ev.get('place') or 'Brea'} "
+                f"{_day_phrase(ev['start'], now)} at {_clock(ev['start'])}."
+            )
+        else:
             cal_line = f"The calendar has {ev['title']} {_day_phrase(ev['start'], now)} at {_clock(ev['start'])}."
     parts = [part for part in (due_line, cal_line) if part]
     if parts:
@@ -199,20 +226,31 @@ def next_semi_payday(today):
     return min(future)
 
 
+def _schedule(anchor, default):
+    """Anchor plus the sweep amount and account label from config."""
+    return {
+        "anchor": anchor,
+        "default": default,
+        "amount": SWEEP_AMOUNT,
+        "account": SWEEP_ACCOUNT_LABEL,
+    }
+
+
 def load_pay_schedule(path=None):
     """Apple anchor date, and whether money.md was missing so the default is in use.
 
-    The file is local. Bank sites are never contacted from here.
+    The file is local. Bank sites are never contacted from here. The sweep
+    amount and account label always come from config, not from this file.
     """
     path = path or MONEY_PATH
     anchor = datetime.strptime(DEFAULT_APPLE_PAY_ANCHOR, "%Y-%m-%d").date()
     if not os.path.isfile(path):
-        return {"anchor": anchor, "default": True}
+        return _schedule(anchor, True)
     try:
         with open(path, encoding="utf-8") as handle:
             text = handle.read()
     except OSError:
-        return {"anchor": anchor, "default": True}
+        return _schedule(anchor, True)
     for raw in text.splitlines():
         line = raw.strip()
         if not line or line.startswith("#"):
@@ -223,7 +261,7 @@ def load_pay_schedule(path=None):
                 anchor = datetime.strptime(match.group(1), "%Y-%m-%d").date()
             except ValueError:
                 continue
-    return {"anchor": anchor, "default": False}
+    return _schedule(anchor, False)
 
 
 def speak_payday(today=None, path=None):
@@ -241,6 +279,111 @@ def speak_payday(today=None, path=None):
     if schedule["default"]:
         note = " That's the default schedule. Edit Documents, Jev, money.md to change the Apple Friday."
     return f"{first} {second}{note}"
+
+
+def _plain_amount(amount):
+    if isinstance(amount, float) and amount.is_integer():
+        return str(int(amount))
+    return str(amount)
+
+
+def is_apple_payday(today, anchor):
+    """True on the anchor Friday and every 14 days after it.
+
+    A Friday before the anchor is not a payday, even when it sits on the
+    same 14-day cadence.
+    """
+    if today < anchor:
+        return False
+    return (today - anchor).days % 14 == 0
+
+
+def is_ihss_payday(today):
+    """True on the 15th and on the last day of the month, including leap day."""
+    if today.day == 15:
+        return True
+    return today == _month_end(today.year, today.month)
+
+
+def is_timesheet_day(today):
+    """True on the 14th and on the last day of the month."""
+    if today.day == 14:
+        return True
+    return today == _month_end(today.year, today.month)
+
+
+def sweep_reminder_line(today=None, path=None):
+    """Spoken sweep and timesheet lines for one date, or None when nothing is due.
+
+    `today` is a datetime.date. Omit it to use the local calendar day.
+    This reads the Apple anchor from money.md when that file exists and
+    otherwise uses the config anchor. It does not touch the network.
+    """
+    today = today or datetime.now().astimezone().date()
+    schedule = load_pay_schedule(path)
+    move = f"move ${_plain_amount(schedule['amount'])} to {schedule['account']}."
+    apple = is_apple_payday(today, schedule["anchor"])
+    ihss = is_ihss_payday(today)
+    lines = []
+    if apple and ihss:
+        lines.append(f"Apple and IHSS payday today — {move}")
+    elif apple:
+        lines.append(f"Apple payday today — {move}")
+    elif ihss:
+        lines.append(f"IHSS payday today — {move}")
+    if is_timesheet_day(today):
+        lines.append("Time to submit your timesheet.")
+    if not lines:
+        return None
+    return " ".join(lines)
+
+
+def speak_payday_check(today=None, path=None):
+    """Answer "payday check" / "what's due today" / "any reminders today"."""
+    line = sweep_reminder_line(today, path=path)
+    if line:
+        return line
+    return "Nothing to sweep today."
+
+
+def _read_sweep_stamp(state_path):
+    try:
+        with open(state_path, encoding="utf-8") as handle:
+            text = handle.read().strip()
+    except OSError:
+        return None
+    try:
+        return datetime.strptime(text, "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+
+def _write_sweep_stamp(state_path, today):
+    folder = os.path.dirname(state_path)
+    if folder:
+        os.makedirs(folder, exist_ok=True)
+    tmp = state_path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as handle:
+        handle.write(today.isoformat() + "\n")
+    os.replace(tmp, state_path)
+
+
+def claim_daily_sweep(today=None, state_path=None, path=None):
+    """The launch reminder for today, once.
+
+    Returns the spoken line the first time this date has something to say,
+    and None after that stamp is written. A quiet day returns None and
+    leaves the stamp alone. Asking out loud does not use this stamp.
+    """
+    today = today or datetime.now().astimezone().date()
+    state_path = state_path or SWEEP_SPOKEN_PATH
+    if _read_sweep_stamp(state_path) == today:
+        return None
+    line = sweep_reminder_line(today, path=path)
+    if not line:
+        return None
+    _write_sweep_stamp(state_path, today)
+    return line
 
 
 def speak_ihss_period(today=None):

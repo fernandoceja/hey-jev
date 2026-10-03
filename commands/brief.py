@@ -2,6 +2,7 @@
 from datetime import datetime, timedelta
 from .time_date import speak_date
 from .calendar_shift import _CAL_FAILED, _calendar_problem, _events_between, speak_next_shift, speak_today_schedule
+from .money import sweep_reminder_line
 from .weather import gmail_brief_line, speak_weather
 from .notes_due import speak_due
 
@@ -31,8 +32,12 @@ def _count_today_events():
         return _CAL_FAILED
 
 
-def speak_brief():
-    """Date, weather, today's events, next shift, and the top due items."""
+def speak_brief(today=None):
+    """Date, weather, today's events, next shift, due items, and a payday sweep when one is due.
+
+    `today` is only for the sweep line. Pass a date in tests. The other parts
+    still describe the real current day.
+    """
     parts = [
         speak_date(),
         speak_weather(),
@@ -40,6 +45,9 @@ def speak_brief():
         speak_next_shift(),
         speak_due(limit=3),
     ]
+    sweep = sweep_reminder_line(today)
+    if sweep:
+        parts.append(sweep)
     mail = gmail_brief_line()
     if mail:
         parts.append(mail)

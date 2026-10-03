@@ -15,6 +15,9 @@ faster-whisper~=1.2.1
 pyobjc-core~=11.1.0
 pyobjc-framework-Cocoa~=11.1.0
 pyobjc-framework-EventKit~=11.1.0
+# Leave-for-work ETA. MapKit needs no API key. Imported only for that question.
+pyobjc-framework-MapKit~=11.1.0
+pyobjc-framework-CoreLocation~=11.1.0
 # py2app is a build tool, not imported at runtime. setup.py lists it in setup_requires.
 # On this Python 3.9 venv: .venv/bin/pip install 'py2app~=0.28.9'
 # py2app 0.28.10 requires Python 3.10.
