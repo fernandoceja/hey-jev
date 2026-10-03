@@ -1,8 +1,8 @@
 """Show and hide rules for the floating command bar.
 
 No AppKit. The window asks this before it orders the pill on or off, and before
-a Return press is handed to the assistant. Typed text stays on this Mac: the
-control message is marked local-only, and nothing here opens a socket.
+a Return press is handed to the assistant. A typed line is queued as a normal
+turn, the same path as something she heard. Nothing here opens a socket.
 """
 
 BAR_W = 420.0
@@ -14,7 +14,6 @@ PLACEHOLDER = "Message Jev"
 REPLY_SECONDS = 4.0
 PREF_KEY = "mini_bar_enabled"
 ORIGIN_KEY = "mini_bar_origin"
-TYPED_REFUSAL = "That one has to be spoken. Typed commands stay on this Mac."
 
 # Status lines worth putting in the field. Idle "ready" lines are not a reply.
 _SHOW_STATES = {
@@ -114,7 +113,8 @@ def submission(text, shown_reply=""):
     """What Return does with the field.
 
     Empty input is ignored. The line currently showing as a reply is cleared,
-    not run again. A real command is queued for the local voice pipeline and
+    not run again. A real command is queued for the same turn as a voice
+    command, including TypeSafe or the LLM when nothing local matches, and
     must not bring the main window back.
     """
     cleaned = " ".join(str(text or "").split())
@@ -125,7 +125,6 @@ def submission(text, shown_reply=""):
     return {
         "kind": "run",
         "control": ("text", cleaned),
-        "local_only": True,
         "reveal_main": False,
     }
 

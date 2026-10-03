@@ -10,7 +10,6 @@ from mini_bar import (
     DOCK_GAP,
     PLACEHOLDER,
     REPLY_SECONDS,
-    TYPED_REFUSAL,
     BarController,
     bar_controls,
     enabled_from_pref,
@@ -91,12 +90,12 @@ class TestVisibility(unittest.TestCase):
 
 
 class TestSubmit(unittest.TestCase):
-    def test_return_queues_a_local_command_and_does_not_reveal_the_window(self):
+    def test_return_queues_the_same_turn_as_voice_and_does_not_reveal_the_window(self):
         plan = submission("  open   Spotify  ")
         self.assertEqual(plan["kind"], "run")
         self.assertEqual(plan["control"], ("text", "open Spotify"))
-        self.assertTrue(plan["local_only"])
         self.assertFalse(plan["reveal_main"])
+        self.assertNotIn("local_only", plan)
         self.assertIsNone(submission("   "))
         self.assertIsNone(submission(""))
         echo = submission("It's 3:45.", shown_reply="It's 3:45.")
@@ -104,15 +103,20 @@ class TestSubmit(unittest.TestCase):
         self.assertFalse(echo["reveal_main"])
         self.assertNotIn("control", echo)
 
+    def test_a_non_local_phrase_is_still_queued_for_the_voice_path(self):
+        """'what time is it in Tokyo' is not a local command. Voice sends it on. Typing does too."""
+        phrase = "what time is it in Tokyo"
+        self.assertIsNone(commands.route_before_api(phrase))
+        plan = submission(phrase)
+        self.assertEqual(plan["control"], ("text", phrase))
+        self.assertFalse(plan["reveal_main"])
+        self.assertNotIn("local_only", plan)
+
     def test_known_commands_stay_on_the_local_router(self):
         self.assertEqual(commands.route_before_api("what time is it"), "info_time")
         self.assertEqual(commands.route_before_api("open Spotify"), "app_open")
         self.assertEqual(commands.route_before_api("check my messages from My Love"), "info_messages")
         self.assertNotIn("info_messages", commands.BRIDGE_ALLOW)
-        # Voice may send this to the LLM. Typed input must not.
-        self.assertIsNone(commands.route_before_api("what time is it in Tokyo"))
-        self.assertIn("spoken", TYPED_REFUSAL.lower())
-        self.assertIn("Mac", TYPED_REFUSAL)
 
     def test_the_mic_button_uses_the_option_key_tokens(self):
         self.assertEqual(mic_event("down"), "press")
@@ -140,15 +144,16 @@ class TestSubmit(unittest.TestCase):
         self.assertFalse(bar.reply_due_clear(30.0, "open Spotify"))
         self.assertEqual(bar.reply, "")
 
-    def test_the_voice_loop_marks_typed_text_local_only(self):
+    def test_typed_text_calls_the_same_turn_as_voice(self):
         source = open(os.path.join(ROOT, "siri.py"), encoding="utf-8").read()
-        self.assertIn('command[0] == "text"', source)
-        self.assertIn('kwargs={"local_only": True}', source)
-        self.assertIn("TYPED_REFUSAL", source)
+        self.assertNotIn("local_only", source)
+        self.assertNotIn("TYPED_REFUSAL", source)
+        start = source.index('command[0] == "text"')
+        branch = source[start:source.index("if rec.wake:", start)]
+        self.assertIn("target=run_turn, args=(typed, None)", branch)
         handle = _func(source, "handle")
-        think = handle.index('emit(notify, "Thinking"')
-        refuse = handle.index("if local_only:")
-        self.assertLess(refuse, think)
+        self.assertIn('emit(notify, "Thinking"', handle)
+        self.assertNotIn("local_only", handle)
 
 
 class TestPlacement(unittest.TestCase):
