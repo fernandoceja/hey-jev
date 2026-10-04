@@ -14,6 +14,7 @@ import time
 
 import objc
 from AppKit import (
+    NSAlert,
     NSApp,
     NSAppearance,
     NSApplication,
@@ -50,6 +51,7 @@ from AppKit import (
     NSTextField,
     NSTextFieldCell,
     NSView,
+    NSWorkspace,
     NSVisualEffectBlendingModeBehindWindow,
     NSVisualEffectStateFollowsWindowActiveState,
     NSVisualEffectView,
@@ -65,7 +67,7 @@ from AppKit import (
     NSWindowStyleMaskResizable,
     NSWindowStyleMaskTitled,
 )
-from Foundation import NSMakeSize, NSObject, NSTimer, NSUserDefaults
+from Foundation import NSMakeSize, NSObject, NSURL, NSTimer, NSUserDefaults
 from assistant_layout import (
     DEFAULT_H,
     DEFAULT_W,
@@ -100,6 +102,7 @@ from mini_bar import (
     submission,
 )
 from secrets_store import KEY_NAMES, OPTIONAL, get_secret, missing_secrets, save_secret
+from updates import check_upstream, safe_browser_url
 
 
 NORMAL, FLOATING = 0, 3  # NSNormalWindowLevel, NSFloatingWindowLevel
@@ -122,6 +125,7 @@ PRIVACY = (
     ("TypeSafe (Jev)  \u00b7  text", "Only the words after \u201cHey Jev\u201d, like \u201copen Spotify\u201d, to work out what to do."),
     ("OpenRouter or OpenAI  \u00b7  audio", "Dictation audio, only between \u201ctranscribe\u201d and \u201cstop transcribing\u201d. It goes to OpenAI directly if you added that key, otherwise through OpenRouter. Questions that aren't commands go to Claude Haiku on OpenRouter as text."),
     ("Fish Audio  \u00b7  text", "The text of her replies, to turn into her voice. Scripted replies are saved after the first time, so most are never sent again."),
+    ("GitHub  \u00b7  read only", "Check for updates, only when you click it, asks api.github.com whether henryklunaris/hey-jev has new commits. No token is sent. Nothing is downloaded or installed."),
 )
 KEY_ROWS = (
     ("TypeSafe", "TYPESAFE_API_KEY", "Jev, decides what each command means"),
@@ -347,11 +351,13 @@ class AppDelegate(NSObject):
         self.panel.setContentMinSize_(NSMakeSize(MIN_W, MIN_H))
         self.panel.setMinSize_(NSMakeSize(MIN_W, MIN_H))
         self.panel.setDelegate_(self)
+        self._update_checking = False
         self._main_closing = False
         self.bar = BarController(enabled=enabled_from_pref(defaults.objectForKey_(PREF_KEY)))
         self.on_top = defaults.boolForKey_("keep_on_top")
         self.panel.setLevel_(FLOATING if self.on_top else NORMAL)
         self._add_window_menu()
+        self._wire_update_menu()
         root = ClickAwayView.alloc().initWithFrame_(NSMakeRect(0, 0, DEFAULT_W, DEFAULT_H))
         self.panel.setContentView_(root)
         self.backdrop = NSBox.alloc().initWithFrame_(NSMakeRect(SIDEBAR, 0, DEFAULT_W - SIDEBAR, DEFAULT_H))
@@ -708,6 +714,13 @@ class AppDelegate(NSObject):
         self.mini_toggle.setAction_("miniBarChanged:")
         self.mini_toggle.setState_(1 if self.bar.enabled else 0)
         page.addSubview_(self.mini_toggle)
+        self.update_name = label("Updates", NSMakeRect(0, 0, 10, 10), 14, weight=0.6)
+        self.update_hint = label("Checks henryklunaris/hey-jev. Nothing is downloaded.", NSMakeRect(0, 0, 10, 10), 11,
+                                 NSColor.secondaryLabelColor(), 0.0)
+        page.addSubview_(self.update_name)
+        page.addSubview_(self.update_hint)
+        self.update_button = button("Check for updates", self, "checkForUpdates:", NSMakeRect(0, 0, 10, 10))
+        page.addSubview_(self.update_button)
         return page
 
     @objc.python_method
@@ -862,6 +875,9 @@ class AppDelegate(NSObject):
             _place(self.mini_name, page["mini_name"])
             _place(self.mini_hint, page["mini_hint"])
             _place(self.mini_toggle, page["mini_toggle"])
+            _place(self.update_name, page["update_name"])
+            _place(self.update_hint, page["update_hint"])
+            _place(self.update_button, page["update_button"])
         elif key == "keys":
             for views, frames in zip(self.key_rows, page["rows"]):
                 for view, rect in zip(views, frames):
@@ -1124,6 +1140,17 @@ class AppDelegate(NSObject):
         menu.addItemWithTitle_action_keyEquivalent_("Reset Mini Bar Position", "resetMiniBarPosition:", "").setTarget_(self)
         item.setSubmenu_(menu)
         NSApp.setWindowsMenu_(menu)
+
+    @objc.python_method
+    def _wire_update_menu(self):
+        menu = NSApp.mainMenu()
+        app_item = menu.itemAtIndex_(0) if menu is not None and menu.numberOfItems() else None
+        submenu = app_item.submenu() if app_item is not None else None
+        if submenu is None:
+            return
+        found = submenu.itemWithTitle_("Check for Updates\u2026")
+        if found is not None:
+            found.setTarget_(self)
 
     def toggleOnTop_(self, _sender):
         self.on_top = not self.on_top
@@ -1417,12 +1444,66 @@ class AppDelegate(NSObject):
             NSEvent.removeMonitor_(self.key_monitor)
 
 
+    def checkForUpdates_(self, _sender):
+        """One read of the public compare API. Does not download or apply anything."""
+        if getattr(self, "_update_checking", False):
+            return
+        self._update_checking = True
+        button = getattr(self, "update_button", None)
+        if button is not None:
+            button.setEnabled_(False)
+            button.setTitle_("Checking\u2026")
+        threading.Thread(target=self._fetch_updates, daemon=True).start()
+
+    @objc.python_method
+    def _fetch_updates(self):
+        try:
+            result = check_upstream()
+        except Exception:
+            result = {
+                "kind": "network",
+                "title": "Couldn't check",
+                "body": "Couldn't reach GitHub. Check the network and try again.",
+                "open_url": "",
+            }
+        self.performSelectorOnMainThread_withObject_waitUntilDone_("showUpdateResult:", result, False)
+
+    def showUpdateResult_(self, result):
+        self._update_checking = False
+        button = getattr(self, "update_button", None)
+        if button is not None:
+            button.setEnabled_(True)
+            button.setTitle_("Check for updates")
+        try:
+            title = str(result["title"] or "")
+        except Exception:
+            title = "Couldn't check"
+        try:
+            body = str(result["body"] or "")
+        except Exception:
+            body = ""
+        try:
+            open_url = safe_browser_url(result["open_url"])
+        except Exception:
+            open_url = ""
+        alert = NSAlert.alloc().init()
+        alert.setMessageText_(title or "Couldn't check")
+        alert.setInformativeText_(body)
+        alert.addButtonWithTitle_("OK")
+        if open_url:
+            alert.addButtonWithTitle_("Open on GitHub")
+        response = alert.runModal()
+        if open_url and int(response) == 1001:
+            NSWorkspace.sharedWorkspace().openURL_(NSURL.URLWithString_(open_url))
+
+
 def build_menu():
     """App and Edit menus, so Cmd+Q works and Cmd+V pastes into the key fields."""
     bar = NSMenu.alloc().init()
     app_item = NSMenuItem.alloc().init()
     bar.addItem_(app_item)
     app_menu = NSMenu.alloc().init()
+    app_menu.addItemWithTitle_action_keyEquivalent_("Check for Updates\u2026", "checkForUpdates:", "")
     app_menu.addItemWithTitle_action_keyEquivalent_("Quit Hey Jev", "terminate:", "q")
     app_item.setSubmenu_(app_menu)
     edit_item = NSMenuItem.alloc().init()
