@@ -297,10 +297,14 @@ class TestPlacement(unittest.TestCase):
             page = layout_window(width, height)["settings"]
             bounds = page["document"]
             rows = (page["name"], page["hint"], page["popup"], page["message"],
-                    page["mini_name"], page["mini_hint"], page["mini_toggle"])
+                    page["mini_name"], page["mini_hint"], page["mini_toggle"],
+                    page["update_name"], page["update_hint"], page["update_button"])
             for rect in rows:
                 self.assertTrue(rects_inside(rect, bounds), (width, rect))
             self.assertFalse(_overlaps(page["popup"], page["mini_toggle"]))
             self.assertFalse(_overlaps(page["message"], page["mini_name"]))
+            self.assertFalse(_overlaps(page["mini_toggle"], page["update_name"]))
+            self.assertFalse(_overlaps(page["update_hint"], page["update_button"]))
             # AppKit origin is the bottom, so a lower row has a smaller y.
             self.assertLess(page["mini_toggle"][1], page["popup"][1])
+            self.assertLess(page["update_button"][1], page["mini_toggle"][1])
