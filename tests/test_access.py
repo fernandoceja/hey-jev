@@ -1,8 +1,11 @@
 """Mac volume steps, brightness, Focus, and accessibility. Processes are mocked."""
 import os
+import sys
 import unittest
+from unittest import mock
 
 import commands
+import commands.system
 from commands.access import (
     FOCUS_PANE,
     FOCUS_UI_SCRIPT,
@@ -20,7 +23,7 @@ from commands.access import (
     stop_reading,
 )
 from commands.media import change_mac_volume, set_mac_volume
-from commands.system import change_brightness
+from commands.system import _CORE_GRAPHICS, _DISPLAY_SERVICES, change_brightness
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -216,6 +219,63 @@ class TestBrightness(unittest.TestCase):
         spoken = change_brightness("down", display=False, cli=False, runner=lambda args: calls.append(list(args)))
         self.assertEqual(spoken, "Dimmer.")
         self.assertIn("key code 145", calls[0][2])
+
+    def test_darwin_display_services_is_a_fake_library(self):
+        """sys.platform darwin still must not call the real DisplayServices CDLL."""
+        loaded = []
+        sets = []
+
+        def fake_cdll(path, *args, **kwargs):
+            loaded.append(path)
+            lib = mock.MagicMock()
+            if path == _CORE_GRAPHICS:
+                lib.CGMainDisplayID.return_value = 42
+                return lib
+
+            def get_brightness(display_id, ref):
+                self.assertEqual(display_id, 42)
+                ref._obj.value = 0.5
+                return 0
+
+            def set_brightness(display_id, level):
+                self.assertEqual(display_id, 42)
+                sets.append(float(level.value))
+                return 0
+
+            lib.DisplayServicesGetBrightness.side_effect = get_brightness
+            lib.DisplayServicesSetBrightness.side_effect = set_brightness
+            return lib
+
+        with mock.patch.object(sys, "platform", "darwin"), \
+                mock.patch.object(commands.system.ctypes, "CDLL", fake_cdll):
+            self.assertEqual(sys.platform, "darwin")
+            spoken = change_brightness("up")
+        self.assertEqual(spoken, "Brightness is at 60 percent.")
+        self.assertAlmostEqual(sets[0], 0.6)
+        self.assertEqual(loaded, [_DISPLAY_SERVICES, _CORE_GRAPHICS])
+
+    def test_darwin_without_the_framework_uses_the_stubbed_cli(self):
+        calls = []
+
+        def missing(path, *args, **kwargs):
+            raise OSError("framework absent")
+
+        def runner(args):
+            calls.append(list(args))
+            if args[-1] == "-l":
+                return "display 0: brightness 0.400000\n"
+            return ""
+
+        with mock.patch.object(sys, "platform", "darwin"), \
+                mock.patch.object(commands.system.ctypes, "CDLL", missing):
+            spoken = change_brightness(
+                "up", cli="/opt/homebrew/bin/brightness", runner=runner,
+            )
+        self.assertEqual(spoken, "Brightness is at 50 percent.")
+        self.assertEqual(calls, [
+            ["/opt/homebrew/bin/brightness", "-l"],
+            ["/opt/homebrew/bin/brightness", "0.50"],
+        ])
 
 
 class TestFocusAndReading(unittest.TestCase):
