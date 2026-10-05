@@ -1,6 +1,8 @@
 """Round 2 routing and the Jev-folder shortcut check. No macOS, no network."""
 import os
+import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from datetime import datetime, timedelta
@@ -162,8 +164,18 @@ class TestRouting(unittest.TestCase):
             self.assertIsNone(commands.route_before_api(phrase), phrase)
 
     def test_bare_run_does_not_match_without_a_verified_folder(self):
-        self.assertIsNone(commands.route_before_api("run a marathon next year"))
-        self.assertEqual(commands.route_before_api("run shortcut Send Money"), "shortcut_run")
+        calls = []
+
+        def fake_run(args, **kwargs):
+            calls.append(list(args))
+            return _cp(args, code=1)
+
+        with mock.patch.object(commands.subprocess, "run", fake_run):
+            self.assertIsNone(commands.route_before_api("run a marathon next year"))
+            self.assertEqual(commands.route_before_api("run shortcut Send Money"), "shortcut_run")
+        self.assertTrue(calls)
+        self.assertTrue(all(call[:2] == ["shortcuts", "list"] for call in calls))
+        self.assertFalse(any(call[:2] == ["shortcuts", "run"] for call in calls))
 
     def test_empty_trash_needs_a_spoken_yes(self):
         self.assertIn("empty_trash", commands.CONFIRM)
@@ -274,7 +286,16 @@ class TestRouting(unittest.TestCase):
         self.assertEqual(commands.music_target("play spotify", True), "spotify")
 
     def test_volume_brightness_screenshot_and_reminder_are_argument_lists(self):
+        """Brightness here is the key-code list, never DisplayServices or the CLI.
+
+        On a Mac, change_brightness() loads DisplayServices and adds 10 percent
+        before subprocess runs. A Homebrew brightness binary would be next.
+        display=False and cli=False keep this on key codes 144 and 145 even
+        when the platform is darwin and `brightness` is on PATH.
+        """
         calls = []
+        which_names = []
+        real_which = shutil.which
 
         def fake_run(args, **kwargs):
             calls.append(list(args))
@@ -282,10 +303,19 @@ class TestRouting(unittest.TestCase):
                 return _cp(args, stdout="Now drawing from 'Battery Power'\n -InternalBattery-0 81%; discharging;\n")
             return _cp(args)
 
-        with mock.patch.object(commands.subprocess, "run", fake_run):
+        def which(name, *args, **kwargs):
+            which_names.append(name)
+            if name == "brightness":
+                return "/opt/homebrew/bin/brightness"
+            return real_which(name, *args, **kwargs)
+
+        with mock.patch.object(sys, "platform", "darwin"), \
+                mock.patch("shutil.which", which), \
+                mock.patch.object(commands.subprocess, "run", fake_run):
+            self.assertEqual(sys.platform, "darwin")
             self.assertIn("40", commands.set_mac_volume(None, "set the volume to 40"))
-            self.assertEqual(commands.change_brightness("up"), "Brighter.")
-            self.assertEqual(commands.change_brightness("down"), "Dimmer.")
+            self.assertEqual(commands.change_brightness("up", display=False, cli=False), "Brighter.")
+            self.assertEqual(commands.change_brightness("down", display=False, cli=False), "Dimmer.")
             self.assertIn("81", commands.speak_battery())
             shot = commands.take_screenshot()
             reminded = commands.remind_timesheet()
@@ -303,6 +333,9 @@ class TestRouting(unittest.TestCase):
         self.assertNotIn("os.system", script)
         for call in calls:
             self.assertIsInstance(call, list)
+            self.assertNotEqual(call[0], "defaults")
+            self.assertFalse(str(call[0]).endswith("brightness"))
+        self.assertNotIn("brightness", which_names)
         self.assertTrue(joined)
 
 
