@@ -392,6 +392,8 @@ ACTIONS = {
     "focus_on": lambda _arg, text: _start_focus(text),
     "ihss_log": lambda _arg, text: commands.log_ihss(text),
     "case_status": lambda _arg, _text: commands.open_case_status(),
+    "matrix_on": lambda _arg, _text: commands.start_matrix(),
+    "matrix_off": lambda _arg, _text: commands.stop_matrix(),
     "shortcut_run": lambda _arg, text: commands.run_named_shortcut(text),
 }
 
@@ -424,6 +426,8 @@ REPLIES = {
     "media_next": ["Skipping.", "[chuckling] Not a fan? Next one.", "Next track."],
     "media_previous": ["Going back one.", "Previous track.", "[chuckling] Again? Sure."],
     "system_lock": ["Locking up. See you soon.", "Locked.", "Screen's locked."],
+    "matrix_on": ["Matrix is on.", "[cheerful] Welcome to the Matrix."],
+    "matrix_off": ["Matrix is off.", "Back to the real world."],
     "system_sleep": ["Good night.", "Sleeping now.", "[sighing] Finally, a nap."],
     "info": ["[chuckling] That's a question, not a command. I'll get a brain for that soon.",
              "[sighing] I can't answer that one yet."],
