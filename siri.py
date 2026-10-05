@@ -187,10 +187,6 @@ def sh(*cmd):
         raise RuntimeError(result.stderr.strip() or f"command failed: {' '.join(cmd)}")
 
 
-def volume():
-    return int(osa("output volume of (get volume settings)"))
-
-
 def spotify_volume():
     return int(osa('tell application "Spotify" to get sound volume'))
 
@@ -330,10 +326,10 @@ ACTIONS = {
     "app_minimise": _quiet(lambda arg, _text: osa(f'tell application "System Events" to set value of attribute "AXMinimized" of every window of {app_process(arg)} to true')),
     "app_focus": _quiet(lambda arg, _text: osa(f'tell application "{APPS[arg]}" to activate')),
     "apps_quit_all": lambda _arg, text: commands.quit_all_apps(),
-    "volume_up": _quiet(lambda _arg, _text: osa(f"set volume output volume {min(100, volume() + 20)}")),
-    "volume_down": _quiet(lambda _arg, _text: osa(f"set volume output volume {max(0, volume() - 20)}")),
-    "volume_mute": _quiet(lambda _arg, _text: osa("set volume output muted true")),
-    "volume_unmute": _quiet(lambda _arg, _text: osa("set volume output muted false")),
+    "volume_up": lambda _arg, text: commands.change_mac_volume("up", text),
+    "volume_down": lambda _arg, text: commands.change_mac_volume("down", text),
+    "volume_mute": _quiet(lambda _arg, _text: commands.mute_mac_volume(True)),
+    "volume_unmute": lambda _arg, _text: commands.mute_mac_volume(False),
     "volume_set": lambda lvl, text: commands.set_mac_volume(lvl, text),
     "spotify_volume_up": _spotify_only(lambda _arg, _text: osa(f'tell application "Spotify" to set sound volume to {min(100, spotify_volume() + 20)}')),
     "spotify_volume_down": _spotify_only(lambda _arg, _text: osa(f'tell application "Spotify" to set sound volume to {max(0, spotify_volume() - 20)}')),
@@ -349,8 +345,34 @@ ACTIONS = {
     "media_previous": lambda _arg, text: do_media("previous", text),
     "media_now": lambda _arg, text: do_media("now", text),
     "youtube_play": lambda _arg, text: commands.play_on_youtube(text),
-    "brightness_up": lambda _arg, _text: commands.change_brightness("up"),
-    "brightness_down": lambda _arg, _text: commands.change_brightness("down"),
+    "brightness_up": lambda _arg, text: commands.change_brightness("up", text),
+    "brightness_down": lambda _arg, text: commands.change_brightness("down", text),
+    "brightness_set": lambda _arg, text: commands.change_brightness("set", text),
+    "notify_off": lambda _arg, _text: commands.silence_notifications(True),
+    "notify_on": lambda _arg, _text: commands.silence_notifications(False),
+    "screen_speak": lambda _arg, _text: commands.speak_screen(),
+    "screen_stop": lambda _arg, _text: commands.stop_reading(),
+    "selection_read": lambda _arg, _text: commands.read_selection(),
+    "voiceover_on": lambda _arg, _text: commands.set_voiceover(True),
+    "voiceover_off": lambda _arg, _text: commands.set_voiceover(False),
+    "zoom_on": lambda _arg, _text: commands.press_zoom("on"),
+    "zoom_off": lambda _arg, _text: commands.press_zoom("off"),
+    "zoom_in": lambda _arg, _text: commands.press_zoom("in"),
+    "zoom_out": lambda _arg, _text: commands.press_zoom("out"),
+    "access_invert": lambda _arg, text: commands.set_access_feature("invert", text),
+    "access_contrast": lambda _arg, text: commands.set_access_feature("increase_contrast", text),
+    "access_transparency": lambda _arg, text: commands.set_access_feature("reduce_transparency", text),
+    "access_motion": lambda _arg, text: commands.set_access_feature("reduce_motion", text),
+    "access_grayscale": lambda _arg, text: commands.set_access_feature("grayscale", text),
+    "access_filters": lambda _arg, text: commands.set_access_feature("filters", text),
+    "access_display_contrast": lambda _arg, text: commands.set_access_feature("display_contrast", text),
+    "access_pointer": lambda _arg, text: commands.set_access_feature("pointer", text),
+    "access_mono": lambda _arg, text: commands.set_access_feature("mono", text),
+    "access_hover": lambda _arg, text: commands.set_access_feature("hover", text),
+    "access_sticky": lambda _arg, text: commands.set_access_feature("sticky", text),
+    "access_slow": lambda _arg, text: commands.set_access_feature("slow", text),
+    "access_voice_control": lambda _arg, text: commands.set_access_feature("voice_control", text),
+    "access_status": lambda _arg, _text: commands.accessibility_status(),
     "screenshot": lambda _arg, _text: commands.take_screenshot(),
     "empty_trash": lambda _arg, _text: commands.empty_trash(),
     "show_desktop": lambda _arg, _text: commands.show_desktop(),

@@ -11,6 +11,33 @@ def _norm(text):
     return re.sub(r"[^a-z0-9]", "", (text or "").lower())
 
 
+_LEVEL_NUMBER = re.compile(r"\b(\d{1,3})\b")
+LEVEL_STEPS = (10, 20, 30, 50)
+
+
+def parse_level_change(text, default=None):
+    """('absolute', n), ('relative', n), ('bad_step', n), or ('missing', None).
+
+    'to 50' is an absolute level from 0 to 100. Any other number is a
+    relative step and has to be 10, 20, 30, or 50. No number uses default.
+    """
+    raw = _clean(text)
+    if re.search(r"\bto\b", raw, re.I):
+        match = _LEVEL_NUMBER.search(raw)
+        if not match:
+            return ("missing", None)
+        return ("absolute", max(0, min(100, int(match.group(1)))))
+    match = _LEVEL_NUMBER.search(raw)
+    if match:
+        number = int(match.group(1))
+        if number not in LEVEL_STEPS:
+            return ("bad_step", number)
+        return ("relative", number)
+    if default is None:
+        return ("missing", None)
+    return ("relative", default)
+
+
 # --------------------------------------------------------------------------- Time and date
 def _ordinal(day):
     day = int(day)

@@ -297,6 +297,19 @@ from .media import (
     play_on_youtube,
     parse_volume_level,
     set_mac_volume,
+    change_mac_volume,
+    mute_mac_volume,
+)
+
+from .access import (
+    silence_notifications,
+    speak_screen,
+    stop_reading,
+    read_selection,
+    set_voiceover,
+    press_zoom,
+    set_access_feature,
+    accessibility_status,
 )
 
 from .matrix import (
