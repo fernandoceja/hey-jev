@@ -299,6 +299,11 @@ from .media import (
     set_mac_volume,
 )
 
+from .matrix import (
+    start_matrix,
+    stop_matrix,
+)
+
 from .shortcuts import (
     _UUID_RE,
     _shortcut_cache,

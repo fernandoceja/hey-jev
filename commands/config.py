@@ -356,6 +356,12 @@ STRICT_PATTERNS = (
         rf"|^{_PLEASE}start\s+focus(?:\s+mode)?(?:\s+for\s+.+?)?{_TAIL}",
         re.I), "focus_on"),
     (re.compile(rf"^{_PLEASE}(?:check\s+(?:my\s+)?)?case\s+status{_TAIL}", re.I), "case_status"),
+    (re.compile(
+        rf"^{_PLEASE}(?:(?:take\s+)?(?:the\s+|a\s+)?blue\s+pill|matrix\s+mode|(?:enter|start|show|open)\s+(?:the\s+)?matrix){_TAIL}",
+        re.I), "matrix_on"),
+    (re.compile(
+        rf"^{_PLEASE}(?:(?:take\s+)?(?:the\s+|a\s+)?red\s+pill|(?:exit|stop|leave|quit|close|end)\s+(?:the\s+)?matrix){_TAIL}",
+        re.I), "matrix_off"),
 )
 _NOTE_CMD_RE = re.compile(rf"^{_PLEASE}take\s+a\s+note\b\s*[:\-]?\s*(.*)$", re.I | re.S)
 _IHSS_CMD_RE = re.compile(
@@ -380,7 +386,8 @@ HELP_TEXT = (
     "and play Apple Music or a YouTube search. I can read your calendar, shifts, school, "
     "and bills, log IHSS hours, remind you on payday, save a shift for one day, "
     "and say when to leave for Brea. I can run shortcuts that are in the Jev folder. "
-    "I can also help with Zoe. I won't send a message or move money."
+    "I can also help with Zoe. Say blue pill for the Matrix and red pill to leave it. "
+    "I won't send a message or move money."
 )
 SCHOOL_RE = re.compile(r"(?:#|\b)(?:umgc|school|class)\b", re.I)
 BILL_RE = re.compile(
