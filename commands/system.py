@@ -1,11 +1,20 @@
 """Chrome sites, folders, Mac controls, screenshots, and battery."""
 from datetime import datetime
+import ctypes
 import os
 import re
+import shutil
 from .config import BRIGHTNESS_DOWN_CODE, BRIGHTNESS_UP_CODE, HELP_TEXT, SHOPIFY_ORDERS_URL, SHOW_DESKTOP_CODE
-from .textutil import _clean
+from .textutil import _clean, parse_level_change
 from .shell import _run
 from .apps import parse_app_name, resolve_folder, resolve_site
+
+# Private DisplayServices SPI. CoreDisplay_Display_SetUserBrightness does not
+# work on Apple silicon; this is the call the Homebrew brightness tool uses
+# there. A return of 0 means the get or set worked.
+_DISPLAY_SERVICES = "/System/Library/PrivateFrameworks/DisplayServices.framework/DisplayServices"
+_CORE_GRAPHICS = "/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics"
+_BRIGHTNESS_CLI = ("/opt/homebrew/bin/brightness", "/usr/local/bin/brightness")
 
 def speak_help():
     return HELP_TEXT
@@ -55,14 +64,170 @@ def open_folder_from_text(text):
     return f"Opening your {label} folder."
 
 
-def change_brightness(direction):
-    code = BRIGHTNESS_UP_CODE if direction == "up" else BRIGHTNESS_DOWN_CODE
-    script = f'tell application "System Events" to key code {int(code)}'
+def _load_display_service():
+    """(get, set) for the main display, or None when DisplayServices is absent.
+
+    get() returns a float from 0 to 1. set(level) raises unless the SPI
+    returns 0. This is skipped on machines that do not have the framework.
+    """
     try:
-        _run(("osascript", "-e", script))
+        lib = ctypes.CDLL(_DISPLAY_SERVICES)
+        cg = ctypes.CDLL(_CORE_GRAPHICS)
+        cg.CGMainDisplayID.restype = ctypes.c_uint32
+        lib.DisplayServicesGetBrightness.argtypes = [ctypes.c_uint32, ctypes.POINTER(ctypes.c_float)]
+        lib.DisplayServicesGetBrightness.restype = ctypes.c_int
+        lib.DisplayServicesSetBrightness.argtypes = [ctypes.c_uint32, ctypes.c_float]
+        lib.DisplayServicesSetBrightness.restype = ctypes.c_int
+        display_id = int(cg.CGMainDisplayID())
+    except (OSError, AttributeError):
+        return None
+
+    def get():
+        value = ctypes.c_float(0.0)
+        if lib.DisplayServicesGetBrightness(display_id, ctypes.byref(value)) != 0:
+            raise RuntimeError("brightness get failed")
+        return float(value.value)
+
+    def set_level(level):
+        if lib.DisplayServicesSetBrightness(display_id, ctypes.c_float(float(level))) != 0:
+            raise RuntimeError("brightness set failed")
+        return 0
+
+    return (get, set_level)
+
+
+def _brightness_cli(which, cli):
+    if cli is False:
+        return None
+    if isinstance(cli, str) and cli:
+        return cli
+    probe = shutil.which if which is None else which
+    found = None
+    if probe is not None:
+        try:
+            found = probe("brightness")
+        except Exception:
+            found = None
+    for path in (found,) + _BRIGHTNESS_CLI:
+        if path and os.path.isfile(path) and os.access(path, os.X_OK):
+            return path
+    return None
+
+
+def _cli_brightness(text):
+    match = re.search(r"brightness\s+(\d+(?:\.\d+)?)", str(text or ""), re.I)
+    if not match:
+        return None
+    return max(0.0, min(1.0, float(match.group(1))))
+
+
+def _percent(level):
+    return int(round(max(0.0, min(1.0, float(level))) * 100))
+
+
+def _brightness_service(service, direction, kind, amount):
+    get_fn, set_fn = service
+    if kind == "absolute":
+        target = amount / 100.0
+    else:
+        step = 10 if amount is None else amount
+        current = float(get_fn())
+        delta = step / 100.0
+        target = current + delta if direction == "up" else current - delta
+    target = max(0.0, min(1.0, target))
+    status = set_fn(target)
+    if status not in (None, 0):
+        raise RuntimeError("brightness set failed")
+    return f"Brightness is at {_percent(target)} percent."
+
+
+def _brightness_with_cli(tool, run, direction, kind, amount):
+    if kind == "absolute":
+        target = amount / 100.0
+    else:
+        current = _cli_brightness(run((tool, "-l")))
+        if current is None:
+            raise RuntimeError("brightness list failed")
+        step = 10 if amount is None else amount
+        delta = step / 100.0
+        target = current + delta if direction == "up" else current - delta
+    target = max(0.0, min(1.0, target))
+    run((tool, f"{target:.2f}"))
+    return f"Brightness is at {_percent(target)} percent."
+
+
+def _key_steps(percent):
+    return max(1, min(16, int(round(percent / 100.0 * 16))))
+
+
+def _brightness_keys(direction, steps, plain, run):
+    code = BRIGHTNESS_UP_CODE if direction == "up" else BRIGHTNESS_DOWN_CODE
+    code = int(code)
+    if plain:
+        script = f'tell application "System Events" to key code {code}'
+    else:
+        script = (
+            'tell application "System Events"\n'
+            f"  repeat {int(steps)} times\n"
+            f"    key code {code}\n"
+            "    delay 0.05\n"
+            "  end repeat\n"
+            "end tell"
+        )
+    try:
+        run(("osascript", "-e", script))
     except Exception:
         return "I couldn't change the brightness. Allow Automation for System Events."
-    return "Brighter." if direction == "up" else "Dimmer."
+    if plain:
+        return "Brighter." if direction == "up" else "Dimmer."
+    way = "up" if direction == "up" else "down"
+    return f"I moved the brightness {way} by {int(steps)} key steps. I couldn't set an exact percent."
+
+
+def change_brightness(direction, text="", display=None, runner=None, which=None, cli=None):
+    """Change the screen brightness. Percentages prefer DisplayServices.
+
+    On Apple silicon the reliable call is DisplayServicesGetBrightness /
+    DisplayServicesSetBrightness. If that framework is missing, the Homebrew
+    `brightness` CLI is used when it is installed (`brightness -l`, then
+    `brightness 0.50`). Up and down with no exact level can still tap the
+    brightness keys (144 and 145). Setting an exact percent does not.
+    """
+    run = runner or _run
+    kind, amount = parse_level_change(text, default=None)
+    if direction == "set":
+        if kind != "absolute":
+            return "What level should I set the brightness to?"
+    elif kind == "bad_step":
+        return "I can change the brightness by 10, 20, 30, or 50 percent."
+    elif kind == "missing":
+        kind, amount = "relative", None
+    elif kind == "absolute" and direction in {"up", "down"}:
+        direction = "set"
+    service = None
+    if display is False:
+        service = None
+    elif display is not None:
+        service = display
+    else:
+        service = _load_display_service()
+    if service is not None:
+        try:
+            return _brightness_service(service, direction, kind, amount)
+        except Exception:
+            pass
+    tool = _brightness_cli(which, cli)
+    if tool:
+        try:
+            return _brightness_with_cli(tool, run, direction, kind, amount)
+        except Exception:
+            pass
+    if kind == "absolute" or direction == "set":
+        return "I couldn't set the brightness to an exact percent. The brightness keys only move it up or down."
+    if direction not in {"up", "down"}:
+        return "I couldn't change the brightness."
+    steps = 1 if amount is None else _key_steps(amount)
+    return _brightness_keys(direction, steps, amount is None, run)
 
 
 def show_desktop():

@@ -336,13 +336,87 @@ STRICT_PATTERNS = (
     (re.compile(rf"^{_PLEASE}pause(?:\s+spotify|\s+(?:the\s+)?(?:music|song)|\s+apple\s+music)?{_TAIL}", re.I), "media_pause"),
     (re.compile(rf"^{_PLEASE}(?:next\s+(?:track|song)|skip(?:\s+(?:the\s+)?(?:track|song))?){_TAIL}", re.I), "media_next"),
     (re.compile(rf"^{_PLEASE}(?:previous\s+(?:track|song)|last\s+(?:track|song)|go\s+back(?:\s+a|\s+one)?\s+(?:track|song)){_TAIL}", re.I), "media_previous"),
-    (re.compile(rf"^{_PLEASE}(?:turn\s+(?:it|the\s+volume)\s+up|(?:turn\s+)?(?:the\s+)?(?:mac\s+|system\s+)?volume\s+up|louder){_TAIL}", re.I), "volume_up"),
-    (re.compile(rf"^{_PLEASE}(?:turn\s+(?:it|the\s+volume)\s+down|(?:turn\s+)?(?:the\s+)?(?:mac\s+|system\s+)?volume\s+down|quieter){_TAIL}", re.I), "volume_down"),
-    (re.compile(rf"^{_PLEASE}set\s+(?:the\s+)?volume\s+to\s+.+{_TAIL}", re.I), "volume_set"),
+    (re.compile(
+        rf"^{_PLEASE}(?:set\s+(?:the\s+)?(?:mac\s+|system\s+)?volume\s+to\s+.+|(?:mac\s+|system\s+)?volume\s+to\s+.+){_TAIL}",
+        re.I), "volume_set"),
+    (re.compile(
+        rf"^{_PLEASE}(?:"
+        r"turn\s+(?:it|the\s+volume)\s+up"
+        r"|(?:turn\s+|raise\s+|increase\s+)?(?:the\s+)?(?:mac\s+|system\s+)?volume\s+up"
+        r"|louder"
+        r"|(?:raise|increase)\s+(?:the\s+)?(?:mac\s+|system\s+)?volume"
+        r")(?:\s+by\s+\d{1,3}(?:\s+percent)?|\s+\d{1,3}(?:\s+percent)?)?"
+        rf"{_TAIL}", re.I), "volume_up"),
+    (re.compile(
+        rf"^{_PLEASE}(?:"
+        r"turn\s+(?:it|the\s+volume)\s+down"
+        r"|(?:turn\s+)?(?:the\s+)?(?:mac\s+|system\s+)?volume\s+down"
+        r"|quieter"
+        r"|lower\s+(?:the\s+)?(?:mac\s+|system\s+)?volume(?:\s+by)?"
+        r")(?:\s+by\s+\d{1,3}(?:\s+percent)?|\s+\d{1,3}(?:\s+percent)?)?"
+        rf"{_TAIL}", re.I), "volume_down"),
     (re.compile(rf"^{_PLEASE}mute(?:\s+(?:the\s+)?(?:mac|volume|sound)|\s+it)?{_TAIL}", re.I), "volume_mute"),
     (re.compile(rf"^{_PLEASE}unmute(?:\s+(?:the\s+)?(?:mac|volume|sound)|\s+it)?{_TAIL}", re.I), "volume_unmute"),
-    (re.compile(rf"^{_PLEASE}(?:(?:turn\s+)?(?:the\s+)?brightness\s+up|brighter){_TAIL}", re.I), "brightness_up"),
-    (re.compile(rf"^{_PLEASE}(?:(?:turn\s+)?(?:the\s+)?brightness\s+down|dimmer|dim\s+the\s+screen){_TAIL}", re.I), "brightness_down"),
+    (re.compile(rf"^{_PLEASE}(?:set\s+)?(?:the\s+)?brightness\s+to\s+.+{_TAIL}", re.I), "brightness_set"),
+    (re.compile(
+        rf"^{_PLEASE}(?:"
+        r"(?:turn\s+)?(?:the\s+)?brightness\s+up"
+        r"|brighter"
+        r"|(?:raise|increase)\s+(?:the\s+)?brightness"
+        r")(?:\s+by\s+\d{1,3}(?:\s+percent)?|\s+\d{1,3}(?:\s+percent)?)?"
+        rf"{_TAIL}", re.I), "brightness_up"),
+    (re.compile(
+        rf"^{_PLEASE}(?:"
+        r"(?:turn\s+)?(?:the\s+)?brightness\s+down"
+        r"|dimmer"
+        r"|dim\s+the\s+screen"
+        r"|(?:lower|decrease)\s+(?:the\s+)?brightness(?:\s+by)?"
+        r")(?:\s+by\s+\d{1,3}(?:\s+percent)?|\s+\d{1,3}(?:\s+percent)?)?"
+        rf"{_TAIL}", re.I), "brightness_down"),
+    (re.compile(
+        rf"^{_PLEASE}(?:silence\s+notifications|mute\s+notifications|(?:turn\s+on\s+)?do\s+not\s+disturb|notifications\s+off){_TAIL}",
+        re.I), "notify_off"),
+    (re.compile(
+        rf"^{_PLEASE}(?:do\s+not\s+disturb\s+off|turn\s+off\s+do\s+not\s+disturb|unmute\s+notifications|notifications\s+on){_TAIL}",
+        re.I), "notify_on"),
+    (re.compile(
+        rf"^{_PLEASE}(?:read\s+my\s+screen|speak\s+screen|start\s+speak\s+screen|start\s+reading(?:\s+the\s+screen)?){_TAIL}",
+        re.I), "screen_speak"),
+    (re.compile(
+        rf"^{_PLEASE}(?:stop\s+reading(?:\s+the\s+screen)?|stop\s+speak\s+screen){_TAIL}",
+        re.I), "screen_stop"),
+    (re.compile(
+        rf"^{_PLEASE}(?:read\s+(?:the\s+)?selected\s+text|speak\s+(?:the\s+)?selection|read\s+the\s+selection){_TAIL}",
+        re.I), "selection_read"),
+    (re.compile(rf"^{_PLEASE}(?:turn\s+off\s+voiceover|stop\s+voiceover|voiceover\s+off){_TAIL}", re.I), "voiceover_off"),
+    (re.compile(rf"^{_PLEASE}(?:turn\s+on\s+voiceover|start\s+voiceover|voiceover\s+on|voiceover){_TAIL}", re.I), "voiceover_on"),
+    (re.compile(rf"^{_PLEASE}zoom\s+in{_TAIL}", re.I), "zoom_in"),
+    (re.compile(rf"^{_PLEASE}zoom\s+out{_TAIL}", re.I), "zoom_out"),
+    (re.compile(rf"^{_PLEASE}(?:turn\s+off\s+zoom|zoom\s+off){_TAIL}", re.I), "zoom_off"),
+    (re.compile(rf"^{_PLEASE}(?:turn\s+on\s+zoom|zoom\s+on){_TAIL}", re.I), "zoom_on"),
+    (re.compile(
+        rf"^{_PLEASE}what\s+accessibility\s+features\s+are\s+on{_TAIL}"
+        rf"|^{_PLEASE}what(?:'s| is)\s+on\s+in\s+accessibility{_TAIL}"
+        rf"|^{_PLEASE}accessibility\s+status{_TAIL}",
+        re.I), "access_status"),
+    (re.compile(rf"^{_PLEASE}(?:turn\s+(?:on|off)\s+)?increase\s+contrast(?:\s+(?:on|off))?{_TAIL}", re.I), "access_contrast"),
+    (re.compile(rf"^{_PLEASE}(?:turn\s+(?:on|off)\s+)?reduce\s+transparency(?:\s+(?:on|off))?{_TAIL}", re.I), "access_transparency"),
+    (re.compile(rf"^{_PLEASE}(?:turn\s+(?:on|off)\s+)?reduce\s+motion(?:\s+(?:on|off))?{_TAIL}", re.I), "access_motion"),
+    (re.compile(rf"^{_PLEASE}(?:turn\s+(?:on|off)\s+)?invert(?:\s+the)?\s+colors?(?:\s+(?:on|off))?{_TAIL}", re.I), "access_invert"),
+    (re.compile(rf"^{_PLEASE}(?:turn\s+(?:on|off)\s+)?color\s+filters?(?:\s+(?:on|off))?{_TAIL}", re.I), "access_filters"),
+    (re.compile(rf"^{_PLEASE}(?:turn\s+(?:on|off)\s+)?grayscale(?:\s+(?:on|off))?{_TAIL}", re.I), "access_grayscale"),
+    (re.compile(
+        rf"^{_PLEASE}(?:set\s+)?(?:display\s+)?contrast\s+to\s+.+{_TAIL}"
+        rf"|^{_PLEASE}(?:display\s+)?contrast\s+(?:up|down)(?:\s+(?:by\s+)?\d{{1,3}}(?:\s+degrees?)?)?{_TAIL}",
+        re.I), "access_display_contrast"),
+    (re.compile(
+        rf"^{_PLEASE}(?:make\s+the\s+pointer\s+(?:bigger|smaller)|(?:larger|smaller|bigger)\s+pointer|pointer\s+(?:bigger|smaller|larger)){_TAIL}",
+        re.I), "access_pointer"),
+    (re.compile(rf"^{_PLEASE}(?:turn\s+(?:on|off)\s+)?mono\s+audio(?:\s+(?:on|off))?{_TAIL}", re.I), "access_mono"),
+    (re.compile(rf"^{_PLEASE}(?:turn\s+(?:on|off)\s+)?hover\s+text(?:\s+(?:on|off))?{_TAIL}", re.I), "access_hover"),
+    (re.compile(rf"^{_PLEASE}(?:turn\s+(?:on|off)\s+)?sticky\s+keys(?:\s+(?:on|off))?{_TAIL}", re.I), "access_sticky"),
+    (re.compile(rf"^{_PLEASE}(?:turn\s+(?:on|off)\s+)?slow\s+keys(?:\s+(?:on|off))?{_TAIL}", re.I), "access_slow"),
+    (re.compile(rf"^{_PLEASE}(?:turn\s+(?:on|off)\s+)?voice\s+control(?:\s+(?:on|off))?{_TAIL}", re.I), "access_voice_control"),
     (re.compile(rf"^{_PLEASE}(?:what(?:'s| is)\s+(?:my\s+)?battery(?:\s+level)?|how(?:'s| is)\s+my\s+battery|battery\s+level|how\s+much\s+battery(?:\s+do\s+i\s+have)?){_TAIL}", re.I), "info_battery"),
     (re.compile(rf"^{_PLEASE}lock\s+(?:the\s+)?(?:screen|mac|computer){_TAIL}", re.I), "system_lock"),
     (re.compile(rf"^{_PLEASE}(?:take\s+(?:a\s+)?screenshot|screenshot|capture\s+the\s+screen){_TAIL}", re.I), "screenshot"),
@@ -383,7 +457,8 @@ LOCAL_PATTERNS = (
 # --------------------------------------------------------------------------- Round 2: sites, Mac, work, school, money, IHSS, Zoe
 HELP_TEXT = (
     "I can open your apps and work sites, control volume, brightness, and the Mac, "
-    "and play Apple Music or a YouTube search. I can read your calendar, shifts, school, "
+    "silence notifications, and toggle the accessibility settings macOS allows. "
+    "I can play Apple Music or a YouTube search. I can read your calendar, shifts, school, "
     "and bills, log IHSS hours, remind you on payday, save a shift for one day, "
     "and say when to leave for Brea. I can run shortcuts that are in the Jev folder. "
     "I can also help with Zoe. Say blue pill for the Matrix and red pill to leave it. "
