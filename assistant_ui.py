@@ -15,6 +15,7 @@ import time
 import objc
 from AppKit import (
     NSAlert,
+    NSAnimationContext,
     NSApp,
     NSAppearance,
     NSApplication,
@@ -32,6 +33,9 @@ from AppKit import (
     NSEventMaskLeftMouseUp,
     NSEventTypeLeftMouseUp,
     NSFont,
+    NSFontAttributeName,
+    NSForegroundColorAttributeName,
+    NSGraphicsContext,
     NSImage,
     NSMakePoint,
     NSMakeRect,
@@ -50,12 +54,20 @@ from AppKit import (
     NSTableView,
     NSTextField,
     NSTextFieldCell,
+    NSTrackingActiveAlways,
+    NSTrackingArea,
+    NSTrackingInVisibleRect,
+    NSTrackingMouseEnteredAndExited,
     NSView,
     NSWorkspace,
     NSVisualEffectBlendingModeBehindWindow,
+    NSVisualEffectMaterialHUDWindow,
+    NSVisualEffectStateActive,
     NSVisualEffectStateFollowsWindowActiveState,
     NSVisualEffectView,
     NSWindow,
+    NSWindowAbove,
+    NSWindowBelow,
     NSWindowStyleMaskBorderless,
     NSWindowStyleMaskClosable,
     NSWindowStyleMaskFullSizeContentView,
@@ -70,7 +82,7 @@ from AppKit import (
     NSWindowStyleMaskResizable,
     NSWindowStyleMaskTitled,
 )
-from Foundation import NSMakeSize, NSObject, NSURL, NSTimer, NSUserDefaults
+from Foundation import NSAttributedString, NSMakeSize, NSObject, NSURL, NSTimer, NSUserDefaults
 from assistant_layout import (
     DEFAULT_H,
     DEFAULT_W,
@@ -101,13 +113,17 @@ from mini_bar import (
     format_size,
     mic_event,
     parse_origin,
+    pill_chrome,
     place_bar,
+    plus_item,
+    plus_menu,
     remembered_size,
     reply_text,
     reset_origin,
     resize_edges,
     resize_frame,
     submission,
+    trailing_symbol,
 )
 from secrets_store import KEY_NAMES, OPTIONAL, get_secret, missing_secrets, save_secret
 from updates import check_upstream, safe_browser_url
@@ -262,27 +278,119 @@ class CenteredFieldCell(NSTextFieldCell):
             self.drawingRectForBounds_(rect), view, editor, delegate, start, length)
 
 
-class MiniBarBackground(NSView):
-    """Dark rounded pill. The background moves it. The outer edge resizes it.
+def _capsule_layer(view, radius, mask):
+    """Continuous-corner capsule. The backing clips. The pill itself does not, so the window shadow stays."""
+    if view is None:
+        return
+    try:
+        view.setWantsLayer_(True)
+        layer = view.layer()
+    except Exception:
+        return
+    if layer is None:
+        return
+    layer.setCornerRadius_(float(radius))
+    layer.setMasksToBounds_(bool(mask))
+    if hasattr(layer, "setCornerCurve_"):
+        layer.setCornerCurve_("continuous")
 
-    The + button, the text field, and the mic sit on top and keep their own clicks.
-    A double-click on the background recenters the pill and restores its default
-    size. A nonactivating panel ignores the normal title-bar drag, so a single
-    click tracks the mouse in screen coordinates and moves or resizes the frame
-    itself. That works across displays.
-    """
+
+def _glass_pass_through():
+    """NSGlassEffectView that does not eat clicks, or None when this Mac has no such class."""
+    cached = getattr(_glass_pass_through, "cls", None)
+    if cached is not None:
+        return cached
+    try:
+        glass = objc.lookUpClass("NSGlassEffectView")
+    except Exception:
+        return None
+    if glass is None:
+        return None
+
+    class PassThroughGlass(glass):
+        def hitTest_(self, _point):
+            return None
+
+    _glass_pass_through.cls = PassThroughGlass
+    return PassThroughGlass
+
+
+class PassThroughEffect(NSVisualEffectView):
+    """HUD vibrancy that does not eat clicks. Drag and resize stay on the pill."""
+
+    def hitTest_(self, _point):
+        return None
+
+
+class PillChromeOverlay(NSView):
+    """Hairline and specular highlight drawn above the glass and under the controls."""
+
+    def hitTest_(self, _point):
+        return None
 
     def drawRect_(self, _rect):
         try:
             bounds = self.bounds()
-            path = NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(bounds, bounds.size.height / 2, bounds.size.height / 2)
-            NSColor.colorWithCalibratedWhite_alpha_(0.10, 0.94).setFill()
-            path.fill()
-            NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.18).setStroke()
-            path.setLineWidth_(1.0)
+            width = float(bounds.size.width)
+            height = float(bounds.size.height)
+            if width < 2.0 or height < 2.0:
+                return
+            inset = 0.75
+            radius = max(1.0, height / 2.0 - inset)
+            rect = NSMakeRect(inset, inset, width - inset * 2.0, height - inset * 2.0)
+            path = NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(rect, radius, radius)
+            if getattr(self, "solidFill", False):
+                NSColor.windowBackgroundColor().setFill()
+                path.fill()
+            ctx = NSGraphicsContext.currentContext()
+            if ctx is not None:
+                ctx.saveGraphicsState()
+                path.addClip()
+                gloss = NSBezierPath.bezierPath()
+                gloss.moveToPoint_(NSMakePoint(radius, height - 1.25))
+                gloss.lineToPoint_(NSMakePoint(width - radius, height - 1.25))
+                NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.45).setStroke()
+                gloss.setLineWidth_(1.0)
+                gloss.stroke()
+                ctx.restoreGraphicsState()
+            contrast = bool(getattr(self, "contrastBorder", False))
+            hairline = NSColor.separatorColor()
+            if not contrast:
+                hairline = hairline.colorWithAlphaComponent_(0.85)
+            hairline.setStroke()
+            path.setLineWidth_(1.5 if contrast else 0.75)
             path.stroke()
         except Exception as exc:
             print(f"  mini bar draw failed: {exc}")
+
+
+class MiniBarBackground(NSView):
+    """Capsule behind the controls. The background moves it. The outer edge resizes it.
+
+    Glass or vibrancy sits underneath. This view does not fill, so the wallpaper
+    can show through. The + button, the text field, and the mic sit on top and
+    keep their own clicks. A double-click on the background recenters the pill
+    and restores its default size. A nonactivating panel ignores the normal
+    title-bar drag, so a single click tracks the mouse in screen coordinates
+    and moves or resizes the frame itself. That works across displays.
+    """
+
+    def drawRect_(self, _rect):
+        return
+
+    def hitTest_(self, point):
+        hit = objc.super(MiniBarBackground, self).hitTest_(point)
+        if hit is not None and hit is not self and getattr(hit, "passesClicks", False):
+            return self
+        return hit
+
+    def viewDidChangeEffectiveAppearance(self):
+        window = self.window()
+        if window is None:
+            return
+        delegate = window.delegate()
+        if delegate is not None and hasattr(delegate, "refreshPillChrome_"):
+            delegate.refreshPillChrome_(self)
 
     def mouseDown_(self, event):
         window = self.window()
@@ -332,11 +440,67 @@ class MiniBarBackground(NSView):
             window.setFrameOrigin_(NSMakePoint(x, y))
 
 
-class HoldMicButton(NSButton):
-    """Mouse down and up map to the same press and release as right Option."""
+class PillButton(NSButton):
+    """Symbol button with a quiet hover and press tint. System colors follow light and dark."""
+
+    def updateTrackingAreas(self):
+        objc.super(PillButton, self).updateTrackingAreas()
+        areas = self.trackingAreas()
+        if areas is not None:
+            for area in list(areas):
+                self.removeTrackingArea_(area)
+        options = NSTrackingMouseEnteredAndExited | NSTrackingActiveAlways | NSTrackingInVisibleRect
+        area = NSTrackingArea.alloc().initWithRect_options_owner_userInfo_(NSMakeRect(0, 0, 0, 0), options, self, None)
+        self.addTrackingArea_(area)
+        self._apply_pill_tint()
+
+    def mouseEntered_(self, _event):
+        self._pill_hover = True
+        self._apply_pill_tint()
+
+    def mouseExited_(self, _event):
+        self._pill_hover = False
+        self._apply_pill_tint()
+
+    def mouseDown_(self, event):
+        self._pill_pressed = True
+        self._apply_pill_tint()
+        try:
+            objc.super(PillButton, self).mouseDown_(event)
+        finally:
+            self._pill_pressed = False
+            self._apply_pill_tint()
+
+    def _apply_pill_tint(self):
+        if not hasattr(self, "setContentTintColor_"):
+            return
+        if getattr(self, "_pill_pressed", False):
+            color = NSColor.tertiaryLabelColor()
+        elif getattr(self, "_pill_hover", False):
+            color = NSColor.secondaryLabelColor()
+        else:
+            color = NSColor.labelColor()
+        self.setContentTintColor_(color)
+
+
+class HoldMicButton(PillButton):
+    """Mouse down and up map to the same press and release as right Option.
+
+    When the symbol is the send arrow, the click submits the field instead.
+    """
 
     def mouseDown_(self, event):
         target = self.target()
+        if getattr(self, "pillRole", "mic") == "send":
+            self._pill_pressed = True
+            self._apply_pill_tint()
+            try:
+                if target is not None:
+                    target.miniSubmit_(self)
+            finally:
+                self._pill_pressed = False
+                self._apply_pill_tint()
+            return
         if target is not None:
             target.miniMicDown_(self)
         try:
@@ -1261,17 +1425,17 @@ class AppDelegate(NSObject):
             self.mini_panel.setCollectionBehavior_(BAR_COLLECTION)
         self.mini_panel.setReleasedWhenClosed_(False)
         self.mini_panel.setRestorable_(False)
-        appearance = NSAppearance.appearanceNamed_("NSAppearanceNameDarkAqua")
-        if appearance is not None:
-            self.mini_panel.setAppearance_(appearance)
+        # No forced Dark Aqua. Label colors and the glass follow light and dark.
         self.mini_panel.setDelegate_(self)
         root = MiniBarBackground.alloc().initWithFrame_(NSMakeRect(0, 0, size[0], size[1]))
         root.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable)
         self.mini_panel.setContentView_(root)
-        self.mini_plus = NSButton.buttonWithTitle_target_action_("+", self, "showMain:")
+        self.mini_plus = PillButton.alloc().initWithFrame_(NSMakeRect(0, 0, 10, 10))
         self.mini_plus.setBordered_(False)
-        if hasattr(self.mini_plus, "setContentTintColor_"):
-            self.mini_plus.setContentTintColor_(NSColor.whiteColor())
+        self.mini_plus.setTarget_(self)
+        self.mini_plus.setAction_("miniPlus:")
+        self.mini_plus.setImageScaling_(NSImageScaleProportionallyUpOrDown)
+        self._set_button_symbol(self.mini_plus, "plus", "More")
         root.addSubview_(self.mini_plus)
         self.mini_field = NSTextField.alloc().initWithFrame_(NSMakeRect(0, 0, 10, 10))
         self.mini_field.setCell_(CenteredFieldCell.alloc().initTextCell_(""))
@@ -1280,8 +1444,8 @@ class AppDelegate(NSObject):
         self.mini_field.setFocusRingType_(1)  # none
         self.mini_field.setEditable_(True)
         self.mini_field.setSelectable_(True)
-        self.mini_field.setPlaceholderString_(PLACEHOLDER)
-        self.mini_field.setTextColor_(NSColor.whiteColor())
+        self.mini_field.setFont_(NSFont.systemFontOfSize_(14))
+        self.mini_field.setTextColor_(NSColor.labelColor())
         self.mini_field.setTarget_(self)
         self.mini_field.setAction_("miniSubmit:")
         self.mini_field.setDelegate_(self)
@@ -1289,22 +1453,15 @@ class AppDelegate(NSObject):
         self.mini_mic = HoldMicButton.alloc().initWithFrame_(NSMakeRect(0, 0, 10, 10))
         self.mini_mic.setBordered_(False)
         self.mini_mic.setTarget_(self)
-        symbol = None
-        try:
-            symbol = NSImage.imageWithSystemSymbolName_accessibilityDescription_("mic.fill", "Listen")
-        except Exception:
-            symbol = None
-        if symbol is not None:
-            self.mini_mic.setImage_(symbol)
-            self.mini_mic.setImagePosition_(1)  # image only
-            self.mini_mic.setImageScaling_(NSImageScaleProportionallyUpOrDown)
-            if hasattr(self.mini_mic, "setContentTintColor_"):
-                self.mini_mic.setContentTintColor_(NSColor.whiteColor())
-        else:
-            self.mini_mic.setTitle_("Mic")
+        self.mini_mic.setImageScaling_(NSImageScaleProportionallyUpOrDown)
+        self.mini_mic.pillRole = "mic"
+        self._set_button_symbol(self.mini_mic, "mic.fill", "Listen")
         root.addSubview_(self.mini_mic)
         self._mini_mic_held = False
         self._layout_mini_bar(size[0], size[1])
+        self._install_pill_chrome()
+        self._watch_display_options()
+        self._refresh_trailing_symbol()
 
     @objc.python_method
     def _main_on_screen(self):
@@ -1327,8 +1484,79 @@ class AppDelegate(NSObject):
         if self.bar.should_show():
             if not panel.isVisible():
                 self._order_bar_front()
-        else:
+        elif panel.isVisible():
+            self._hide_bar()
+
+    @objc.python_method
+    def _hide_bar(self):
+        panel = self.mini_panel
+        motion = self._pill_flags().get("motion", True)
+        if self.bar.quitting or not motion:
+            panel.setAlphaValue_(1.0)
             panel.orderOut_(None)
+            return
+
+        def done():
+            if panel.isVisible():
+                panel.orderOut_(None)
+            panel.setAlphaValue_(1.0)
+            view = panel.contentView()
+            layer = view.layer() if view is not None else None
+            if layer is not None:
+                layer.setOpacity_(1.0)
+
+        self._fade_bar(0.0, done)
+
+    @objc.python_method
+    def _fade_bar(self, target, completion):
+        """Spring when Quartz can build one. Otherwise a short fade. Reduce Motion never calls this."""
+        panel = self.mini_panel
+        pending = getattr(self, "_fade_timer", None)
+        if pending is not None:
+            pending.invalidate()
+            self._fade_timer = None
+        self._bar_fade_done = None
+        try:
+            from Quartz import CASpringAnimation
+            view = panel.contentView()
+            layer = None
+            if view is not None:
+                view.setWantsLayer_(True)
+                layer = view.layer()
+            if layer is None:
+                raise RuntimeError("no layer")
+            anim = CASpringAnimation.animationWithKeyPath_("opacity")
+            anim.setFromValue_(float(panel.alphaValue()))
+            anim.setToValue_(float(target))
+            anim.setDamping_(20.0)
+            anim.setStiffness_(180.0)
+            anim.setMass_(1.0)
+            duration = min(0.8, max(0.2, float(anim.settlingDuration())))
+            anim.setDuration_(duration)
+            layer.addAnimation_forKey_(anim, "pillAppear")
+            layer.setOpacity_(float(target))
+            panel.setAlphaValue_(1.0)
+            if completion is not None:
+                self._bar_fade_done = completion
+                self._fade_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                    duration, self, "finishBarFade:", None, False)
+            return
+        except Exception:
+            pass
+        NSAnimationContext.beginGrouping()
+        ctx = NSAnimationContext.currentContext()
+        ctx.setDuration_(0.45)
+        if completion is not None:
+            ctx.setCompletionHandler_(completion)
+        panel.animator().setAlphaValue_(float(target))
+        NSAnimationContext.endGrouping()
+
+    def finishBarFade_(self, _timer):
+        self._fade_timer = None
+        done = getattr(self, "_bar_fade_done", None)
+        self._bar_fade_done = None
+        if done is not None:
+            done()
 
     @objc.python_method
     def _visible_screens(self):
@@ -1356,12 +1584,20 @@ class AppDelegate(NSObject):
         self.mini_panel.setFrame_display_(NSMakeRect(x, y, size[0], size[1]), True)
         self._layout_mini_bar(size[0], size[1])
         defaults.setObject_forKey_(format_size(size[0], size[1]), SIZE_KEY)
+        motion = self._pill_flags().get("motion", True)
+        if motion:
+            self.mini_panel.setAlphaValue_(0.0)
+        else:
+            self.mini_panel.setAlphaValue_(1.0)
         self.mini_panel.orderFrontRegardless()
+        if motion:
+            self._fade_bar(1.0, None)
 
     @objc.python_method
     def _show_bar_reply(self, text):
         self.bar.note_reply(text, time.time())
         self.mini_field.setStringValue_(text)
+        self._refresh_trailing_symbol()
 
     def miniSubmit_(self, _sender):
         # Runs the line where it was typed. Does not deminiaturize or order the main window front.
@@ -1371,23 +1607,27 @@ class AppDelegate(NSObject):
         self.bar.reply = ""
         self.mini_field.setStringValue_("")
         if plan["kind"] != "run":
+            self._refresh_trailing_symbol()
             return
         if not self.worker_started:
             self._show_bar_reply("Add your API keys in the main window first.")
             return
         self.controls.put(plan["control"])
+        self._refresh_trailing_symbol()
 
     def miniMicDown_(self, _sender):
         if self._mini_mic_held:
             return
         self._mini_mic_held = True
         self.controls.put(mic_event("down"))
+        self._refresh_trailing_symbol()
 
     def miniMicUp_(self, _sender):
         if not self._mini_mic_held:
             return
         self._mini_mic_held = False
         self.controls.put(mic_event("up"))
+        self._refresh_trailing_symbol()
 
     def miniDismiss_(self, _sender):
         self.bar.dismiss()
@@ -1398,6 +1638,10 @@ class AppDelegate(NSObject):
             self.miniDismiss_(control)
             return True
         return False
+
+    def controlTextDidChange_(self, notification):
+        if notification is not None and notification.object() == getattr(self, "mini_field", None):
+            self._refresh_trailing_symbol()
 
     def windowDidMiniaturize_(self, notification):
         if notification.object() == self.panel:
@@ -1455,6 +1699,340 @@ class AppDelegate(NSObject):
         _place(self.mini_field, frames["field"])
         self.mini_field.setFont_(NSFont.systemFontOfSize_(metrics["field_font"]))
         _place(self.mini_mic, frames["mic"])
+        self._sync_capsule(width, height)
+        self._style_pill_field()
+
+    @objc.python_method
+    def _pill_flags(self):
+        glass = False
+        try:
+            glass = objc.lookUpClass("NSGlassEffectView") is not None
+        except Exception:
+            glass = False
+        ws = NSWorkspace.sharedWorkspace()
+        try:
+            reduce_t = bool(ws.accessibilityDisplayShouldReduceTransparency())
+        except Exception:
+            reduce_t = False
+        try:
+            increase_c = bool(ws.accessibilityDisplayShouldIncreaseContrast())
+        except Exception:
+            increase_c = False
+        try:
+            reduce_m = bool(ws.accessibilityDisplayShouldReduceMotion())
+        except Exception:
+            reduce_m = False
+        return pill_chrome(glass, reduce_t, increase_c, reduce_m)
+
+    @objc.python_method
+    def _install_pill_chrome(self):
+        panel = getattr(self, "mini_panel", None)
+        if panel is None:
+            return
+        root = panel.contentView()
+        if root is None:
+            return
+        bounds = root.bounds()
+        chrome = self._pill_flags()
+        self._pill_chrome = chrome
+        old = getattr(self, "pill_backing", None)
+        if old is not None:
+            old.removeFromSuperview()
+            self.pill_backing = None
+        backing = self._make_backing(bounds, chrome)
+        self.pill_backing = backing
+        overlay = getattr(self, "pill_overlay", None)
+        if overlay is None:
+            overlay = PillChromeOverlay.alloc().initWithFrame_(bounds)
+            overlay.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable)
+            overlay.passesClicks = True
+            self.pill_overlay = overlay
+            anchor = getattr(self, "mini_plus", None)
+            if anchor is not None:
+                root.addSubview_positioned_relativeTo_(overlay, NSWindowBelow, anchor)
+            else:
+                root.addSubview_(overlay)
+        else:
+            overlay.setFrame_(bounds)
+            overlay.passesClicks = True
+        if backing is not None:
+            backing.passesClicks = True
+            root.addSubview_positioned_relativeTo_(backing, NSWindowBelow, overlay)
+        overlay.solidFill = chrome.get("material") == "solid"
+        overlay.contrastBorder = bool(chrome.get("contrast_border"))
+        overlay.setNeedsDisplay_(True)
+        self._sync_capsule(float(bounds.size.width), float(bounds.size.height))
+        self._style_pill_field()
+
+    @objc.python_method
+    def _make_backing(self, bounds, chrome):
+        material = chrome.get("material")
+        if material == "solid":
+            return None
+        if material == "glass":
+            glass = self._make_glass_backing(bounds)
+            if glass is not None:
+                return glass
+        # vibrancy when NSGlassEffectView is missing, or when glass could not be built
+        return self._make_vibrancy_backing(bounds)
+
+    @objc.python_method
+    def _make_glass_backing(self, bounds):
+        cls = _glass_pass_through()
+        if cls is None:
+            return None
+        try:
+            view = cls.alloc().initWithFrame_(bounds)
+        except Exception:
+            return None
+        if view is None:
+            return None
+        radius = float(bounds.size.height) / 2.0
+        if hasattr(view, "setCornerRadius_"):
+            view.setCornerRadius_(radius)
+        _capsule_layer(view, radius, True)
+        view.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable)
+        return view
+
+    @objc.python_method
+    def _make_vibrancy_backing(self, bounds):
+        view = PassThroughEffect.alloc().initWithFrame_(bounds)
+        view.setMaterial_(NSVisualEffectMaterialHUDWindow)
+        view.setBlendingMode_(NSVisualEffectBlendingModeBehindWindow)
+        view.setState_(NSVisualEffectStateActive)
+        radius = float(bounds.size.height) / 2.0
+        _capsule_layer(view, radius, True)
+        view.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable)
+        return view
+
+    @objc.python_method
+    def _sync_capsule(self, width, height):
+        radius = float(height) / 2.0
+        frame = NSMakeRect(0, 0, float(width), float(height))
+        panel = getattr(self, "mini_panel", None)
+        if panel is not None:
+            _capsule_layer(panel.contentView(), radius, False)
+        backing = getattr(self, "pill_backing", None)
+        if backing is not None:
+            backing.setFrame_(frame)
+            if hasattr(backing, "setCornerRadius_"):
+                backing.setCornerRadius_(radius)
+            _capsule_layer(backing, radius, True)
+        overlay = getattr(self, "pill_overlay", None)
+        if overlay is not None:
+            overlay.setFrame_(frame)
+            overlay.setNeedsDisplay_(True)
+
+    @objc.python_method
+    def _style_pill_field(self):
+        field = getattr(self, "mini_field", None)
+        if field is None:
+            return
+        field.setTextColor_(NSColor.labelColor())
+        font = field.font() or NSFont.systemFontOfSize_(14)
+        attrs = {
+            NSForegroundColorAttributeName: NSColor.secondaryLabelColor(),
+            NSFontAttributeName: font,
+        }
+        field.setPlaceholderAttributedString_(
+            NSAttributedString.alloc().initWithString_attributes_(PLACEHOLDER, attrs)
+        )
+        for button in (getattr(self, "mini_plus", None), getattr(self, "mini_mic", None)):
+            if button is not None and hasattr(button, "_apply_pill_tint"):
+                button._apply_pill_tint()
+
+    @objc.python_method
+    def _watch_display_options(self):
+        if getattr(self, "_pill_watched", False):
+            return
+        NSWorkspace.sharedWorkspace().notificationCenter().addObserver_selector_name_object_(
+            self,
+            "refreshPillChrome:",
+            "NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification",
+            None,
+        )
+        self._pill_watched = True
+
+    def refreshPillChrome_(self, _sender):
+        if getattr(self, "_pill_refreshing", False):
+            return
+        self._pill_refreshing = True
+        try:
+            self._install_pill_chrome()
+            self._sync_listen_pulse(self._is_listening())
+        finally:
+            self._pill_refreshing = False
+
+    @objc.python_method
+    def _set_button_symbol(self, button, name, label):
+        image = None
+        try:
+            image = NSImage.imageWithSystemSymbolName_accessibilityDescription_(name, label)
+        except Exception:
+            image = None
+        if image is not None:
+            image.setTemplate_(True)
+            button.setImage_(image)
+            button.setImagePosition_(1)  # image only
+            button.setTitle_("")
+            return
+        button.setImage_(None)
+        button.setTitle_(label)
+
+    @objc.python_method
+    def _is_listening(self):
+        if getattr(self, "_mini_mic_held", False):
+            return True
+        status = getattr(self, "status", None)
+        if status is None:
+            return False
+        try:
+            return str(status.stringValue()) == "Listening"
+        except Exception:
+            return False
+
+    @objc.python_method
+    def _refresh_trailing_symbol(self):
+        mic = getattr(self, "mini_mic", None)
+        field = getattr(self, "mini_field", None)
+        if mic is None or field is None:
+            return
+        listening = self._is_listening()
+        reply = self.bar.reply if hasattr(self, "bar") else ""
+        name = trailing_symbol(listening, field.stringValue(), reply)
+        mic.pillRole = "send" if name == "arrow.up.circle.fill" else "mic"
+        label = "Send" if mic.pillRole == "send" else "Listen"
+        self._set_button_symbol(mic, name, label)
+        self._sync_listen_pulse(listening and name == "waveform")
+
+    @objc.python_method
+    def _sync_listen_pulse(self, active):
+        mic = getattr(self, "mini_mic", None)
+        timer = getattr(self, "_listen_timer", None)
+        motion = self._pill_flags().get("motion", True)
+        if active and motion:
+            if timer is None:
+                self._listen_dim = False
+                self._listen_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                    0.9, self, "pulseListen:", None, True)
+            return
+        if timer is not None:
+            timer.invalidate()
+            self._listen_timer = None
+        if mic is not None:
+            mic.setAlphaValue_(1.0)
+
+    def pulseListen_(self, _timer):
+        mic = getattr(self, "mini_mic", None)
+        if mic is None:
+            return
+        self._listen_dim = not getattr(self, "_listen_dim", False)
+        mic.setAlphaValue_(0.55 if self._listen_dim else 1.0)
+
+    def miniPlus_(self, sender):
+        menu = NSMenu.alloc().initWithTitle_("Message Jev")
+        self._fill_plus_menu(menu, plus_menu())
+        if sender is None:
+            return
+        height = float(sender.bounds().size.height)
+        menu.popUpMenuPositioningItem_atLocation_inView_(None, NSMakePoint(0.0, height + 6.0), sender)
+
+    @objc.python_method
+    def _menu_symbol(self, name, label):
+        if not name:
+            return None
+        try:
+            image = NSImage.imageWithSystemSymbolName_accessibilityDescription_(name, label)
+        except Exception:
+            return None
+        if image is None:
+            return None
+        image.setTemplate_(True)
+        return image
+
+    @objc.python_method
+    def _fill_plus_menu(self, menu, items):
+        menu.setAutoenablesItems_(False)
+        for spec in items:
+            kind = spec.get("kind")
+            if kind == "separator":
+                menu.addItem_(NSMenuItem.separatorItem())
+                continue
+            title = spec.get("title") or ""
+            if kind == "submenu":
+                item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(title, None, "")
+                image = self._menu_symbol(spec.get("symbol") or "", title)
+                if image is not None:
+                    item.setImage_(image)
+                sub = NSMenu.alloc().initWithTitle_(title)
+                self._fill_plus_menu(sub, spec.get("items") or ())
+                item.setSubmenu_(sub)
+                menu.addItem_(item)
+                continue
+            item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                title, "miniPlusItem:", spec.get("key") or "")
+            item.setTarget_(self)
+            item.setEnabled_(True)
+            item.setRepresentedObject_(spec.get("id") or "")
+            image = self._menu_symbol(spec.get("symbol") or "", title)
+            if image is not None:
+                item.setImage_(image)
+            menu.addItem_(item)
+
+    def miniPlusItem_(self, sender):
+        raw = sender.representedObject() if sender is not None else None
+        spec = plus_item("" if raw is None else str(raw))
+        if not spec:
+            return
+        kind = spec.get("kind")
+        if kind == "text":
+            self._queue_bar_phrase(spec.get("phrase") or "")
+            return
+        if kind == "screenshot":
+            threading.Thread(target=self._capture_for_bar, daemon=True).start()
+            return
+        if kind == "window":
+            self.showMain_(sender)
+            return
+        if kind == "settings":
+            self.showMain_(sender)
+            self._select_tab("settings")
+            return
+        if kind == "updates":
+            self.checkForUpdates_(sender)
+            return
+        if kind == "reset_position":
+            self.resetMiniBarPosition_(sender)
+            return
+        if kind == "reset_size":
+            self.resetMiniBarSize_(sender)
+            return
+
+    @objc.python_method
+    def _queue_bar_phrase(self, phrase):
+        phrase = " ".join(str(phrase or "").split())
+        if not phrase:
+            return
+        if not self.worker_started:
+            self._show_bar_reply("Add your API keys in the main window first.")
+            return
+        self.bar.reply = ""
+        self.mini_field.setStringValue_("")
+        self.controls.put(("text", phrase))
+        self._refresh_trailing_symbol()
+
+    @objc.python_method
+    def _capture_for_bar(self):
+        try:
+            import commands
+            sentence = commands.take_screenshot()
+        except Exception as exc:
+            sentence = "Couldn't take a screenshot."
+            print(f"  mini bar screenshot failed: {exc}")
+        self.performSelectorOnMainThread_withObject_waitUntilDone_("showBarSentence:", str(sentence or ""), False)
+
+    def showBarSentence_(self, sentence):
+        self._show_bar_reply(str(sentence or ""))
 
     def applicationShouldHandleReopen_hasVisibleWindows_(self, _app, _visible):
         self.showMain_(None)
@@ -1487,6 +2065,7 @@ class AppDelegate(NSObject):
         field = getattr(self, "mini_field", None)
         if field is not None and self.bar.reply_due_clear(time.time(), field.stringValue()):
             field.setStringValue_("")
+            self._refresh_trailing_symbol()
 
     def updateStatus_(self, payload):
         state = str(payload["state"])
@@ -1501,6 +2080,8 @@ class AppDelegate(NSObject):
         shown = reply_text(state, detail)
         if shown and getattr(self, "mini_panel", None) is not None and self.mini_panel.isVisible():
             self._show_bar_reply(shown)
+        elif getattr(self, "mini_mic", None) is not None:
+            self._refresh_trailing_symbol()
 
     def applicationShouldTerminateAfterLastWindowClosed_(self, _application):
         return False  # keep listening with the window closed, the Dock icon reopens it
@@ -1512,6 +2093,18 @@ class AppDelegate(NSObject):
         return 1  # NSTerminateNow. Closing the window is not quitting.
 
     def applicationWillTerminate_(self, _notification):
+        timer = getattr(self, "_listen_timer", None)
+        if timer is not None:
+            timer.invalidate()
+            self._listen_timer = None
+        fade = getattr(self, "_fade_timer", None)
+        if fade is not None:
+            fade.invalidate()
+            self._fade_timer = None
+        self._bar_fade_done = None
+        if getattr(self, "_pill_watched", False):
+            NSWorkspace.sharedWorkspace().notificationCenter().removeObserver_(self)
+            self._pill_watched = False
         if hasattr(self, "bar"):
             self.bar.quit()
             self._apply_bar_visibility()
