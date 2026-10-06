@@ -373,7 +373,22 @@ ACTIONS = {
     "access_slow": lambda _arg, text: commands.set_access_feature("slow", text),
     "access_voice_control": lambda _arg, text: commands.set_access_feature("voice_control", text),
     "access_status": lambda _arg, _text: commands.accessibility_status(),
-    "screenshot": lambda _arg, _text: commands.take_screenshot(),
+    "screenshot": lambda _arg, _text: commands.take_screenshot("full"),
+    "screenshot_area": lambda _arg, _text: commands.take_screenshot("area"),
+    "screenshot_window": lambda _arg, _text: commands.take_screenshot("window"),
+    "record_start": lambda _arg, text: commands.start_screen_recording(text),
+    "record_stop": lambda _arg, _text: commands.stop_screen_recording(),
+    "capture_note": lambda _arg, text: commands.share_from_text(text),
+    "capture_email": lambda _arg, text: commands.share_from_text(text),
+    "capture_imessage": lambda _arg, text: commands.share_from_text(text),
+    "capture_finder": lambda _arg, text: commands.share_from_text(text),
+    "capture_copy": lambda _arg, text: commands.share_from_text(text),
+    "capture_delete": lambda _arg, text: commands.share_from_text(text),
+    "ask_chatgpt": lambda _arg, text: commands.ask_from_text(text),
+    "ask_claude": lambda _arg, text: commands.ask_from_text(text),
+    "ask_gemini": lambda _arg, text: commands.ask_from_text(text),
+    "ask_siri": lambda _arg, text: commands.ask_from_text(text),
+    "ask_google": lambda _arg, text: commands.ask_from_text(text),
     "empty_trash": lambda _arg, _text: commands.empty_trash(),
     "show_desktop": lambda _arg, _text: commands.show_desktop(),
     "folder_open": lambda _arg, text: commands.open_folder_from_text(text),
@@ -978,6 +993,7 @@ def handle(text, stt_ms=None, notify=None, reply_sink=None, quiet=False):
         if kind == "reply":
             line = say_line(payload)
         elif kind == "llm":
+            commands.note_question(text)
             line, llm_ms, llm_cost = ask_llm(text)
             print(f"  llm {LLM_MODEL} {llm_ms}ms  ${llm_cost}")
         else:

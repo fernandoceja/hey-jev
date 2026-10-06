@@ -114,6 +114,7 @@ from mini_bar import (
     mic_event,
     parse_origin,
     pill_chrome,
+    capture_follow_up_items,
     place_bar,
     plus_item,
     plus_menu,
@@ -1457,6 +1458,19 @@ class AppDelegate(NSObject):
         self.mini_mic.pillRole = "mic"
         self._set_button_symbol(self.mini_mic, "mic.fill", "Listen")
         root.addSubview_(self.mini_mic)
+        self.rec_label = NSTextField.labelWithString_("")
+        self.rec_label.setTextColor_(NSColor.systemRedColor())
+        self.rec_label.setFont_(NSFont.systemFontOfSize_weight_(13, 0.6))
+        self.rec_label.setHidden_(True)
+        root.addSubview_(self.rec_label)
+        self.rec_stop = PillButton.alloc().initWithFrame_(NSMakeRect(0, 0, 10, 10))
+        self.rec_stop.setBordered_(False)
+        self.rec_stop.setTarget_(self)
+        self.rec_stop.setAction_("miniStopRecording:")
+        self.rec_stop.setImageScaling_(NSImageScaleProportionallyUpOrDown)
+        self._set_button_symbol(self.rec_stop, "stop.circle.fill", "Stop Recording")
+        self.rec_stop.setHidden_(True)
+        root.addSubview_(self.rec_stop)
         self._mini_mic_held = False
         self._layout_mini_bar(size[0], size[1])
         self._install_pill_chrome()
@@ -1699,7 +1713,12 @@ class AppDelegate(NSObject):
         _place(self.mini_field, frames["field"])
         self.mini_field.setFont_(NSFont.systemFontOfSize_(metrics["field_font"]))
         _place(self.mini_mic, frames["mic"])
+        if hasattr(self, "rec_stop"):
+            _place(self.rec_stop, frames["mic"])
+            field = frames["field"]
+            _place(self.rec_label, (field[0], field[1], min(88.0, field[2]), field[3]))
         self._sync_capsule(width, height)
+        self._sync_recording_ui()
         self._style_pill_field()
 
     @objc.python_method
@@ -1931,7 +1950,13 @@ class AppDelegate(NSObject):
 
     def miniPlus_(self, sender):
         menu = NSMenu.alloc().initWithTitle_("Message Jev")
-        self._fill_plus_menu(menu, plus_menu())
+        recording = False
+        try:
+            import commands
+            recording = bool(commands.is_recording())
+        except Exception:
+            recording = False
+        self._fill_plus_menu(menu, plus_menu(recording=recording))
         if sender is None:
             return
         height = float(sender.bounds().size.height)
@@ -1988,8 +2013,13 @@ class AppDelegate(NSObject):
         if kind == "text":
             self._queue_bar_phrase(spec.get("phrase") or "")
             return
-        if kind == "screenshot":
-            threading.Thread(target=self._capture_for_bar, daemon=True).start()
+        if str(kind).startswith("screenshot"):
+            mode = {"screenshot_area": "area", "screenshot_window": "window"}.get(kind, "full")
+            threading.Thread(target=self._capture_for_bar, args=(mode,), daemon=True).start()
+            return
+        if kind in ("record_start", "record_stop", "share_notes", "share_email", "share_imessage",
+                    "share_finder", "share_copy", "share_delete") or str(kind).startswith("ask_"):
+            threading.Thread(target=self._run_capture_kind, args=(str(kind),), daemon=True).start()
             return
         if kind == "window":
             self.showMain_(sender)
@@ -2022,17 +2052,69 @@ class AppDelegate(NSObject):
         self._refresh_trailing_symbol()
 
     @objc.python_method
-    def _capture_for_bar(self):
+    def _capture_for_bar(self, mode="full"):
         try:
             import commands
-            sentence = commands.take_screenshot()
+            sentence = commands.take_screenshot(mode)
         except Exception as exc:
             sentence = "Couldn't take a screenshot."
             print(f"  mini bar screenshot failed: {exc}")
-        self.performSelectorOnMainThread_withObject_waitUntilDone_("showBarSentence:", str(sentence or ""), False)
+        self.performSelectorOnMainThread_withObject_waitUntilDone_("showCaptureResult:", str(sentence or ""), False)
+
+    def _run_capture_kind(self, kind):
+        try:
+            import commands
+            sentence = commands.run_capture_menu(kind)
+        except Exception as exc:
+            sentence = "Couldn't do that."
+            print(f"  mini bar capture failed: {exc}")
+        self.performSelectorOnMainThread_withObject_waitUntilDone_("showCaptureResult:", str(sentence or ""), False)
+
+    def showCaptureResult_(self, sentence):
+        self._show_bar_reply(str(sentence or ""))
+        self._sync_recording_ui()
+        if str(sentence or "").startswith("Saved"):
+            self._pop_capture_menu()
 
     def showBarSentence_(self, sentence):
         self._show_bar_reply(str(sentence or ""))
+
+    def miniStopRecording_(self, _sender):
+        threading.Thread(target=self._run_capture_kind, args=("record_stop",), daemon=True).start()
+
+    @objc.python_method
+    def _pop_capture_menu(self):
+        panel = getattr(self, "mini_panel", None)
+        if panel is None or not panel.isVisible():
+            return
+        menu = NSMenu.alloc().initWithTitle_("Capture")
+        self._fill_plus_menu(menu, capture_follow_up_items())
+        view = panel.contentView()
+        if view is None:
+            return
+        height = float(view.bounds().size.height)
+        menu.popUpMenuPositioningItem_atLocation_inView_(None, NSMakePoint(12.0, height + 6.0), view)
+
+    @objc.python_method
+    def _sync_recording_ui(self):
+        label = getattr(self, "rec_label", None)
+        stop = getattr(self, "rec_stop", None)
+        mic = getattr(self, "mini_mic", None)
+        if label is None or stop is None or mic is None:
+            return
+        status = None
+        try:
+            import commands
+            status = commands.recording_status()
+        except Exception:
+            status = None
+        active = bool(status)
+        label.setHidden_(not active)
+        stop.setHidden_(not active)
+        mic.setHidden_(active)
+        if active:
+            label.setStringValue_("\u25cf  " + str(status.get("clock") or ""))
+            label.setTextColor_(NSColor.systemRedColor())
 
     def applicationShouldHandleReopen_hasVisibleWindows_(self, _app, _visible):
         self.showMain_(None)
@@ -2066,6 +2148,7 @@ class AppDelegate(NSObject):
         if field is not None and self.bar.reply_due_clear(time.time(), field.stringValue()):
             field.setStringValue_("")
             self._refresh_trailing_symbol()
+        self._sync_recording_ui()
 
     def updateStatus_(self, payload):
         state = str(payload["state"])

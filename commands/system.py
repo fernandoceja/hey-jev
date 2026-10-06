@@ -1,5 +1,4 @@
 """Chrome sites, folders, Mac controls, screenshots, and battery."""
-from datetime import datetime
 import ctypes
 import os
 import re
@@ -256,14 +255,10 @@ def speak_battery():
     return f"Battery is at {pct} percent, {source}."
 
 
-def take_screenshot():
-    stamp = datetime.now().astimezone().strftime("%Y-%m-%d %H-%M-%S")
-    path = os.path.expanduser(f"~/Desktop/Jev {stamp}.png")
-    try:
-        _run(("screencapture", "-x", path))
-    except Exception:
-        return "I couldn't take a screenshot. Allow Screen Recording for Hey Jev."
-    return "Saved a screenshot to your Desktop."
+def take_screenshot(mode="full", folder=None, **kwargs):
+    """Full screen, an area, or a window. Files go to the Jev Captures folder."""
+    from .captures import take_screenshot as shoot
+    return shoot(mode, folder=folder, **kwargs)
 
 
 def empty_trash():

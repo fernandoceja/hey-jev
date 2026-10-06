@@ -472,13 +472,34 @@ _MENU_ROUTES = {
     "brightness_100": "brightness_set",
 }
 _MENU_ACTIONS = {
-    "screenshot": "screenshot",
     "window": "window",
     "updates": "updates",
     "reset_position": "reset_position",
     "reset_size": "reset_size",
     "settings": "settings",
 }
+_CAPTURE_MENU_IDS = (
+    "screenshot_full",
+    "screenshot_area",
+    "screenshot_window",
+    "record_start",
+    "share_notes",
+    "share_email",
+    "share_imessage",
+    "share_finder",
+    "share_copy",
+    "share_delete",
+    "ask_capture_chatgpt",
+    "ask_capture_claude",
+    "ask_capture_gemini",
+    "ask_capture_siri",
+    "ask_capture_google",
+    "ask_question_chatgpt",
+    "ask_question_claude",
+    "ask_question_gemini",
+    "ask_question_siri",
+    "ask_question_google",
+)
 
 
 class TestGlass(unittest.TestCase):
@@ -534,11 +555,20 @@ class TestGlass(unittest.TestCase):
                     self.assertNotIn(key, commands.BRIDGE_ALLOW)
                 routed[item["id"]] = key
             else:
-                self.assertEqual(item["kind"], _MENU_ACTIONS[item["id"]])
+                if item["id"] in _MENU_ACTIONS:
+                    self.assertEqual(item["kind"], _MENU_ACTIONS[item["id"]])
+                else:
+                    self.assertEqual(item["kind"], item["id"])
                 self.assertEqual(phrase, "")
         self.assertEqual(set(routed), set(_MENU_ROUTES))
         self.assertEqual(plus_item("payday")["phrase"], "payday check")
         self.assertNotIn("info_messages", [item["id"] for item in items])
+        for item_id in _CAPTURE_MENU_IDS:
+            self.assertEqual(plus_item(item_id)["kind"], item_id)
+        recording = [item["id"] for item in walk_menu(plus_menu(recording=True))]
+        self.assertIn("record_stop", recording)
+        self.assertNotIn("record_start", recording)
+        self.assertIsNone(plus_item("screenshot"))
 
     def test_the_pill_source_uses_glass_or_the_hud_fallback(self):
         ui = open(os.path.join(ROOT, "assistant_ui.py"), encoding="utf-8").read()
@@ -581,6 +611,11 @@ class TestGlass(unittest.TestCase):
         self.assertIn("resetMiniBarSize_", menu)
         self.assertIn('("text", phrase)', _func(ui, "_queue_bar_phrase"))
         self.assertIn("take_screenshot", _func(ui, "_capture_for_bar"))
+        self.assertIn("run_capture_menu", _func(ui, "_run_capture_kind"))
+        self.assertIn("showCaptureResult_", ui)
+        self.assertIn("stop.circle.fill", ui)
+        self.assertIn("systemRedColor", ui)
+        self.assertIn("capture_follow_up_items", ui)
         self.assertNotIn("NSOpenPanel", ui)
         self.assertIn('setCornerCurve_("continuous")', ui)
-        self.assertIn("plus_menu()", ui)
+        self.assertIn("plus_menu(recording=", ui)

@@ -307,15 +307,59 @@ def _menu_action(item_id, title, kind, symbol, key=""):
     return {"id": item_id, "title": title, "kind": kind, "phrase": "", "symbol": symbol, "key": key}
 
 
-def plus_menu(can_attach=None):
+def _capture_follow_rows():
+    """Share and Ask rows for the capture that was just saved."""
+    return (
+        _menu_action("share_notes", "Save to Notes", "share_notes", "note.text"),
+        _menu_action("share_email", "Email\u2026", "share_email", "envelope"),
+        _menu_action("share_imessage", "iMessage\u2026", "share_imessage", "message"),
+        _menu_action("share_finder", "Show in Finder", "share_finder", "folder"),
+        _menu_action("share_copy", "Copy", "share_copy", "doc.on.doc"),
+        _menu_action("share_delete", "Delete", "share_delete", "trash"),
+        {"kind": "separator"},
+        {
+            "id": "ask_capture",
+            "title": "Ask\u2026",
+            "kind": "submenu",
+            "symbol": "questionmark.circle",
+            "items": _ask_items("ask_capture"),
+        },
+    )
+
+
+def _ask_items(prefix):
+    return (
+        _menu_action(prefix + "_chatgpt", "Ask ChatGPT", prefix + "_chatgpt", "bubble.left"),
+        _menu_action(prefix + "_claude", "Ask Claude", prefix + "_claude", "bubble.left"),
+        _menu_action(prefix + "_gemini", "Ask Gemini", prefix + "_gemini", "sparkle"),
+        _menu_action(prefix + "_siri", "Ask Siri", prefix + "_siri", "waveform"),
+        _menu_action(prefix + "_google", "Ask Google", prefix + "_google", "magnifyingglass"),
+    )
+
+
+def capture_follow_up_items():
+    """The glass menu under the pill after a screenshot or recording is saved."""
+    return _capture_follow_rows()
+
+
+def plus_menu(can_attach=None, recording=False):
     """Items for the + button. Only commands the app already runs.
 
     `can_attach` defaults to attachments_supported(). Attach File is included
     only when that is true. Screenshot does not pretend to send the picture.
-    No item sends money or reads My Love.
+    No item sends money or reads My Love. Mail and Messages stay unsent.
     """
     if can_attach is None:
         can_attach = attachments_supported()
+    shots = (
+        _menu_action("screenshot_full", "Full Screen", "screenshot_full", "camera.viewfinder"),
+        _menu_action("screenshot_area", "Area", "screenshot_area", "selection.pin.in.out"),
+        _menu_action("screenshot_window", "Window", "screenshot_window", "macwindow"),
+    )
+    if recording:
+        record = _menu_action("record_stop", "Stop Screen Recording", "record_stop", "stop.circle.fill")
+    else:
+        record = _menu_action("record_start", "Start Screen Recording", "record_start", "record.circle")
     quick = (
         _menu_text("brief", "Brief Me", "brief me", "newspaper"),
         _menu_text("next_shift", "Next Shift", "what's my next shift", "calendar"),
@@ -345,7 +389,16 @@ def plus_menu(can_attach=None):
         },
     )
     items = [
-        _menu_action("screenshot", "Take Screenshot", "screenshot", "camera.viewfinder"),
+        {"id": "shots", "title": "Screenshot", "kind": "submenu", "symbol": "camera.viewfinder", "items": shots},
+        record,
+        {"id": "recent", "title": "Recent Captures", "kind": "submenu", "symbol": "clock", "items": _capture_follow_rows()},
+        {
+            "id": "ask_question",
+            "title": "Ask About the Last Question",
+            "kind": "submenu",
+            "symbol": "questionmark.bubble",
+            "items": _ask_items("ask_question"),
+        },
     ]
     if can_attach:
         items.append(_menu_action("attach", "Attach File\u2026", "attach", "paperclip"))
