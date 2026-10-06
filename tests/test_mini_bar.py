@@ -6,25 +6,38 @@ import commands
 from assistant_layout import DEFAULT_H, DEFAULT_W, MIN_H, MIN_W, layout_window, rects_inside
 from mini_bar import (
     BAR_COLLECTION,
+    BAR_GRIP,
     BAR_H,
+    BAR_MAX_H,
+    BAR_MAX_W,
+    BAR_MIN_H,
+    BAR_MIN_W,
     BAR_W,
     CAN_JOIN_ALL_SPACES,
     DOCK_GAP,
     FULL_SCREEN_AUXILIARY,
     PLACEHOLDER,
     REPLY_SECONDS,
+    SIZE_KEY,
     BarController,
     background_action,
     bar_controls,
+    bar_metrics,
+    default_size,
     drag_origin,
     enabled_from_pref,
     format_origin,
+    format_size,
     hit_control,
     mic_event,
     parse_origin,
+    parse_size,
     place_bar,
+    remembered_size,
     reply_text,
     reset_origin,
+    resize_edges,
+    resize_frame,
     submission,
 )
 
@@ -234,6 +247,9 @@ class TestPlacement(unittest.TestCase):
         self.assertIsNone(hit_control(BAR_W / 2.0, 1.0))
         self.assertIsNone(hit_control(BAR_W / 2.0, BAR_H - 1.0))
         self.assertIsNone(hit_control(field[0] + field[2] + 2.0, field[1] + 4.0))
+        # Just inside the grip is still a drag. The outer pixels resize.
+        self.assertEqual(background_action(1, BAR_GRIP + 2.0, BAR_H / 2.0), "drag")
+        self.assertEqual(background_action(1, 1.0, BAR_H / 2.0), "resize")
 
     def test_the_panel_drags_from_its_background_and_joins_every_space(self):
         ui = open(os.path.join(ROOT, "assistant_ui.py"), encoding="utf-8").read()
@@ -256,7 +272,7 @@ class TestPlacement(unittest.TestCase):
         moved = _func(ui, "windowDidMove_")
         self.assertIn("ORIGIN_KEY", moved)
         order = _func(ui, "_order_bar_front")
-        self.assertIn("place_bar(saved, screens)", order)
+        self.assertIn("place_bar(saved, screens, size)", order)
 
     def test_double_click_on_the_background_recenters_on_the_main_screen(self):
         screens = (AIR, RIGHT, LEFT)
@@ -267,10 +283,10 @@ class TestPlacement(unittest.TestCase):
         self.assertEqual(reset_origin([]), (0.0, DOCK_GAP))
         frames = bar_controls()
         field, plus, mic = frames["field"], frames["plus"], frames["mic"]
-        self.assertEqual(background_action(1, 1.0, BAR_H / 2.0), "drag")
-        self.assertEqual(background_action(2, 1.0, BAR_H / 2.0), "reset")
-        self.assertEqual(background_action(2, BAR_W / 2.0, 1.0), "reset")
-        self.assertEqual(background_action(2, BAR_W - 1.0, BAR_H / 2.0), "reset")
+        self.assertEqual(background_action(1, BAR_GRIP + 2.0, BAR_H / 2.0), "drag")
+        self.assertEqual(background_action(2, BAR_GRIP + 2.0, BAR_H / 2.0), "reset")
+        self.assertEqual(background_action(2, BAR_W / 2.0, BAR_GRIP + 2.0), "reset")
+        self.assertEqual(background_action(2, BAR_W - BAR_GRIP - 2.0, BAR_H / 2.0), "reset")
         self.assertEqual(background_action(2, field[0] + 4, field[1] + 4), "control")
         self.assertEqual(background_action(1, field[0] + 4, field[1] + 4), "control")
         self.assertEqual(background_action(2, plus[0], plus[1]), "control")
@@ -282,15 +298,35 @@ class TestPlacement(unittest.TestCase):
             'addItemWithTitle_action_keyEquivalent_("Reset Mini Bar Position", "resetMiniBarPosition:", "")',
             ui,
         )
+        self.assertIn(
+            'addItemWithTitle_action_keyEquivalent_("Reset Mini Bar Size", "resetMiniBarSize:", "")',
+            ui,
+        )
         reset = _func(ui, "resetMiniBarPosition_")
         self.assertIn("reset_origin", reset)
+        self.assertIn("default_size", reset)
         self.assertIn("ORIGIN_KEY", reset)
-        self.assertIn("setFrameOrigin_", reset)
+        self.assertIn("SIZE_KEY", reset)
+        self.assertIn("setFrame_display_", reset)
+        size_reset = _func(ui, "resetMiniBarSize_")
+        self.assertIn("default_size", size_reset)
+        self.assertIn("SIZE_KEY", size_reset)
+        self.assertNotIn("reset_origin", size_reset)
+        self.assertIn("frame.origin", size_reset)
         drag = _func(ui, "mouseDown_")
         self.assertIn("background_action", drag)
         self.assertIn("resetMiniBarPosition_", drag)
-        self.assertLess(drag.index("resetMiniBarPosition_"), drag.index("drag_origin"))
+        self.assertIn("resize_frame", drag)
+        self.assertIn("setFrameOrigin_", drag)
+        self.assertLess(drag.index("resetMiniBarPosition_"), drag.index("resize_frame"))
+        self.assertLess(drag.index("resize_frame"), drag.index("drag_origin"))
         self.assertIn("return", drag[:drag.index("drag_origin")])
+        resized = _func(ui, "windowDidResize_")
+        self.assertIn("SIZE_KEY", resized)
+        self.assertIn("_layout_mini_bar", resized)
+        ordered = _func(ui, "_order_bar_front")
+        self.assertIn("remembered_size", ordered)
+        self.assertIn("SIZE_KEY", ordered)
 
     def test_settings_toggle_sits_under_the_microphone_row(self):
         for width, height in ((MIN_W, MIN_H), (DEFAULT_W, DEFAULT_H)):
@@ -308,3 +344,101 @@ class TestPlacement(unittest.TestCase):
             # AppKit origin is the bottom, so a lower row has a smaller y.
             self.assertLess(page["mini_toggle"][1], page["popup"][1])
             self.assertLess(page["update_button"][1], page["mini_toggle"][1])
+
+
+class TestSize(unittest.TestCase):
+    def test_a_saved_size_is_clamped_and_a_missing_one_is_the_default(self):
+        self.assertEqual(default_size(), (BAR_W, BAR_H))
+        self.assertEqual(remembered_size(None), default_size())
+        self.assertEqual(remembered_size(""), default_size())
+        self.assertEqual(remembered_size("nope"), default_size())
+        self.assertEqual(remembered_size("420"), default_size())
+        self.assertEqual(parse_size("10 10"), (BAR_MIN_W, BAR_MIN_H))
+        self.assertEqual(remembered_size("10 10"), (BAR_MIN_W, BAR_MIN_H))
+        self.assertEqual(remembered_size("9999 9999"), (BAR_MAX_W, BAR_MAX_H))
+        self.assertEqual(parse_size("-40 50"), (BAR_MIN_W, 50.0))
+        self.assertEqual(remembered_size(format_size(500, 50)), (500.0, 50.0))
+        self.assertEqual(format_size(10, 10), format_size(BAR_MIN_W, BAR_MIN_H))
+        self.assertEqual(SIZE_KEY, "mini_bar_size")
+
+    def test_reset_restores_the_default_size(self):
+        widened = remembered_size("600 60")
+        self.assertNotEqual(widened, default_size())
+        self.assertEqual(default_size(), (BAR_W, BAR_H))
+        self.assertEqual(remembered_size(format_size(*default_size())), default_size())
+        ui = open(os.path.join(ROOT, "assistant_ui.py"), encoding="utf-8").read()
+        position = _func(ui, "resetMiniBarPosition_")
+        size_only = _func(ui, "resetMiniBarSize_")
+        self.assertIn("default_size()", position)
+        self.assertIn("default_size()", size_only)
+        drag = _func(ui, "mouseDown_")
+        self.assertIn("resetMiniBarPosition_", drag)
+
+    def test_edges_and_corners_resize_and_the_field_does_not(self):
+        self.assertEqual(resize_edges(1.0, BAR_H / 2.0), frozenset({"left"}))
+        self.assertEqual(resize_edges(BAR_W - 1.0, BAR_H / 2.0), frozenset({"right"}))
+        self.assertEqual(resize_edges(BAR_W / 2.0, 1.0), frozenset({"bottom"}))
+        self.assertEqual(resize_edges(BAR_W / 2.0, BAR_H - 1.0), frozenset({"top"}))
+        self.assertEqual(resize_edges(1.0, 1.0), frozenset({"left", "bottom"}))
+        self.assertEqual(resize_edges(BAR_W - 1.0, BAR_H - 1.0), frozenset({"right", "top"}))
+        self.assertEqual(resize_edges(BAR_GRIP + 2.0, BAR_H / 2.0), frozenset())
+        wide = (BAR_MAX_W, BAR_MAX_H)
+        field = bar_controls(wide)["field"]
+        self.assertEqual(background_action(1, field[0] + 4.0, field[1] + 4.0, None, wide), "control")
+        self.assertEqual(background_action(2, 1.0, wide[1] / 2.0, None, wide), "resize")
+        self.assertEqual(background_action(1, BAR_GRIP + 2.0, wide[1] / 2.0, None, wide), "drag")
+
+    def test_a_resize_keeps_the_opposite_edge_and_clamps(self):
+        frame = (100.0, 200.0, BAR_W, BAR_H)
+        right = resize_frame(frame, {"right"}, (0.0, 0.0), (50.0, 0.0))
+        self.assertEqual(right, (100.0, 200.0, BAR_W + 50.0, BAR_H))
+        left = resize_frame(frame, {"left"}, (0.0, 0.0), (-40.0, 0.0))
+        self.assertEqual(left, (60.0, 200.0, BAR_W + 40.0, BAR_H))
+        self.assertEqual(left[0] + left[2], frame[0] + frame[2])
+        huge = resize_frame(frame, {"right"}, (0.0, 0.0), (5000.0, 0.0))
+        self.assertEqual(huge, (100.0, 200.0, BAR_MAX_W, BAR_H))
+        shrunk = resize_frame(frame, {"left"}, (0.0, 0.0), (400.0, 0.0))
+        self.assertEqual(shrunk[2], BAR_MIN_W)
+        self.assertEqual(shrunk[0] + shrunk[2], frame[0] + frame[2])
+        taller = resize_frame(frame, {"top"}, (0.0, 0.0), (0.0, 30.0))
+        self.assertEqual(taller, (100.0, 200.0, BAR_W, BAR_MAX_H))
+        lower = resize_frame(frame, {"bottom"}, (0.0, 0.0), (0.0, -10.0))
+        self.assertEqual(lower, (100.0, 190.0, BAR_W, BAR_H + 10.0))
+        self.assertEqual(lower[1] + lower[3], frame[1] + frame[3])
+        corner = resize_frame(frame, {"left", "bottom"}, (0.0, 0.0), (-20.0, -8.0))
+        self.assertEqual(corner, (80.0, 192.0, BAR_W + 20.0, BAR_H + 8.0))
+
+    def test_type_follows_height_and_width_goes_to_the_field(self):
+        base = bar_metrics(BAR_W, BAR_H)
+        self.assertEqual(base["field_font"], 14.0)
+        self.assertEqual(base["plus_font"], 20.0)
+        self.assertEqual(base["button"], 24.0)
+        self.assertEqual(bar_metrics(BAR_MAX_W, BAR_H)["field_font"], base["field_font"])
+        self.assertGreater(bar_metrics(BAR_W, BAR_MAX_H)["field_font"], base["field_font"])
+        self.assertGreater(bar_metrics(BAR_W, BAR_MIN_H)["button"], 0.0)
+        self.assertLess(bar_metrics(BAR_W, BAR_MIN_H)["field_font"], base["field_font"])
+        self.assertGreater(bar_controls((BAR_MAX_W, BAR_H))["field"][2], bar_controls()["field"][2])
+
+    def test_controls_stay_inside_the_grip_at_the_min_and_the_max(self):
+        for size in ((BAR_MIN_W, BAR_MIN_H), (BAR_W, BAR_H), (BAR_MAX_W, BAR_MAX_H), (500.0, 50.0)):
+            frames = list(bar_controls(size).values())
+            bounds = (0.0, 0.0, size[0], size[1])
+            self.assertGreaterEqual(bar_controls(size)["field"][2], 120.0)
+            for rect in frames:
+                self.assertTrue(rects_inside(rect, bounds), (size, rect))
+                self.assertGreaterEqual(rect[0], BAR_GRIP)
+                self.assertGreaterEqual(rect[1], BAR_GRIP)
+                self.assertLessEqual(rect[0] + rect[2], size[0] - BAR_GRIP)
+                self.assertLessEqual(rect[1] + rect[3], size[1] - BAR_GRIP)
+            for i, rect in enumerate(frames):
+                for other in frames[i + 1:]:
+                    self.assertFalse(_overlaps(rect, other))
+
+    def test_a_wide_pill_uses_its_own_width_when_deciding_it_is_on_screen(self):
+        wide = (BAR_MAX_W, BAR_H)
+        fallback = place_bar(None, AIR, wide)
+        self.assertAlmostEqual(fallback[0], AIR[0] + (AIR[2] - BAR_MAX_W) / 2.0)
+        self.assertEqual(fallback[1], AIR[1] + DOCK_GAP)
+        self.assertEqual(place_bar((120.0, 400.0), AIR, wide), (120.0, 400.0))
+        self.assertEqual(place_bar((AIR[2] - 100.0, 400.0), AIR, wide), fallback)
+        self.assertEqual(place_bar((100.0, 200.0), AIR, (10.0, 10.0)), (100.0, 200.0))

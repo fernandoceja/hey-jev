@@ -63,6 +63,9 @@ from AppKit import (
     NSWindowCollectionBehaviorCanJoinAllSpaces,
     NSWindowCollectionBehaviorFullScreenAuxiliary,
     NSWindowCollectionBehaviorStationary,
+    NSImageScaleProportionallyUpOrDown,
+    NSViewHeightSizable,
+    NSViewWidthSizable,
     NSWindowStyleMaskNonactivatingPanel,
     NSWindowStyleMaskResizable,
     NSWindowStyleMaskTitled,
@@ -82,23 +85,28 @@ from assistant_layout import (
 from bubble import Bubble
 from dictation import HISTORY, read_vocab, save_vocab
 from mini_bar import (
-    BAR_H,
-    BAR_W,
     ORIGIN_KEY,
     PLACEHOLDER,
     PREF_KEY,
+    SIZE_KEY,
     BarController,
     BAR_COLLECTION,
     background_action,
     bar_controls,
+    bar_metrics,
+    default_size,
     drag_origin,
     enabled_from_pref,
     format_origin,
+    format_size,
     mic_event,
     parse_origin,
     place_bar,
+    remembered_size,
     reply_text,
     reset_origin,
+    resize_edges,
+    resize_frame,
     submission,
 )
 from secrets_store import KEY_NAMES, OPTIONAL, get_secret, missing_secrets, save_secret
@@ -255,12 +263,13 @@ class CenteredFieldCell(NSTextFieldCell):
 
 
 class MiniBarBackground(NSView):
-    """Dark rounded pill. A click on the background or an edge drags it.
+    """Dark rounded pill. The background moves it. The outer edge resizes it.
 
     The + button, the text field, and the mic sit on top and keep their own clicks.
-    A double-click on the background recenters the pill. A nonactivating panel
-    ignores the normal title-bar drag, so a single click tracks the mouse in
-    screen coordinates and moves the frame itself. That works across displays.
+    A double-click on the background recenters the pill and restores its default
+    size. A nonactivating panel ignores the normal title-bar drag, so a single
+    click tracks the mouse in screen coordinates and moves or resizes the frame
+    itself. That works across displays.
     """
 
     def drawRect_(self, _rect):
@@ -279,12 +288,33 @@ class MiniBarBackground(NSView):
         window = self.window()
         if window is None:
             return
+        bounds = self.bounds()
+        size = (float(bounds.size.width), float(bounds.size.height))
         point = self.convertPoint_fromView_(event.locationInWindow(), None)
-        action = background_action(event.clickCount(), float(point.x), float(point.y))
+        action = background_action(event.clickCount(), float(point.x), float(point.y), None, size)
         if action == "reset":
             delegate = window.delegate()
             if delegate is not None:
                 delegate.resetMiniBarPosition_(self)
+            return
+        if action == "resize":
+            down = NSEvent.mouseLocation()
+            frame = window.frame()
+            start = (float(down.x), float(down.y))
+            original = (float(frame.origin.x), float(frame.origin.y),
+                        float(frame.size.width), float(frame.size.height))
+            edges = resize_edges(float(point.x), float(point.y), size)
+            mask = NSEventMaskLeftMouseDragged | NSEventMaskLeftMouseUp
+            while True:
+                nxt = window.nextEventMatchingMask_(mask)
+                if nxt is None or nxt.type() == NSEventTypeLeftMouseUp:
+                    break
+                now = NSEvent.mouseLocation()
+                x, y, w, h = resize_frame(original, edges, start, (float(now.x), float(now.y)))
+                window.setFrame_display_animate_(NSMakeRect(x, y, w, h), True, False)
+                delegate = window.delegate()
+                if delegate is not None:
+                    delegate.layoutMiniBar_(self)
             return
         if action != "drag":
             return
@@ -1138,6 +1168,7 @@ class AppDelegate(NSObject):
         menu.addItemWithTitle_action_keyEquivalent_("Show Hey Jev", "showMain:", "1").setTarget_(self)
         menu.addItemWithTitle_action_keyEquivalent_("Hide Mini Bar", "hideMiniBar:", "").setTarget_(self)
         menu.addItemWithTitle_action_keyEquivalent_("Reset Mini Bar Position", "resetMiniBarPosition:", "").setTarget_(self)
+        menu.addItemWithTitle_action_keyEquivalent_("Reset Mini Bar Size", "resetMiniBarSize:", "").setTarget_(self)
         item.setSubmenu_(menu)
         NSApp.setWindowsMenu_(menu)
 
@@ -1170,13 +1201,28 @@ class AppDelegate(NSObject):
         self._apply_bar_visibility()
 
     def resetMiniBarPosition_(self, _sender):
-        """Bottom-center of the main screen, remembered for the next launch."""
+        """Bottom-center of the main screen, at the default size, remembered."""
         panel = getattr(self, "mini_panel", None)
         if panel is None:
             return
         x, y = reset_origin(self._visible_screens())
-        panel.setFrameOrigin_(NSMakePoint(x, y))
-        NSUserDefaults.standardUserDefaults().setObject_forKey_(format_origin(x, y), ORIGIN_KEY)
+        w, h = default_size()
+        panel.setFrame_display_(NSMakeRect(x, y, w, h), True)
+        self.layoutMiniBar_(self)
+        defaults = NSUserDefaults.standardUserDefaults()
+        defaults.setObject_forKey_(format_origin(x, y), ORIGIN_KEY)
+        defaults.setObject_forKey_(format_size(w, h), SIZE_KEY)
+
+    def resetMiniBarSize_(self, _sender):
+        """Default width and height. The pill stays where it was dragged."""
+        panel = getattr(self, "mini_panel", None)
+        if panel is None:
+            return
+        frame = panel.frame()
+        w, h = default_size()
+        panel.setFrame_display_(NSMakeRect(float(frame.origin.x), float(frame.origin.y), w, h), True)
+        self.layoutMiniBar_(self)
+        NSUserDefaults.standardUserDefaults().setObject_forKey_(format_size(w, h), SIZE_KEY)
 
     def miniBarChanged_(self, sender):
         enabled = sender.state() == 1
@@ -1187,9 +1233,10 @@ class AppDelegate(NSObject):
     @objc.python_method
     def _build_mini_bar(self):
         """Always-on-top pill. Nonactivating, so typing in it does not raise the main window."""
+        size = remembered_size(NSUserDefaults.standardUserDefaults().stringForKey_(SIZE_KEY))
         style = NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel
         self.mini_panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
-            NSMakeRect(0, 0, BAR_W, BAR_H), style, NSBackingStoreBuffered, False
+            NSMakeRect(0, 0, size[0], size[1]), style, NSBackingStoreBuffered, False
         )
         self.mini_panel.setLevel_(BAR_LEVEL)
         self.mini_panel.setOpaque_(False)
@@ -1218,16 +1265,14 @@ class AppDelegate(NSObject):
         if appearance is not None:
             self.mini_panel.setAppearance_(appearance)
         self.mini_panel.setDelegate_(self)
-        root = MiniBarBackground.alloc().initWithFrame_(NSMakeRect(0, 0, BAR_W, BAR_H))
+        root = MiniBarBackground.alloc().initWithFrame_(NSMakeRect(0, 0, size[0], size[1]))
+        root.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable)
         self.mini_panel.setContentView_(root)
-        frames = bar_controls()
         self.mini_plus = NSButton.buttonWithTitle_target_action_("+", self, "showMain:")
         self.mini_plus.setBordered_(False)
-        self.mini_plus.setFont_(NSFont.systemFontOfSize_weight_(20, 0.3))
         if hasattr(self.mini_plus, "setContentTintColor_"):
             self.mini_plus.setContentTintColor_(NSColor.whiteColor())
         root.addSubview_(self.mini_plus)
-        _place(self.mini_plus, frames["plus"])
         self.mini_field = NSTextField.alloc().initWithFrame_(NSMakeRect(0, 0, 10, 10))
         self.mini_field.setCell_(CenteredFieldCell.alloc().initTextCell_(""))
         self.mini_field.setBezeled_(False)
@@ -1236,13 +1281,11 @@ class AppDelegate(NSObject):
         self.mini_field.setEditable_(True)
         self.mini_field.setSelectable_(True)
         self.mini_field.setPlaceholderString_(PLACEHOLDER)
-        self.mini_field.setFont_(NSFont.systemFontOfSize_(14))
         self.mini_field.setTextColor_(NSColor.whiteColor())
         self.mini_field.setTarget_(self)
         self.mini_field.setAction_("miniSubmit:")
         self.mini_field.setDelegate_(self)
         root.addSubview_(self.mini_field)
-        _place(self.mini_field, frames["field"])
         self.mini_mic = HoldMicButton.alloc().initWithFrame_(NSMakeRect(0, 0, 10, 10))
         self.mini_mic.setBordered_(False)
         self.mini_mic.setTarget_(self)
@@ -1254,13 +1297,14 @@ class AppDelegate(NSObject):
         if symbol is not None:
             self.mini_mic.setImage_(symbol)
             self.mini_mic.setImagePosition_(1)  # image only
+            self.mini_mic.setImageScaling_(NSImageScaleProportionallyUpOrDown)
             if hasattr(self.mini_mic, "setContentTintColor_"):
                 self.mini_mic.setContentTintColor_(NSColor.whiteColor())
         else:
             self.mini_mic.setTitle_("Mic")
         root.addSubview_(self.mini_mic)
-        _place(self.mini_mic, frames["mic"])
         self._mini_mic_held = False
+        self._layout_mini_bar(size[0], size[1])
 
     @objc.python_method
     def _main_on_screen(self):
@@ -1305,9 +1349,13 @@ class AppDelegate(NSObject):
         screens = self._visible_screens()
         if not screens:
             return
-        saved = parse_origin(NSUserDefaults.standardUserDefaults().stringForKey_(ORIGIN_KEY))
-        x, y = place_bar(saved, screens)
-        self.mini_panel.setFrameOrigin_(NSMakePoint(x, y))
+        defaults = NSUserDefaults.standardUserDefaults()
+        saved = parse_origin(defaults.stringForKey_(ORIGIN_KEY))
+        size = remembered_size(defaults.stringForKey_(SIZE_KEY))
+        x, y = place_bar(saved, screens, size)
+        self.mini_panel.setFrame_display_(NSMakeRect(x, y, size[0], size[1]), True)
+        self._layout_mini_bar(size[0], size[1])
+        defaults.setObject_forKey_(format_size(size[0], size[1]), SIZE_KEY)
         self.mini_panel.orderFrontRegardless()
 
     @objc.python_method
@@ -1376,6 +1424,37 @@ class AppDelegate(NSObject):
             return
         origin = panel.frame().origin
         NSUserDefaults.standardUserDefaults().setObject_forKey_(format_origin(origin.x, origin.y), ORIGIN_KEY)
+
+    def windowDidResize_(self, notification):
+        panel = getattr(self, "mini_panel", None)
+        if panel is None or notification.object() != panel:
+            return
+        size = panel.frame().size
+        self._layout_mini_bar(float(size.width), float(size.height))
+        if not panel.isVisible():
+            return
+        NSUserDefaults.standardUserDefaults().setObject_forKey_(
+            format_size(float(size.width), float(size.height)), SIZE_KEY)
+
+    def layoutMiniBar_(self, _sender):
+        panel = getattr(self, "mini_panel", None)
+        if panel is None or not hasattr(self, "mini_field"):
+            return
+        size = panel.frame().size
+        self._layout_mini_bar(float(size.width), float(size.height))
+
+    @objc.python_method
+    def _layout_mini_bar(self, width, height):
+        """Place +, the field, and the mic for this pill size, and scale the type."""
+        if not hasattr(self, "mini_field"):
+            return
+        frames = bar_controls((width, height))
+        metrics = bar_metrics(width, height)
+        _place(self.mini_plus, frames["plus"])
+        self.mini_plus.setFont_(NSFont.systemFontOfSize_weight_(metrics["plus_font"], 0.3))
+        _place(self.mini_field, frames["field"])
+        self.mini_field.setFont_(NSFont.systemFontOfSize_(metrics["field_font"]))
+        _place(self.mini_mic, frames["mic"])
 
     def applicationShouldHandleReopen_hasVisibleWindows_(self, _app, _visible):
         self.showMain_(None)

@@ -2,11 +2,21 @@
 
 No AppKit. The window asks this before it orders the pill on or off, and before
 a Return press is handed to the assistant. A typed line is queued as a normal
-turn, the same path as something she heard. Nothing here opens a socket.
+turn, the same path as something she heard. Size and position are plain
+numbers the window stores. Nothing here opens a socket.
 """
 
 BAR_W = 420.0
 BAR_H = 44.0
+# Wide enough for +, a short command, and the mic. Tall enough that the
+# buttons stay clear of the resize grip. The max keeps a tall pill a pill.
+BAR_MIN_W = 280.0
+BAR_MIN_H = 40.0
+BAR_MAX_W = 720.0
+BAR_MAX_H = 64.0
+# Outer band of the pill. A drag here resizes. Just inside it, the background
+# still moves the pill. The text field and the buttons are inset past this.
+BAR_GRIP = 6.0
 # Visible-frame origin is already above the Dock. The extra gap leaves room
 # for the dictation bubble, which sits in that same bottom-center spot.
 DOCK_GAP = 72.0
@@ -14,6 +24,7 @@ PLACEHOLDER = "Message Jev"
 REPLY_SECONDS = 4.0
 PREF_KEY = "mini_bar_enabled"
 ORIGIN_KEY = "mini_bar_origin"
+SIZE_KEY = "mini_bar_size"
 
 # Status lines worth putting in the field. Idle "ready" lines are not a reply.
 _SHOW_STATES = {
@@ -61,6 +72,44 @@ def format_origin(x, y):
     return f"{float(x):.1f} {float(y):.1f}"
 
 
+def default_size():
+    return (BAR_W, BAR_H)
+
+
+def clamp_size(width, height):
+    """Width and height pulled inside the min and max. The default already is."""
+    return (
+        min(BAR_MAX_W, max(BAR_MIN_W, float(width))),
+        min(BAR_MAX_H, max(BAR_MIN_H, float(height))),
+    )
+
+
+def parse_size(text):
+    """'w h' from preferences, clamped, or None when it is not two numbers."""
+    if text is None:
+        return None
+    parts = str(text).split()
+    if len(parts) != 2:
+        return None
+    try:
+        return clamp_size(float(parts[0]), float(parts[1]))
+    except ValueError:
+        return None
+
+
+def format_size(width, height):
+    w, h = clamp_size(width, height)
+    return f"{w:.1f} {h:.1f}"
+
+
+def remembered_size(text):
+    """Saved size, or the default pill. An out-of-range save is clamped."""
+    size = parse_size(text)
+    if size is None:
+        return default_size()
+    return size
+
+
 def _intersection_area(a, b):
     ax, ay, aw, ah = a
     bx, by, bw, bh = b
@@ -71,10 +120,11 @@ def _intersection_area(a, b):
     return (x2 - x1) * (y2 - y1)
 
 
-def default_origin(visible):
+def default_origin(visible, size=None):
     """Bottom-center of a screen's visible frame (x, y, w, h)."""
+    width, _height = clamp_size(*(size or default_size()))
     vx, vy, vw, _vh = visible
-    return (vx + (vw - BAR_W) / 2.0, vy + DOCK_GAP)
+    return (vx + (vw - width) / 2.0, vy + DOCK_GAP)
 
 
 def _as_screens(visible):
@@ -87,20 +137,22 @@ def _as_screens(visible):
     return [tuple(float(v) for v in screen) for screen in visible]
 
 
-def place_bar(saved, visible):
+def place_bar(saved, visible, size=None):
     """Remembered origin when most of the pill is still on any screen.
 
     `visible` is one screen's visible frame, or several (a second display
     included). An origin that misses every screen is bottom-center of the first.
+    `size` is the pill's width and height. A missing size is the default pill.
     """
     screens = _as_screens(visible)
+    width, height = clamp_size(*(size or default_size()))
     if not screens:
         return (0.0, DOCK_GAP)
-    fallback = default_origin(screens[0])
+    fallback = default_origin(screens[0], (width, height))
     if not saved:
         return fallback
-    frame = (float(saved[0]), float(saved[1]), BAR_W, BAR_H)
-    needed = 0.5 * BAR_W * BAR_H
+    frame = (float(saved[0]), float(saved[1]), width, height)
+    needed = 0.5 * width * height
     if any(_intersection_area(frame, screen) >= needed for screen in screens):
         return (frame[0], frame[1])
     return fallback
@@ -117,14 +169,72 @@ def reset_origin(visible):
     return place_bar(None, visible)
 
 
-def background_action(click_count, x, y, controls=None):
+def resize_edges(x, y, size=None):
+    """Outer edges under the pointer: 'left', 'right', 'bottom', 'top'.
+
+    A corner is two of those. Empty when the pointer is inside the grip, on a
+    control, or the caller has not asked yet. Width and height are the pill.
+    """
+    width, height = clamp_size(*(size or default_size()))
+    edges = set()
+    if width > BAR_GRIP * 2.0:
+        if x < BAR_GRIP:
+            edges.add("left")
+        elif x >= width - BAR_GRIP:
+            edges.add("right")
+    if height > BAR_GRIP * 2.0:
+        if y < BAR_GRIP:
+            edges.add("bottom")
+        elif y >= height - BAR_GRIP:
+            edges.add("top")
+    return frozenset(edges)
+
+
+def resize_frame(frame, edges, start, now):
+    """Pill frame (x, y, w, h) after dragging `edges`. Screen points, y up.
+
+    The edge that was not grabbed stays put. Width and height are clamped, so
+    a hard pull cannot save a size outside the min and max.
+    """
+    x, y, w, h = (float(v) for v in frame)
+    grabbed = set(edges or ())
+    dx = float(now[0]) - float(start[0])
+    dy = float(now[1]) - float(start[1])
+    left, right = x, x + w
+    bottom, top = y, y + h
+    if "left" in grabbed:
+        left += dx
+    if "right" in grabbed:
+        right += dx
+    if "bottom" in grabbed:
+        bottom += dy
+    if "top" in grabbed:
+        top += dy
+    width, height = clamp_size(right - left, top - bottom)
+    if "left" in grabbed and "right" not in grabbed:
+        left = right - width
+    else:
+        right = left + width
+    if "bottom" in grabbed and "top" not in grabbed:
+        bottom = top - height
+    else:
+        top = bottom + height
+    return (left, bottom, width, height)
+
+
+def background_action(click_count, x, y, controls=None, size=None):
     """What a click on the pill does.
 
-    A double-click on the background or an edge recenters the pill. A single
-    click there is a drag. The text field and the buttons keep their own clicks.
+    The outer grip resizes, including a double-click there. A double-click on
+    the background inside that grip recenters the pill and restores its default
+    size. A single click on that background drags. The text field and the
+    buttons keep their own clicks.
     """
-    if hit_control(x, y, controls) is not None:
+    frames = controls if controls is not None else bar_controls(size)
+    if hit_control(x, y, frames) is not None:
         return "control"
+    if resize_edges(x, y, size):
+        return "resize"
     try:
         count = int(click_count)
     except (TypeError, ValueError):
@@ -142,22 +252,47 @@ FULL_SCREEN_AUXILIARY = 256
 BAR_COLLECTION = CAN_JOIN_ALL_SPACES | FULL_SCREEN_AUXILIARY | 16
 
 
-def bar_controls():
+def bar_metrics(width, height):
+    """Button, padding, and font sizes for a pill of this size.
+
+    Height scales the type and the padding. Width gives the extra room to the
+    text field. The default height keeps the original 14pt field and 24pt buttons.
+    """
+    _w, h = clamp_size(width, height)
+    scale = h / BAR_H
+    button = min(30.0, max(20.0, 24.0 * scale))
+    edge = min(14.0, max(8.0, 10.0 * scale))
+    gap = min(10.0, max(6.0, 8.0 * scale))
+    field_h = min(button, max(18.0, 22.0 * scale))
+    return {
+        "button": button,
+        "edge": edge,
+        "gap": gap,
+        "field_h": field_h,
+        "field_font": min(18.0, max(12.0, 14.0 * scale)),
+        "plus_font": min(26.0, max(16.0, 20.0 * scale)),
+    }
+
+
+def bar_controls(size=None):
     """Plus, field, and mic inside the pill. Origin is the pill's bottom left.
 
-    The controls sit inset, so the rounded ends and the bands above and below
-    them are background. Those bands are what a drag grabs. The field is only
-    as tall as one line and is centered, so the placeholder sits in the middle.
+    The controls sit inset past the resize grip, so the rounded ends and the
+    bands above and below them are background. Those bands are what a drag
+    grabs. The outer grip resizes. The field is one line, centered, so the
+    placeholder sits in the middle. A wider pill lengthens the field.
     """
-    button = 24.0
-    edge = 10.0
-    gap = 8.0
-    y = (BAR_H - button) / 2.0
+    width, height = clamp_size(*(size or default_size()))
+    metrics = bar_metrics(width, height)
+    button = metrics["button"]
+    edge = metrics["edge"]
+    gap = metrics["gap"]
+    y = (height - button) / 2.0
     plus = (edge, y, button, button)
-    mic = (BAR_W - edge - button, y, button, button)
-    field_h = 22.0
+    mic = (width - edge - button, y, button, button)
+    field_h = metrics["field_h"]
     field_x = edge + button + gap
-    field = (field_x, (BAR_H - field_h) / 2.0, mic[0] - gap - field_x, field_h)
+    field = (field_x, (height - field_h) / 2.0, mic[0] - gap - field_x, field_h)
     return {"plus": plus, "field": field, "mic": mic}
 
 
