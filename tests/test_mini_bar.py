@@ -30,15 +30,21 @@ from mini_bar import (
     format_size,
     hit_control,
     mic_event,
+    attachments_supported,
     parse_origin,
     parse_size,
+    pill_chrome,
     place_bar,
+    plus_item,
+    plus_menu,
     remembered_size,
     reply_text,
     reset_origin,
     resize_edges,
     resize_frame,
     submission,
+    trailing_symbol,
+    walk_menu,
 )
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -150,7 +156,11 @@ class TestSubmit(unittest.TestCase):
         for banned in ("deminiaturize_", "makeKeyAndOrderFront_", "activateIgnoringOtherApps_", "showMain_"):
             self.assertNotIn(banned, submit)
         self.assertIn("NSWindowStyleMaskNonactivatingPanel", ui)
-        self.assertIn('buttonWithTitle_target_action_("+", self, "showMain:")', ui)
+        build = _func(ui, "_build_mini_bar")
+        self.assertIn('setAction_("miniPlus:")', build)
+        self.assertIn('_set_button_symbol(self.mini_plus, "plus", "More")', build)
+        self.assertNotIn("showMain:", build)
+        self.assertNotIn("NSAppearanceNameDarkAqua", ui)
 
     def test_reply_is_the_status_line_and_only_for_a_moment(self):
         self.assertEqual(reply_text("Speaking", "Spoken on this Mac only"), "Spoken on this Mac only")
@@ -442,3 +452,135 @@ class TestSize(unittest.TestCase):
         self.assertEqual(place_bar((120.0, 400.0), AIR, wide), (120.0, 400.0))
         self.assertEqual(place_bar((AIR[2] - 100.0, 400.0), AIR, wide), fallback)
         self.assertEqual(place_bar((100.0, 200.0), AIR, (10.0, 10.0)), (100.0, 200.0))
+
+
+# Phrases the + menu types, and the local command each one already routes to.
+_MENU_ROUTES = {
+    "brief": "info_brief",
+    "next_shift": "info_next_shift",
+    "leave": "info_leave",
+    "payday": "info_payday_check",
+    "blue_pill": "matrix_on",
+    "red_pill": "matrix_off",
+    "silence": "notify_off",
+    "volume_30": "volume_set",
+    "volume_50": "volume_set",
+    "volume_100": "volume_set",
+    "mute": "volume_mute",
+    "brightness_40": "brightness_set",
+    "brightness_70": "brightness_set",
+    "brightness_100": "brightness_set",
+}
+_MENU_ACTIONS = {
+    "screenshot": "screenshot",
+    "window": "window",
+    "updates": "updates",
+    "reset_position": "reset_position",
+    "reset_size": "reset_size",
+    "settings": "settings",
+}
+
+
+class TestGlass(unittest.TestCase):
+    def test_glass_vibrancy_and_reduce_transparency(self):
+        glass = pill_chrome(True, False)
+        self.assertEqual(glass["material"], "glass")
+        self.assertTrue(glass["highlight"])
+        self.assertTrue(glass["motion"])
+        self.assertFalse(glass["contrast_border"])
+        missing = pill_chrome(False, False, increase_contrast=True)
+        self.assertEqual(missing["material"], "vibrancy")
+        self.assertTrue(missing["contrast_border"])
+        self.assertTrue(missing["motion"])
+        solid = pill_chrome(True, True, increase_contrast=True, reduce_motion=True)
+        self.assertEqual(solid["material"], "solid")
+        self.assertTrue(solid["contrast_border"])
+        self.assertFalse(solid["motion"])
+        self.assertEqual(pill_chrome(False, True)["material"], "solid")
+
+    def test_trailing_symbol_follows_listen_text_and_reply(self):
+        self.assertEqual(trailing_symbol(True, "open Spotify"), "waveform")
+        self.assertEqual(trailing_symbol(False, "  open   Spotify  "), "arrow.up.circle.fill")
+        self.assertEqual(trailing_symbol(False, "   "), "mic.fill")
+        self.assertEqual(trailing_symbol(False, "", ""), "mic.fill")
+        self.assertEqual(trailing_symbol(False, "It's 3:45.", "It's 3:45."), "mic.fill")
+        self.assertEqual(trailing_symbol(True, "It's 3:45.", "It's 3:45."), "waveform")
+
+    def test_plus_menu_routes_to_commands_that_already_exist(self):
+        self.assertFalse(attachments_supported())
+        items = walk_menu()
+        ids = [item["id"] for item in items]
+        self.assertEqual(len(ids), len(set(ids)))
+        self.assertIsNone(plus_item("attach"))
+        attached = plus_menu(can_attach=True)
+        self.assertEqual(plus_item("attach", attached)["kind"], "attach")
+        self.assertEqual(plus_item("attach", attached)["title"], "Attach File\u2026")
+        routed = {}
+        for item in items:
+            self.assertTrue(item["symbol"])
+            phrase = item.get("phrase") or ""
+            self.assertNotIn("my love", phrase.lower())
+            self.assertNotIn("transfer", phrase.lower())
+            self.assertNotIn("send money", phrase.lower())
+            if item["id"] == "window":
+                self.assertEqual(item["key"], "1")
+            else:
+                self.assertEqual(item["key"], "")
+            if item["kind"] == "text":
+                key = commands.route_before_api(phrase)
+                self.assertEqual(key, _MENU_ROUTES[item["id"]], phrase)
+                self.assertNotEqual(key, "info_messages")
+                if key in ("matrix_on", "matrix_off", "notify_off", "volume_set", "volume_mute", "brightness_set"):
+                    self.assertNotIn(key, commands.BRIDGE_ALLOW)
+                routed[item["id"]] = key
+            else:
+                self.assertEqual(item["kind"], _MENU_ACTIONS[item["id"]])
+                self.assertEqual(phrase, "")
+        self.assertEqual(set(routed), set(_MENU_ROUTES))
+        self.assertEqual(plus_item("payday")["phrase"], "payday check")
+        self.assertNotIn("info_messages", [item["id"] for item in items])
+
+    def test_the_pill_source_uses_glass_or_the_hud_fallback(self):
+        ui = open(os.path.join(ROOT, "assistant_ui.py"), encoding="utf-8").read()
+        flags = _func(ui, "_pill_flags")
+        self.assertIn('lookUpClass("NSGlassEffectView")', flags)
+        self.assertIn("pill_chrome(", flags)
+        self.assertIn("accessibilityDisplayShouldReduceTransparency", flags)
+        self.assertIn("accessibilityDisplayShouldIncreaseContrast", flags)
+        self.assertIn("accessibilityDisplayShouldReduceMotion", flags)
+        backing = _func(ui, "_make_backing")
+        self.assertIn('material == "solid"', backing)
+        self.assertIn('material == "glass"', backing)
+        self.assertIn("vibrancy", backing)
+        vibrancy = _func(ui, "_make_vibrancy_backing")
+        self.assertIn("NSVisualEffectMaterialHUDWindow", vibrancy)
+        self.assertIn("NSVisualEffectBlendingModeBehindWindow", vibrancy)
+        self.assertIn("NSVisualEffectStateActive", vibrancy)
+        fade = _func(ui, "_fade_bar")
+        self.assertIn("CASpringAnimation", fade)
+        self.assertIn("setDamping_", fade)
+        self.assertIn("setStiffness_", fade)
+        self.assertIn("NSAnimationContext", fade)
+        hide = _func(ui, "_hide_bar")
+        self.assertIn("motion", hide)
+        self.assertIn("orderOut_", hide)
+        self.assertIn("secondaryLabelColor", _func(ui, "_style_pill_field"))
+        self.assertIn("labelColor", _func(ui, "_style_pill_field"))
+        refresh = _func(ui, "_refresh_trailing_symbol")
+        self.assertIn("trailing_symbol(", refresh)
+        self.assertIn('"arrow.up.circle.fill"', refresh)
+        self.assertIn('"waveform"', open(os.path.join(ROOT, "mini_bar.py"), encoding="utf-8").read())
+        self.assertIn('"mic.fill"', ui)
+        menu = _func(ui, "miniPlusItem_")
+        self.assertIn("_queue_bar_phrase", menu)
+        self.assertIn("_capture_for_bar", menu)
+        self.assertIn("showMain_", menu)
+        self.assertIn('_select_tab("settings")', menu)
+        self.assertIn("checkForUpdates_", menu)
+        self.assertIn("resetMiniBarPosition_", menu)
+        self.assertIn("resetMiniBarSize_", menu)
+        self.assertIn('("text", phrase)', _func(ui, "_queue_bar_phrase"))
+        self.assertIn("take_screenshot", _func(ui, "_capture_for_bar"))
+        self.assertNotIn("NSOpenPanel", ui)
+        self.assertIn('setCornerCurve_("continuous")', ui)
+        self.assertIn("plus_menu()", ui)

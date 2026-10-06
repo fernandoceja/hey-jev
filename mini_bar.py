@@ -252,6 +252,138 @@ FULL_SCREEN_AUXILIARY = 256
 BAR_COLLECTION = CAN_JOIN_ALL_SPACES | FULL_SCREEN_AUXILIARY | 16
 
 
+def attachments_supported():
+    """False. A typed turn is one string, so a picture or a file cannot ride along.
+
+    The + menu therefore saves a screenshot and says so, and it does not offer
+    Attach File. Nothing here calls the network or the Keychain.
+    """
+    return False
+
+
+def pill_chrome(glass_available, reduce_transparency, increase_contrast=False, reduce_motion=False):
+    """Backing for the pill.
+
+    glass: NSGlassEffectView on macOS 26 and later.
+    vibrancy: NSVisualEffectView HUD material, behind the window, when that
+    class is missing.
+    solid: Reduce Transparency. Increase Contrast thickens the hairline.
+    motion is off when Reduce Motion is on, so the pulse and the fade stay still.
+    """
+    if reduce_transparency:
+        material = "solid"
+    elif glass_available:
+        material = "glass"
+    else:
+        material = "vibrancy"
+    return {
+        "material": material,
+        "highlight": True,
+        "contrast_border": bool(increase_contrast),
+        "motion": not bool(reduce_motion),
+    }
+
+
+def trailing_symbol(listening, field_text, shown_reply=""):
+    """SF Symbol for the button on the right of the field.
+
+    Waveform while the mic is down. A send arrow when the field has a command
+    that is not the reply already showing. Otherwise the mic.
+    """
+    if listening:
+        return "waveform"
+    cleaned = " ".join(str(field_text or "").split())
+    reply = " ".join(str(shown_reply or "").split())
+    if cleaned and cleaned != reply:
+        return "arrow.up.circle.fill"
+    return "mic.fill"
+
+
+def _menu_text(item_id, title, phrase, symbol):
+    return {"id": item_id, "title": title, "kind": "text", "phrase": phrase, "symbol": symbol, "key": ""}
+
+
+def _menu_action(item_id, title, kind, symbol, key=""):
+    return {"id": item_id, "title": title, "kind": kind, "phrase": "", "symbol": symbol, "key": key}
+
+
+def plus_menu(can_attach=None):
+    """Items for the + button. Only commands the app already runs.
+
+    `can_attach` defaults to attachments_supported(). Attach File is included
+    only when that is true. Screenshot does not pretend to send the picture.
+    No item sends money or reads My Love.
+    """
+    if can_attach is None:
+        can_attach = attachments_supported()
+    quick = (
+        _menu_text("brief", "Brief Me", "brief me", "newspaper"),
+        _menu_text("next_shift", "Next Shift", "what's my next shift", "calendar"),
+        _menu_text("leave", "When Should I Leave", "when should I leave", "car.fill"),
+        _menu_text("payday", "Payday Check", "payday check", "bell"),
+        {"kind": "separator"},
+        _menu_text("blue_pill", "Blue Pill", "blue pill", "play.rectangle"),
+        _menu_text("red_pill", "Red Pill", "red pill", "stop.rectangle"),
+        _menu_text("silence", "Silence Notifications", "silence notifications", "bell.slash.fill"),
+        {"kind": "separator"},
+        {
+            "id": "volume", "title": "Volume", "kind": "submenu", "symbol": "speaker.wave.2.fill",
+            "items": (
+                _menu_text("volume_30", "Volume 30", "volume to 30", "speaker.wave.1.fill"),
+                _menu_text("volume_50", "Volume 50", "volume to 50", "speaker.wave.2.fill"),
+                _menu_text("volume_100", "Volume 100", "volume to 100", "speaker.wave.3.fill"),
+                _menu_text("mute", "Mute", "mute", "speaker.slash.fill"),
+            ),
+        },
+        {
+            "id": "brightness", "title": "Brightness", "kind": "submenu", "symbol": "sun.max.fill",
+            "items": (
+                _menu_text("brightness_40", "Brightness 40", "brightness to 40", "sun.min.fill"),
+                _menu_text("brightness_70", "Brightness 70", "brightness to 70", "sun.max.fill"),
+                _menu_text("brightness_100", "Brightness 100", "brightness to 100", "sun.max.fill"),
+            ),
+        },
+    )
+    items = [
+        _menu_action("screenshot", "Take Screenshot", "screenshot", "camera.viewfinder"),
+    ]
+    if can_attach:
+        items.append(_menu_action("attach", "Attach File\u2026", "attach", "paperclip"))
+    items.extend((
+        {"kind": "separator"},
+        {"id": "quick", "title": "Quick Commands", "kind": "submenu", "symbol": "bolt.fill", "items": quick},
+        {"kind": "separator"},
+        _menu_action("window", "Open Jev Window", "window", "macwindow", "1"),
+        _menu_action("updates", "Check for Updates\u2026", "updates", "arrow.clockwise"),
+        _menu_action("reset_position", "Reset Mini Bar Position", "reset_position", "arrow.uturn.backward"),
+        _menu_action("reset_size", "Reset Mini Bar Size", "reset_size", "arrow.up.left.and.arrow.down.right"),
+        _menu_action("settings", "Settings\u2026", "settings", "gearshape"),
+    ))
+    return tuple(items)
+
+
+def walk_menu(items=None):
+    """Every real item, with submenu children and without separators."""
+    if items is None:
+        items = plus_menu()
+    found = []
+    for item in items:
+        if item.get("kind") == "separator":
+            continue
+        if item.get("kind") == "submenu":
+            found.extend(walk_menu(item.get("items") or ()))
+            continue
+        found.append(item)
+    return found
+
+
+def plus_item(item_id, items=None):
+    for item in walk_menu(items if items is not None else plus_menu()):
+        if item.get("id") == item_id:
+            return item
+    return None
+
+
 def bar_metrics(width, height):
     """Button, padding, and font sizes for a pill of this size.
 
