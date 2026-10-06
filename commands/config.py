@@ -64,6 +64,8 @@ MY_LOVE_HANDLES = ("+15623616724", "cgarcilazo6724@icloud.com")
 MESSAGES_DB = os.path.expanduser("~/Library/Messages/chat.db")
 
 JEV_DOCS = os.path.expanduser("~/Documents/Jev")
+# Screenshots and screen recordings. Set JEV_CAPTURES_DIR to use another folder.
+CAPTURES_DIR = os.path.expanduser("~/Pictures/Jev Captures")
 NOTES_PATH = os.path.join(JEV_DOCS, "notes.md")
 DUE_PATH = os.path.join(JEV_DOCS, "due.md")
 IHSS_PATH = os.path.join(JEV_DOCS, "ihss_hours.csv")
@@ -419,7 +421,63 @@ STRICT_PATTERNS = (
     (re.compile(rf"^{_PLEASE}(?:turn\s+(?:on|off)\s+)?voice\s+control(?:\s+(?:on|off))?{_TAIL}", re.I), "access_voice_control"),
     (re.compile(rf"^{_PLEASE}(?:what(?:'s| is)\s+(?:my\s+)?battery(?:\s+level)?|how(?:'s| is)\s+my\s+battery|battery\s+level|how\s+much\s+battery(?:\s+do\s+i\s+have)?){_TAIL}", re.I), "info_battery"),
     (re.compile(rf"^{_PLEASE}lock\s+(?:the\s+)?(?:screen|mac|computer){_TAIL}", re.I), "system_lock"),
+    (re.compile(
+        rf"^{_PLEASE}(?:take\s+a\s+screenshot\s+of\s+(?:an?\s+)?(?:area|selection|region)"
+        rf"|screenshot\s+(?:an|the|a)\s+(?:area|selection|region)"
+        rf"|capture\s+(?:an|the|a)\s+(?:area|selection|region)){_TAIL}",
+        re.I), "screenshot_area"),
+    (re.compile(
+        rf"^{_PLEASE}(?:take\s+a\s+screenshot\s+of\s+(?:this|the|a)\s+window"
+        rf"|screenshot\s+(?:this|the|a)\s+window"
+        rf"|capture\s+(?:this|the|a)\s+window){_TAIL}",
+        re.I), "screenshot_window"),
     (re.compile(rf"^{_PLEASE}(?:take\s+(?:a\s+)?screenshot|screenshot|capture\s+the\s+screen){_TAIL}", re.I), "screenshot"),
+    (re.compile(
+        rf"^{_PLEASE}(?:stop\s+(?:the\s+)?(?:screen\s+)?recording){_TAIL}",
+        re.I), "record_stop"),
+    (re.compile(
+        rf"^{_PLEASE}(?:start\s+(?:a\s+)?(?:screen\s+)?recording|record\s+(?:my\s+)?screen)"
+        rf"(?:\s+with\s+(?:the\s+)?(?:mic|audio|microphone))?{_TAIL}",
+        re.I), "record_start"),
+    (re.compile(
+        rf"^{_PLEASE}save\s+(?:it|this|that|the\s+(?:screenshot|recording|capture|picture|video))\s+to\s+notes{_TAIL}",
+        re.I), "capture_note"),
+    (re.compile(
+        rf"^{_PLEASE}email\s+(?:it|this|that|the\s+(?:screenshot|recording|capture|picture|video))(?:\s+to\s+.+)?{_TAIL}",
+        re.I), "capture_email"),
+    (re.compile(
+        rf"^{_PLEASE}(?:text|imessage|i\s*message|message)\s+(?:it|this|that|the\s+(?:screenshot|recording|capture|picture|video))(?:\s+to\s+.+)?{_TAIL}",
+        re.I), "capture_imessage"),
+    (re.compile(
+        rf"^{_PLEASE}show\s+(?:it|this|that|the\s+(?:screenshot|recording|capture))\s+in\s+finder{_TAIL}",
+        re.I), "capture_finder"),
+    (re.compile(
+        rf"^{_PLEASE}copy\s+(?:the\s+)?(?:screenshot|recording|capture|picture|video){_TAIL}",
+        re.I), "capture_copy"),
+    (re.compile(
+        rf"^{_PLEASE}(?:delete|trash)\s+(?:the\s+)?(?:screenshot|recording|capture|picture|video){_TAIL}",
+        re.I), "capture_delete"),
+    (re.compile(
+        rf"^{_PLEASE}ask\s+chat\s*gpt"
+        rf"(?:\s+about\s+(?:this|that|it|the\s+(?:screenshot|recording|picture|photo|video|capture|question)|my\s+question))?{_TAIL}",
+        re.I), "ask_chatgpt"),
+    (re.compile(
+        rf"^{_PLEASE}ask\s+claude"
+        rf"(?:\s+about\s+(?:this|that|it|the\s+(?:screenshot|recording|picture|photo|video|capture|question)|my\s+question))?{_TAIL}",
+        re.I), "ask_claude"),
+    (re.compile(
+        rf"^{_PLEASE}ask\s+gemini"
+        rf"(?:\s+about\s+(?:this|that|it|the\s+(?:screenshot|recording|picture|photo|video|capture|question)|my\s+question))?{_TAIL}",
+        re.I), "ask_gemini"),
+    (re.compile(
+        rf"^{_PLEASE}ask\s+siri"
+        rf"(?:\s+about\s+(?:this|that|it|the\s+(?:screenshot|recording|picture|photo|video|capture|question)|my\s+question))?{_TAIL}",
+        re.I), "ask_siri"),
+    (re.compile(
+        rf"^{_PLEASE}(?:ask\s+google"
+        rf"(?:\s+about\s+(?:this|that|it|the\s+(?:screenshot|recording|picture|photo|video|capture|question)|my\s+question))?"
+        rf"|google\s+(?:this|that|it)|search\s+(?:google|on\s+google)(?:\s+for\s+(?:this|that|it))?){_TAIL}",
+        re.I), "ask_google"),
     (re.compile(rf"^{_PLEASE}empty\s+(?:the\s+)?trash{_TAIL}", re.I), "empty_trash"),
     (re.compile(rf"^{_PLEASE}show\s+(?:me\s+)?(?:the\s+)?desktop{_TAIL}", re.I), "show_desktop"),
     (re.compile(rf"^{_PLEASE}continue(?:\s+(?:in|on|with))?\s+chat\s*gpt{_TAIL}", re.I), "continue_chatgpt"),
@@ -462,6 +520,8 @@ HELP_TEXT = (
     "and bills, log IHSS hours, remind you on payday, save a shift for one day, "
     "and say when to leave for Brea. I can run shortcuts that are in the Jev folder. "
     "I can also help with Zoe. Say blue pill for the Matrix and red pill to leave it. "
+    "I can take a screenshot, record the screen, and open Notes, Mail, or Messages with the file. "
+    "I can open ChatGPT, Claude, Gemini, Siri, or Google with a capture or your last question. "
     "I won't send a message or move money."
 )
 SCHOOL_RE = re.compile(r"(?:#|\b)(?:umgc|school|class)\b", re.I)
