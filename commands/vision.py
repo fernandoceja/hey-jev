@@ -1,24 +1,32 @@
-"""Ask Jev about one capture, using the Anthropic model already configured.
+"""Ask Jev about one capture, using the Claude model already configured.
 
 The call goes to OpenRouter's Anthropic Messages endpoint with the existing
-OpenRouter key and the same model id as ask_llm. Nothing here stores a new
-key. The image is sent only when this function runs. Other handoffs do not
-call it.
+OpenRouter key and the model id from commands.model. Nothing here stores a
+new key. The image is sent only when this function runs. Other handoffs do
+not call it.
 """
 import base64
+import math
 import os
 import time
 
-# Same id as siri.LLM_MODEL. OpenRouter routes it to Anthropic Haiku.
-VISION_MODEL = "anthropic/claude-haiku-4.5"
+from .model import (
+    HAIKU_EFFORT,
+    LONG_EDGE,
+    MAX_TOKENS_VISION,
+    MAX_VISUAL_TOKENS,
+    PATCH,
+    REFUSAL,
+    active_model,
+    openrouter_model,
+    refused,
+    usage_cost,
+)
+
 MESSAGES_URL = "https://openrouter.ai/api/v1/messages"
-LONG_EDGE = 1568
-# Anthropic's image limit. The bytes are checked before the request.
+# Bytes checked before the request. The migration guide did not raise this cap.
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
 DEFAULT_QUESTION = "Describe what's on screen"
-# List price used only when the API omits usage.cost. Input then output, per token.
-_HAIKU_INPUT = 1.0 / 1e6
-_HAIKU_OUTPUT = 5.0 / 1e6
 _MOVIE = (".mov", ".mp4", ".m4v")
 
 
@@ -27,27 +35,57 @@ def vision_question(text):
     return cleaned or DEFAULT_QUESTION
 
 
-def fitted_size(width, height, long_edge=LONG_EDGE):
-    """Width and height with the long edge at most `long_edge`."""
+def visual_tokens(width, height):
+    return int(math.ceil(width / float(PATCH)) * math.ceil(height / float(PATCH)))
+
+
+def fitted_size(width, height, long_edge=LONG_EDGE, max_tokens=MAX_VISUAL_TOKENS):
+    """The size Haiku 5.5 keeps before it pads to a multiple of 28.
+
+    High-resolution tier: neither side's padded edge past 2576, and at most
+    4784 visual tokens. A picture that already fits is unchanged.
+    """
     w = max(0, int(width))
     h = max(0, int(height))
-    long = max(w, h)
-    if long <= long_edge or long <= 0:
+
+    def fits(aw, ah):
+        return (
+            math.ceil(aw / float(PATCH)) * PATCH <= long_edge
+            and math.ceil(ah / float(PATCH)) * PATCH <= long_edge
+            and visual_tokens(aw, ah) <= max_tokens
+        )
+
+    if w <= 0 or h <= 0 or fits(w, h):
         return w, h
-    scale = float(long_edge) / float(long)
-    return max(1, int(round(w * scale))), max(1, int(round(h * scale)))
+    if h > w:
+        tall, wide = fitted_size(h, w, long_edge, max_tokens)
+        return wide, tall
+    ratio = float(w) / float(h)
+    lo, hi = 1, w
+    while lo + 1 < hi:
+        mid = (lo + hi) // 2
+        if fits(mid, max(int(round(mid / ratio)), 1)):
+            lo = mid
+        else:
+            hi = mid
+    return lo, max(int(round(lo / ratio)), 1)
 
 
-def sips_commands(src, dest, qualities=(80, 60, 40)):
-    """JPEG exports, long edge capped. Later commands are lower quality."""
+def sips_commands(src, dest, width=None, height=None, qualities=(80, 60, 40)):
+    """JPEG exports. An exact size uses -z. Otherwise the long edge is capped."""
     commands = []
     for quality in qualities:
-        commands.append([
-            "sips", "-Z", str(LONG_EDGE),
-            "-s", "format", "jpeg",
-            "-s", "formatOptions", str(int(quality)),
-            src, "--out", dest,
-        ])
+        if width and height:
+            resize = ["-z", str(int(height)), str(int(width))]
+        else:
+            resize = ["-Z", str(LONG_EDGE)]
+        commands.append(
+            ["sips"] + resize + [
+                "-s", "format", "jpeg",
+                "-s", "formatOptions", str(int(quality)),
+                src, "--out", dest,
+            ]
+        )
     return commands
 
 
@@ -95,10 +133,15 @@ def media_type_for(path):
 
 
 def vision_body(model, question, image_b64, media_type):
-    """Anthropic Messages body. No tool call and no auto-submit flag."""
+    """Anthropic Messages body. No sampling params, tools, or auto-submit.
+
+    Effort is low so a screen description does not spend max_tokens on thinking.
+    The model id is the OpenRouter slug for whatever Settings selected.
+    """
     return {
-        "model": model or VISION_MODEL,
-        "max_tokens": 300,
+        "model": openrouter_model(model if model is not None else active_model()),
+        "max_tokens": MAX_TOKENS_VISION,
+        "output_config": {"effort": HAIKU_EFFORT},
         "messages": [{
             "role": "user",
             "content": [
@@ -117,28 +160,21 @@ def vision_body(model, question, image_b64, media_type):
 
 
 def vision_cost(usage):
-    """Dollars. Prefer the API's cost. Otherwise Haiku list price from the token counts."""
-    usage = usage or {}
-    if usage.get("cost") is not None:
-        try:
-            return float(usage["cost"])
-        except (TypeError, ValueError):
-            pass
-    try:
-        incoming = float(usage.get("input_tokens") or 0)
-        outgoing = float(usage.get("output_tokens") or 0)
-    except (TypeError, ValueError):
-        return 0.0
-    return incoming * _HAIKU_INPUT + outgoing * _HAIKU_OUTPUT
+    """Dollars. Prefer the API's cost. Otherwise Haiku 5.5 list price."""
+    return usage_cost(usage)
 
 
 def cost_log_line(model, ms, cost):
     """A line the Home 'Spent on Jev' parser already sums (prefix '  jev ', ends with $)."""
-    return "  jev {0} {1}ms  ${2:.6f}".format(model or VISION_MODEL, int(ms), float(cost))
+    shown = model or openrouter_model()
+    return "  jev {0} {1}ms  ${2:.6f}".format(shown, int(ms), float(cost))
 
 
 def parse_messages_response(payload):
+    """Answer text. A leading thinking block is skipped. A refusal is empty."""
     payload = payload or {}
+    if refused(payload):
+        return ""
     content = payload.get("content")
     if isinstance(content, str):
         return content.strip()
@@ -157,12 +193,46 @@ def parse_messages_response(payload):
     return " ".join(part.strip() for part in parts if part and part.strip()).strip()
 
 
+def parse_pixel_size(text):
+    """pixelWidth and pixelHeight from `sips -g`, or None."""
+    width = height = None
+    for line in str(text or "").splitlines():
+        if "pixelWidth" in line:
+            width = _last_int(line)
+        elif "pixelHeight" in line:
+            height = _last_int(line)
+    if width and height:
+        return width, height
+    return None
+
+
+def _last_int(line):
+    digits = ""
+    for piece in str(line).replace(":", " ").split():
+        if piece.isdigit():
+            digits = piece
+    return int(digits) if digits else None
+
+
+def dimension_command(path):
+    return ["sips", "-g", "pixelWidth", "-g", "pixelHeight", path]
+
+
 def prepare_image(path, dest, run, stat):
-    """Write a JPEG at `dest` whose long edge and byte size fit the API."""
+    """Write a JPEG at `dest` that fits the high-resolution tier and the byte cap."""
     runner = run
     size_of = stat or os.path.getsize
+    target = None
+    try:
+        found = parse_pixel_size(runner(dimension_command(path)))
+    except Exception:
+        found = None
+    if found:
+        fitted = fitted_size(*found)
+        if fitted != found:
+            target = fitted
     last = None
-    for command in sips_commands(path, dest):
+    for command in sips_commands(path, dest, *(target or (None, None))):
         try:
             runner(command)
         except Exception as exc:
@@ -231,7 +301,7 @@ def ask_about_capture(path, question="", post=None, key=None, model=None, prepar
         return "I couldn't read that capture."
     if not raw or len(raw) > MAX_IMAGE_BYTES:
         return "That picture is too large to send."
-    body = vision_body(model or VISION_MODEL, question, base64.b64encode(raw).decode("ascii"), media)
+    body = vision_body(model, question, base64.b64encode(raw).decode("ascii"), media)
     poster = post or _post_messages
     started = time.time()
     try:
@@ -239,6 +309,10 @@ def ask_about_capture(path, question="", post=None, key=None, model=None, prepar
     except Exception as exc:
         print("  capture ask failed: {0}".format(exc))
         return "I couldn't ask about that picture. Check the network and try again."
+    if refused(payload):
+        print(cost_log_line(body["model"], int((time.time() - started) * 1000), vision_cost(
+            payload.get("usage") if isinstance(payload, dict) else {})))
+        return REFUSAL
     answer = parse_messages_response(payload) or "I couldn't read an answer."
     usage = payload.get("usage") if isinstance(payload, dict) else {}
     elapsed = int((time.time() - started) * 1000)

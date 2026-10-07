@@ -9,6 +9,18 @@ import numpy as np, requests, sounddevice as sd, soundfile as sf
 from dotenv import load_dotenv
 from pynput import keyboard
 import commands
+from commands.model import (
+    MAX_TOKENS_ANSWER,
+    MAX_TOKENS_REMINDER,
+    MAX_TOKENS_URL,
+    REFUSAL,
+    active_model,
+    chat_body,
+    message_text,
+    openrouter_model,
+    refused,
+    usage_cost,
+)
 from secrets_store import get_secret
 from dictation import Dictation, START as DICTATE_START, paste
 
@@ -227,11 +239,11 @@ def find_url(text):
     if m:
         return "https://" + m[1].lower().rstrip(".,!?")
     r = requests.post("https://openrouter.ai/api/v1/chat/completions", headers={"Authorization": f"Bearer {OR_KEY}"},
-                      json={"model": LLM_MODEL, "max_tokens": 40,
-                            "messages": [{"role": "system", "content": "Reply with only the full https URL of the website the user wants to open, or NONE."},
-                                         {"role": "user", "content": text}]}, timeout=15)
+                      json=chat_body(MAX_TOKENS_URL, [
+                          {"role": "system", "content": "Reply with only the full https URL of the website the user wants to open, or NONE."},
+                          {"role": "user", "content": text}]), timeout=15)
     r.raise_for_status()
-    url = r.json()["choices"][0]["message"]["content"].strip()
+    url = message_text(r.json())
     return url if url.startswith("http") else None
 
 
@@ -586,17 +598,18 @@ def prepare_reminder(t, said):
     try:
         r = requests.post("https://openrouter.ai/api/v1/chat/completions",
                           headers={"Authorization": f"Bearer {OR_KEY}"},
-                          json={"model": LLM_MODEL, "max_tokens": 120, "response_format": {"type": "json_object"},
-                                "messages": [{"role": "system", "content":
+                          json=chat_body(MAX_TOKENS_REMINDER, [
+                              {"role": "system", "content":
                                     local_time_context() +
                                     "The user set a reminder with a voice assistant. Reply with JSON only: "
                                     '{"label": "2 to 4 word name for the task, e.g. Call Sam", '
                                     '"alert": "one short friendly sentence the assistant says out loud when the time is up, '
                                     'speaking to the user, e.g. Hey, it\'s time to give Sam a call."}. '
                                     "The alert may start with one tag from [cheerful] [chuckling] [sighing], or none. No markdown."},
-                                    {"role": "user", "content": said}]}, timeout=30)
+                              {"role": "user", "content": said}],
+                              response_format={"type": "json_object"}), timeout=30)
         r.raise_for_status()
-        raw = r.json()["choices"][0]["message"]["content"]
+        raw = message_text(r.json())
         data = json.loads(raw[raw.index("{"):raw.rindex("}") + 1])
         t["label"] = data.get("label") or t["label"]
         fetch_tts(data["alert"])  # cache the audio now
@@ -689,21 +702,22 @@ def timer_done_line(t):
 
 
 # --------------------------------------------------------------------------- LLM fallback (questions only)
-LLM_MODEL = "anthropic/claude-haiku-4.5"
-
-
 def ask_llm(text):
     t = time.time()
+    body = chat_body(MAX_TOKENS_ANSWER, [
+        {"role": "system", "content": local_time_context() +
+         "You are a voice assistant. Answer in one short spoken sentence, no markdown. "
+         "You may start with exactly one tag from: [chuckling] [laughing] [sighing] [cheerful], or none."},
+        {"role": "user", "content": text}], usage=True)
     r = requests.post("https://openrouter.ai/api/v1/chat/completions",
                       headers={"Authorization": f"Bearer {OR_KEY}"},
-                      json={"model": LLM_MODEL, "max_tokens": 80, "usage": {"include": True},
-                            "messages": [{"role": "system", "content": local_time_context() +
-                                          "You are a voice assistant. Answer in one short spoken sentence, no markdown. "
-                                          "You may start with exactly one tag from: [chuckling] [laughing] [sighing] [cheerful], or none."},
-                                         {"role": "user", "content": text}]}, timeout=30)
+                      json=body, timeout=30)
     r.raise_for_status()
     j = r.json()
-    return j["choices"][0]["message"]["content"].strip(), int((time.time() - t) * 1000), j.get("usage", {}).get("cost")
+    line = message_text(j)
+    if not line and refused(j):
+        line = REFUSAL
+    return line, int((time.time() - t) * 1000), usage_cost(j.get("usage"))
 
 
 # --------------------------------------------------------------------------- Decision
@@ -997,7 +1011,7 @@ def handle(text, stt_ms=None, notify=None, reply_sink=None, quiet=False):
         elif kind == "llm":
             commands.note_question(text)
             line, llm_ms, llm_cost = ask_llm(text)
-            print(f"  llm {LLM_MODEL} {llm_ms}ms  ${llm_cost}")
+            print(f"  llm {openrouter_model(active_model())} {llm_ms}ms  ${llm_cost}")
         else:
             default_line = lambda: say_line(payload[0][3], **payload[0][4]) if len(payload) == 1 else say_line("compound_done")
             # anything that kills the sound or the screen gets the reply first, or she'd mute herself

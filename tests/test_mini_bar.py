@@ -339,20 +339,25 @@ class TestPlacement(unittest.TestCase):
         self.assertIn("SIZE_KEY", ordered)
 
     def test_settings_toggle_sits_under_the_microphone_row(self):
-        for width, height in ((MIN_W, MIN_H), (DEFAULT_W, DEFAULT_H)):
+        for width, height in ((MIN_W, MIN_H), (DEFAULT_W, DEFAULT_H), (900, 600)):
             page = layout_window(width, height)["settings"]
             bounds = page["document"]
             rows = (page["name"], page["hint"], page["popup"], page["message"],
+                    page["model_name"], page["model_hint"], page["model_field"],
                     page["mini_name"], page["mini_hint"], page["mini_toggle"],
                     page["update_name"], page["update_hint"], page["update_button"])
             for rect in rows:
                 self.assertTrue(rects_inside(rect, bounds), (width, rect))
+            self.assertFalse(_overlaps(page["popup"], page["model_field"]))
+            self.assertFalse(_overlaps(page["message"], page["model_name"]))
+            self.assertFalse(_overlaps(page["model_field"], page["mini_name"]))
             self.assertFalse(_overlaps(page["popup"], page["mini_toggle"]))
             self.assertFalse(_overlaps(page["message"], page["mini_name"]))
             self.assertFalse(_overlaps(page["mini_toggle"], page["update_name"]))
             self.assertFalse(_overlaps(page["update_hint"], page["update_button"]))
             # AppKit origin is the bottom, so a lower row has a smaller y.
-            self.assertLess(page["mini_toggle"][1], page["popup"][1])
+            self.assertLess(page["model_field"][1], page["popup"][1])
+            self.assertLess(page["mini_toggle"][1], page["model_field"][1])
             self.assertLess(page["update_button"][1], page["mini_toggle"][1])
 
 

@@ -137,6 +137,7 @@ from mini_bar import (
     TypedHistory,
 )
 from secrets_store import KEY_NAMES, OPTIONAL, get_secret, missing_secrets, save_secret
+from commands.model import CLAUDE_MODEL, MODEL_PREF
 from updates import check_upstream, safe_browser_url
 
 
@@ -919,7 +920,7 @@ class AppDelegate(NSObject):
 
     @objc.python_method
     def _build_settings(self):
-        page = self._page("settings", "Settings", "Pick the microphone Jev listens with. It switches straight away.")
+        page = self._page("settings", "Settings", "Pick the microphone and the Claude model. Both switch straight away.")
         self.settings_name = label("Microphone", NSMakeRect(0, 0, 10, 10), 14, weight=0.6)
         self.settings_hint = label("Plugged in a new one? Restart Jev to see it here.", NSMakeRect(0, 0, 10, 10), 11,
                                    NSColor.secondaryLabelColor(), 0.0)
@@ -931,6 +932,15 @@ class AppDelegate(NSObject):
         page.addSubview_(self.mic_menu)
         self.mic_message = label("", NSMakeRect(0, 0, 10, 10), 12, NSColor.secondaryLabelColor(), 0.0)
         page.addSubview_(self.mic_message)
+        self.model_name = label("Claude model", NSMakeRect(0, 0, 10, 10), 14, weight=0.6)
+        self.model_hint = label("Questions and Ask Jev. Blank keeps Claude Haiku 5.5.", NSMakeRect(0, 0, 10, 10), 11,
+                                NSColor.secondaryLabelColor(), 0.0)
+        page.addSubview_(self.model_name)
+        page.addSubview_(self.model_hint)
+        self.model_field = text_field(NSMakeRect(0, 0, 10, 10), CLAUDE_MODEL)
+        self.model_field.setDelegate_(self)
+        page.addSubview_(self.model_field)
+        self._load_model()
         self.mini_name = label("Mini bar", NSMakeRect(0, 0, 10, 10), 14, weight=0.6)
         self.mini_hint = label("On when this window is minimized or closed. Esc hides it.", NSMakeRect(0, 0, 10, 10), 11,
                                NSColor.secondaryLabelColor(), 0.0)
@@ -976,6 +986,20 @@ class AppDelegate(NSObject):
         NSUserDefaults.standardUserDefaults().setObject_forKey_(self.mic, "mic")
         self.controls.put(("mic", self.mic))
         self._load_mics()
+
+    @objc.python_method
+    def _load_model(self):
+        saved = " ".join(str(NSUserDefaults.standardUserDefaults().stringForKey_(MODEL_PREF) or "").split())
+        if saved == CLAUDE_MODEL:
+            saved = ""
+        self.model_field.setStringValue_(saved)
+
+    @objc.python_method
+    def _save_model(self):
+        raw = " ".join(str(self.model_field.stringValue() or "").split())
+        if raw == CLAUDE_MODEL:
+            raw = ""
+        NSUserDefaults.standardUserDefaults().setObject_forKey_(raw, MODEL_PREF)
 
     @objc.python_method
     def _build_keys(self):
@@ -1106,6 +1130,9 @@ class AppDelegate(NSObject):
             _place(self.settings_hint, page["hint"])
             _place(self.mic_menu, page["popup"])
             _place(self.mic_message, page["message"])
+            _place(self.model_name, page["model_name"])
+            _place(self.model_hint, page["model_hint"])
+            _place(self.model_field, page["model_field"])
             _place(self.mini_name, page["mini_name"])
             _place(self.mini_hint, page["mini_hint"])
             _place(self.mini_toggle, page["mini_toggle"])
@@ -1132,6 +1159,7 @@ class AppDelegate(NSObject):
             self._load_stats()
         if key == "settings":
             self._load_mics()
+            self._load_model()
         for name, page in self.pages.items():
             page.setHidden_(name != key)
         for name, (box, tab) in self.tab_rows.items():
@@ -1704,6 +1732,9 @@ class AppDelegate(NSObject):
         self._apply_bar_visibility()
 
     def control_textView_doCommandBySelector_(self, control, _view, selector):
+        if control == getattr(self, "model_field", None) and str(selector) == "insertNewline:":
+            self._save_model()
+            return True
         if control == getattr(self, "mini_field", None) and str(selector) == "cancelOperation:":
             self.miniDismiss_(control)
             return True
@@ -1712,6 +1743,10 @@ class AppDelegate(NSObject):
     def controlTextDidChange_(self, notification):
         if notification is not None and notification.object() == getattr(self, "mini_field", None):
             self._refresh_trailing_symbol()
+
+    def controlTextDidEndEditing_(self, notification):
+        if notification is not None and notification.object() == getattr(self, "model_field", None):
+            self._save_model()
 
     def windowDidMiniaturize_(self, notification):
         if notification.object() == self.panel:

@@ -626,15 +626,33 @@ class TestChoicesAndAskJev(unittest.TestCase):
         self.assertEqual(commands.route_before_api("ask jev about this"), "ask_jev")
         self.assertEqual(commands.route_before_api("what's on my screen"), "ask_jev")
         self.assertEqual(commands.route_before_api("read my screen"), "screen_speak")
-        from commands.vision import (
-            VISION_MODEL, ask_about_capture, cost_log_line, fitted_size, offer_ask_jev,
-            sips_commands, vision_body, vision_question,
+        from commands.model import (
+            CLAUDE_MODEL, HAIKU_EFFORT, LONG_EDGE, MAX_TOKENS_VISION, OPENROUTER_SLUG,
+            chat_body, configured_model, openrouter_model, token_cost, usage_cost,
         )
-        self.assertEqual(fitted_size(3000, 2000), (1568, 1045))
+        from commands.vision import (
+            ask_about_capture, cost_log_line, fitted_size, offer_ask_jev,
+            sips_commands, vision_body, vision_question, visual_tokens,
+        )
+        self.assertEqual(CLAUDE_MODEL, "claude-haiku-5-5")
+        self.assertEqual(configured_model(""), CLAUDE_MODEL)
+        self.assertEqual(configured_model("  claude-sonnet-5-5  "), "claude-sonnet-5-5")
+        self.assertEqual(openrouter_model(CLAUDE_MODEL), OPENROUTER_SLUG)
+        self.assertEqual(openrouter_model("anthropic/claude-sonnet-5.5"), "anthropic/claude-sonnet-5.5")
+        self.assertEqual(openrouter_model("claude-opus-5-5"), "anthropic/claude-opus-5.5")
+        self.assertAlmostEqual(token_cost(1000, 100), 1000 * 0.10 / 1e6 + 100 * 0.50 / 1e6)
+        self.assertAlmostEqual(token_cost(100001, 10), 100001 * 0.50 / 1e6 + 10 * 2.50 / 1e6)
+        self.assertEqual(usage_cost({"cost": 0.0012}), 0.0012)
+        self.assertEqual(fitted_size(3000, 2000), (2352, 1568))
+        self.assertLessEqual(visual_tokens(*fitted_size(3000, 2000)), 4784)
         self.assertEqual(fitted_size(800, 600), (800, 600))
+        self.assertEqual(fitted_size(1920, 1080), (1920, 1080))
+        self.assertLessEqual(max(fitted_size(4000, 4000)), LONG_EDGE)
         self.assertEqual(vision_question("  "), "Describe what's on screen")
-        self.assertEqual(sips_commands("/tmp/a.png", "/tmp/b.jpg")[0][0], "sips")
-        self.assertIn("1568", sips_commands("/tmp/a.png", "/tmp/b.jpg")[0])
+        resize = sips_commands("/tmp/a.png", "/tmp/b.jpg")[0]
+        self.assertEqual(resize[0], "sips")
+        self.assertIn(str(LONG_EDGE), resize)
+        self.assertEqual(sips_commands("/tmp/a.png", "/tmp/b.jpg", 2352, 1568)[0][1:4], ["-z", "1568", "2352"])
         self.assertTrue(offer_ask_jev("/tmp/a.png", False))
         self.assertFalse(offer_ask_jev("/tmp/a.mov", False))
         self.assertTrue(offer_ask_jev("/tmp/a.mov", True))
@@ -642,31 +660,49 @@ class TestChoicesAndAskJev(unittest.TestCase):
 
         def post(body, key):
             posted.append((body, key))
-            return {"content": [{"type": "text", "text": "A desktop with a calendar."}], "usage": {"cost": 0.0012}}
+            return {"content": [{"type": "thinking", "thinking": ""}, {"type": "text", "text": "A desktop with a calendar."}], "usage": {"cost": 0.0012}}
 
         from io import StringIO
         from contextlib import redirect_stdout
         buf = StringIO()
         with redirect_stdout(buf):
             spoken = ask_about_capture(
-                "/tmp/shot.png", "", post=post, key="test-key",
+                "/tmp/shot.png", "", post=post, key="test-key", model=CLAUDE_MODEL,
                 prepare=lambda path: ("/tmp/shot.jpg", "image/jpeg"),
                 read=lambda path: b"jpeg-bytes",
             )
         self.assertEqual(spoken, "A desktop with a calendar.")
         body, key = posted[0]
         self.assertEqual(key, "test-key")
-        self.assertEqual(body["model"], VISION_MODEL)
+        self.assertEqual(body["model"], OPENROUTER_SLUG)
+        self.assertEqual(body["max_tokens"], MAX_TOKENS_VISION)
+        self.assertEqual(body["output_config"], {"effort": HAIKU_EFFORT})
+        for banned in ("temperature", "top_p", "top_k", "thinking"):
+            self.assertNotIn(banned, body)
         self.assertEqual(body["messages"][0]["content"][1]["text"], "Describe what's on screen")
         self.assertEqual(body["messages"][0]["content"][0]["source"]["data"], __import__("base64").b64encode(b"jpeg-bytes").decode("ascii"))
         self.assertNotIn("tool", body)
         line = buf.getvalue()
         self.assertIn("  jev ", line)
         self.assertAlmostEqual(float(line.rsplit("$", 1)[1]), 0.0012)
-        self.assertTrue(cost_log_line(VISION_MODEL, 1, 0.0012).startswith("  jev "))
+        self.assertTrue(cost_log_line(OPENROUTER_SLUG, 1, 0.0012).startswith("  jev "))
+        chat = chat_body(256, [{"role": "user", "content": "hi"}], model=CLAUDE_MODEL, usage=True)
+        self.assertEqual(chat["model"], OPENROUTER_SLUG)
+        self.assertEqual(chat["reasoning"], {"effort": HAIKU_EFFORT})
+        self.assertNotIn("temperature", chat)
+        self.assertNotIn("top_p", chat)
+        self.assertNotIn("top_k", chat)
         siri = open(os.path.join(ROOT, "siri.py"), encoding="utf-8").read()
-        self.assertIn('LLM_MODEL = "anthropic/claude-haiku-4.5"', siri)
+        self.assertNotIn("claude-haiku-4.5", siri)
+        self.assertIn("chat_body", siri)
         self.assertIn('command[0] == "ask_jev"', siri)
+        model_src = open(os.path.join(ROOT, "commands", "model.py"), encoding="utf-8").read()
+        self.assertIn('CLAUDE_MODEL = "claude-haiku-5-5"', model_src)
+        ui = open(os.path.join(ROOT, "assistant_ui.py"), encoding="utf-8").read()
+        self.assertIn("MODEL_PREF", ui)
+        self.assertIn("_save_model", ui)
+        keys = open(os.path.join(ROOT, "secrets_store.py"), encoding="utf-8").read()
+        self.assertNotIn("ANTHROPIC_API_KEY", keys)
 
         def boom(body, key):
             raise RuntimeError("offline")
@@ -683,7 +719,14 @@ class TestChoicesAndAskJev(unittest.TestCase):
             read=lambda path: b"x",
         ))
         self.assertEqual(called, [])
-        self.assertEqual(vision_body(VISION_MODEL, "", "abc", "image/jpeg")["messages"][0]["content"][1]["text"], "Describe what's on screen")
+        self.assertEqual(vision_body(CLAUDE_MODEL, "", "abc", "image/jpeg")["messages"][0]["content"][1]["text"], "Describe what's on screen")
+        refused = {"stop_reason": "refusal", "content": [{"type": "text", "text": "no"}]}
+        self.assertEqual(ask_about_capture(
+            "/tmp/shot.png", "What is this?", post=lambda body, key: refused, key="test-key",
+            model=CLAUDE_MODEL,
+            prepare=lambda path: ("/tmp/shot.jpg", "image/jpeg"),
+            read=lambda path: b"jpeg-bytes",
+        ), "I can't answer that.")
 
     def test_the_choices_panel_lists_ask_jev_first_and_times_out(self):
         from mini_bar import (
