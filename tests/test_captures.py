@@ -207,6 +207,42 @@ class TestRecording(unittest.TestCase):
         self.assertTrue(book.last["path"].endswith(".mov"))
         self.assertFalse(any(call[0].endswith("ffmpeg") for call in calls))
 
+    def test_an_immediate_exit_logs_stderr_and_checks_tcc(self):
+        from io import StringIO
+
+        class Dead:
+            def __init__(self, err):
+                self.stderr = StringIO(err)
+                self.code = 1
+
+            def poll(self):
+                return self.code
+
+        calls = []
+
+        def run(args, input=None, timeout=30):
+            calls.append(list(args))
+            return ""
+
+        book = CaptureBook()
+        with tempfile.TemporaryDirectory() as folder:
+            spoken = start_screen_recording(
+                "record my screen", folder=folder, when=WHEN, book=book,
+                popen=lambda args: Dead("screencapture: declined TCCs\n"), run=run,
+            )
+        self.assertIn("Privacy pane", spoken)
+        self.assertEqual(calls[0][0], "open")
+        self.assertIsNone(book.recording)
+
+        book = CaptureBook()
+        with tempfile.TemporaryDirectory() as folder:
+            spoken = start_screen_recording(
+                "record my screen", folder=folder, when=WHEN, book=book,
+                popen=lambda args: Dead("could not create movie"), run=lambda *a, **k: "",
+            )
+        self.assertEqual(spoken, "Couldn't start a recording.")
+        self.assertIsNone(book.recording)
+
     def test_popen_failure_opens_privacy(self):
         calls = []
 
@@ -515,9 +551,186 @@ class TestRoutesAndMenu(unittest.TestCase):
         self.assertIn("stop.circle.fill", ui)
         self.assertIn("systemRedColor", ui)
         self.assertIn("showCaptureResult_", ui)
-        self.assertIn("_pop_capture_menu", ui)
+        self.assertIn("_show_capture_choices", ui)
         self.assertIn("take_screenshot", _func(ui, "_capture_for_bar"))
         self.assertEqual(share_with_service.__module__, "commands.captures")
+
+
+class TestChoicesAndAskJev(unittest.TestCase):
+    def test_only_a_tcc_denial_opens_privacy(self):
+        from io import StringIO
+        from contextlib import redirect_stdout
+
+        def denied(args, input=None, timeout=30):
+            if args and args[0] == "screencapture":
+                raise RuntimeError("screencapture: declined TCCs")
+            return ""
+
+        calls = []
+
+        def record(args, input=None, timeout=30):
+            calls.append(list(args))
+            if args and args[0] == "screencapture":
+                raise RuntimeError("screencapture: declined TCCs")
+            return ""
+
+        with tempfile.TemporaryDirectory() as folder:
+            with redirect_stdout(StringIO()):
+                spoken = take_screenshot("full", folder=folder, when=WHEN, run=record, book=CaptureBook())
+        self.assertIn("Privacy pane", spoken)
+        self.assertEqual(calls[-1][0], "open")
+
+        def other(args, input=None, timeout=30):
+            raise RuntimeError("could not create image from display")
+
+        buf = StringIO()
+        with tempfile.TemporaryDirectory() as folder:
+            with redirect_stdout(buf):
+                spoken = take_screenshot("full", folder=folder, when=WHEN, run=other, book=CaptureBook())
+        self.assertEqual(spoken, "Couldn't take a screenshot.")
+        self.assertIn("could not create image", buf.getvalue())
+        self.assertNotIn("Privacy", spoken)
+        self.assertTrue(denied)
+
+    def test_a_recording_error_is_logged_unless_it_is_tcc(self):
+        def popen(args):
+            raise OSError("no space left on device")
+
+        book = CaptureBook()
+        with tempfile.TemporaryDirectory() as folder:
+            spoken = start_screen_recording(
+                "record my screen", folder=folder, when=WHEN, book=book, popen=popen, run=lambda *a, **k: "",
+            )
+        self.assertEqual(spoken, "Couldn't start a recording.")
+        self.assertIsNone(book.recording)
+
+    def test_open_captures_folder_creates_and_reveals_it(self):
+        calls = []
+
+        def run(args, input=None, timeout=30):
+            calls.append(list(args))
+            return ""
+
+        from commands.captures import open_captures_folder
+        with tempfile.TemporaryDirectory() as folder:
+            target = os.path.join(folder, "Jev Captures")
+            spoken = open_captures_folder(folder=target, run=run)
+            self.assertTrue(os.path.isdir(target))
+        self.assertEqual(calls, [["open", target]])
+        self.assertIn("Opening", spoken)
+        self.assertEqual(commands.route_before_api("open my screenshots"), "captures_open")
+        self.assertNotIn("captures_open", commands.BRIDGE_ALLOW)
+        self.assertNotIn("ask_jev", commands.BRIDGE_ALLOW)
+
+    def test_voice_ask_jev_uses_the_last_capture(self):
+        self.assertEqual(commands.route_before_api("ask jev about this"), "ask_jev")
+        self.assertEqual(commands.route_before_api("what's on my screen"), "ask_jev")
+        self.assertEqual(commands.route_before_api("read my screen"), "screen_speak")
+        from commands.vision import (
+            VISION_MODEL, ask_about_capture, cost_log_line, fitted_size, offer_ask_jev,
+            sips_commands, vision_body, vision_question,
+        )
+        self.assertEqual(fitted_size(3000, 2000), (1568, 1045))
+        self.assertEqual(fitted_size(800, 600), (800, 600))
+        self.assertEqual(vision_question("  "), "Describe what's on screen")
+        self.assertEqual(sips_commands("/tmp/a.png", "/tmp/b.jpg")[0][0], "sips")
+        self.assertIn("1568", sips_commands("/tmp/a.png", "/tmp/b.jpg")[0])
+        self.assertTrue(offer_ask_jev("/tmp/a.png", False))
+        self.assertFalse(offer_ask_jev("/tmp/a.mov", False))
+        self.assertTrue(offer_ask_jev("/tmp/a.mov", True))
+        posted = []
+
+        def post(body, key):
+            posted.append((body, key))
+            return {"content": [{"type": "text", "text": "A desktop with a calendar."}], "usage": {"cost": 0.0012}}
+
+        from io import StringIO
+        from contextlib import redirect_stdout
+        buf = StringIO()
+        with redirect_stdout(buf):
+            spoken = ask_about_capture(
+                "/tmp/shot.png", "", post=post, key="test-key",
+                prepare=lambda path: ("/tmp/shot.jpg", "image/jpeg"),
+                read=lambda path: b"jpeg-bytes",
+            )
+        self.assertEqual(spoken, "A desktop with a calendar.")
+        body, key = posted[0]
+        self.assertEqual(key, "test-key")
+        self.assertEqual(body["model"], VISION_MODEL)
+        self.assertEqual(body["messages"][0]["content"][1]["text"], "Describe what's on screen")
+        self.assertEqual(body["messages"][0]["content"][0]["source"]["data"], __import__("base64").b64encode(b"jpeg-bytes").decode("ascii"))
+        self.assertNotIn("tool", body)
+        line = buf.getvalue()
+        self.assertIn("  jev ", line)
+        self.assertAlmostEqual(float(line.rsplit("$", 1)[1]), 0.0012)
+        self.assertTrue(cost_log_line(VISION_MODEL, 1, 0.0012).startswith("  jev "))
+        siri = open(os.path.join(ROOT, "siri.py"), encoding="utf-8").read()
+        self.assertIn('LLM_MODEL = "anthropic/claude-haiku-4.5"', siri)
+        self.assertIn('command[0] == "ask_jev"', siri)
+
+        def boom(body, key):
+            raise RuntimeError("offline")
+
+        self.assertIn("network", ask_about_capture(
+            "/tmp/shot.png", "What is this?", post=boom, key="test-key",
+            prepare=lambda path: ("/tmp/shot.jpg", "image/jpeg"),
+            read=lambda path: b"jpeg-bytes",
+        ).lower())
+        called = []
+        self.assertIn("OpenRouter", ask_about_capture(
+            "/tmp/shot.png", "", post=lambda *a, **k: called.append(a), key="",
+            prepare=lambda path: ("/tmp/shot.jpg", "image/jpeg"),
+            read=lambda path: b"x",
+        ))
+        self.assertEqual(called, [])
+        self.assertEqual(vision_body(VISION_MODEL, "", "abc", "image/jpeg")["messages"][0]["content"][1]["text"], "Describe what's on screen")
+
+    def test_the_choices_panel_lists_ask_jev_first_and_times_out(self):
+        from mini_bar import (
+            CHOICE_SECONDS, TypedHistory, capture_choice_actions, capture_saved,
+            choice_button_frames, choice_due, choice_origin, type_focus_hotkey,
+        )
+        actions = capture_choice_actions(True)
+        self.assertEqual(actions[0]["id"], "ask_jev")
+        self.assertTrue(actions[0]["primary"])
+        self.assertIn("captures_open", [row["id"] for row in actions])
+        frames, _height = choice_button_frames(actions)
+        self.assertEqual(frames[0][0]["id"], "ask_jev")
+        self.assertGreater(frames[0][3], frames[1][3])
+        self.assertFalse(choice_due(0, CHOICE_SECONDS - 0.1, False))
+        self.assertTrue(choice_due(0, CHOICE_SECONDS, False))
+        self.assertFalse(choice_due(0, CHOICE_SECONDS + 5, True))
+        origin = choice_origin((100, 80, 420, 44), (0, 0, 1440, 900), (300, 420))
+        self.assertGreater(origin[1], 80 + 44)
+        self.assertTrue(capture_saved("Saved a full screen screenshot to /tmp."))
+        self.assertTrue(capture_saved("Saved the recording as an MP4 in /tmp."))
+        self.assertFalse(capture_saved("Saved it to a new note in Notes."))
+        hidden = capture_choice_actions(False)
+        self.assertNotEqual(hidden[0]["id"], "ask_jev")
+        self.assertTrue(type_focus_hotkey(38, (1 << 18) | (1 << 19)))
+        self.assertFalse(type_focus_hotkey(38, (1 << 18) | (1 << 19) | (1 << 20)))
+        self.assertFalse(type_focus_hotkey(36, (1 << 18) | (1 << 19)))
+        history = TypedHistory()
+        history.note_request("  what time is it  ")
+        self.assertEqual(history.note_reply("It's 3:45."), "It's 3:45.")
+        self.assertEqual(history.note_reply("It's 3:45."), "")
+        self.assertIn("You: what time is it", history.text())
+        self.assertIn("Jev: It's 3:45.", history.text())
+
+    def test_home_type_field_sits_above_the_cards(self):
+        from assistant_layout import DEFAULT_H, DEFAULT_W, layout_window
+        home = layout_window(DEFAULT_W, DEFAULT_H)["home"]
+        composer = home["composer"]
+        history = home["history"]
+        card = home["cards"][0]["box"]
+        self.assertGreater(composer[1], card[1] + card[3])
+        self.assertGreater(history[1], card[1] + card[3])
+        self.assertGreater(composer[2], 80)
+        doc = home["document"]
+        for rect in (composer, home["composer_send"], home["composer_folder"], history):
+            self.assertGreaterEqual(rect[0], 0)
+            self.assertGreaterEqual(rect[1], 0)
+            self.assertLessEqual(rect[0] + rect[2], doc[2] + 0.1)
 
 
 if __name__ == "__main__":

@@ -20,7 +20,13 @@ BAR_GRIP = 6.0
 # Visible-frame origin is already above the Dock. The extra gap leaves room
 # for the dictation bubble, which sits in that same bottom-center spot.
 DOCK_GAP = 72.0
-PLACEHOLDER = "Message Jev"
+PLACEHOLDER = "Type to Jev\u2026"
+# Control-Option-J. Works while another app is in front, so he can type without speaking.
+TYPE_KEY_CODE = 38
+TYPE_FLAG_CONTROL = 1 << 18
+TYPE_FLAG_OPTION = 1 << 19
+TYPE_FLAG_COMMAND = 1 << 20
+CHOICE_SECONDS = 20.0
 REPLY_SECONDS = 4.0
 PREF_KEY = "mini_bar_enabled"
 ORIGIN_KEY = "mini_bar_origin"
@@ -307,9 +313,156 @@ def _menu_action(item_id, title, kind, symbol, key=""):
     return {"id": item_id, "title": title, "kind": kind, "phrase": "", "symbol": symbol, "key": key}
 
 
+def capture_saved(sentence):
+    """True for a new screenshot or recording, not for a later Notes save."""
+    text = " ".join(str(sentence or "").split())
+    return text.startswith("Saved a ") or text.startswith("Saved the recording")
+
+
+def choice_due(shown_at, now, hovered):
+    """The choices panel closes after CHOICE_SECONDS unless the pointer is over it."""
+    if hovered:
+        return False
+    return float(now) - float(shown_at) >= CHOICE_SECONDS
+
+
+def pointer_inside(point, frame):
+    x, y = point
+    fx, fy, fw, fh = frame
+    return fx <= x < fx + fw and fy <= y < fy + fh
+
+
+def choice_origin(anchor, screen, panel_size, gap=8.0):
+    """Put the panel above the pill, clamped to the visible screen."""
+    px, py, pw, ph = anchor
+    sx, sy, sw, sh = screen
+    width, height = panel_size
+    x = px + (pw - width) / 2.0
+    y = py + ph + gap
+    if y + height > sy + sh - 8.0:
+        y = py - gap - height
+    x = min(max(x, sx + 8.0), sx + sw - width - 8.0)
+    y = min(max(y, sy + 8.0), sy + sh - height - 8.0)
+    return (x, y)
+
+
+def capture_choice_actions(ask_jev=True):
+    """Buttons on the post-capture panel. Ask Jev is first and highlighted."""
+    rows = []
+    if ask_jev:
+        rows.append({
+            "id": "ask_jev", "title": "Ask Jev", "primary": True, "phrase": "",
+        })
+    rows.extend((
+        {"id": "share_notes", "title": "Save to Notes", "primary": False, "phrase": "save it to notes"},
+        {"id": "share_email", "title": "Email draft", "primary": False, "phrase": "email it"},
+        {"id": "share_imessage", "title": "iMessage draft", "primary": False, "phrase": "text it"},
+        {"id": "share_finder", "title": "Show in Finder", "primary": False, "phrase": "show it in finder"},
+        {"id": "share_copy", "title": "Copy", "primary": False, "phrase": "copy the screenshot"},
+        {"id": "share_delete", "title": "Delete", "primary": False, "phrase": "delete the screenshot"},
+        {"id": "ask_siri", "title": "Ask Siri", "primary": False, "phrase": "ask siri about this"},
+        {"id": "ask_google", "title": "Ask Google", "primary": False, "phrase": "google this"},
+        {"id": "ask_gemini", "title": "Ask Gemini", "primary": False, "phrase": "ask gemini about this"},
+        {"id": "ask_chatgpt", "title": "Ask ChatGPT", "primary": False, "phrase": "ask chatgpt about this"},
+        {"id": "ask_claude", "title": "Ask Claude", "primary": False, "phrase": "ask claude about this"},
+        {"id": "captures_open", "title": "Open Captures Folder", "primary": False, "phrase": "open my screenshots"},
+    ))
+    return rows
+
+
+def choice_button_frames(actions, width=300.0, margin=12.0):
+    """(action, x, top, w, h) from the top of the button stack. Ask Jev is full width."""
+    frames = []
+    top = 0.0
+    col_w = (width - 2.0 * margin - 8.0) / 2.0
+    rest = []
+    for action in actions:
+        if action.get("primary"):
+            frames.append((action, margin, top, width - 2.0 * margin, 28.0))
+            top += 34.0
+        else:
+            rest.append(action)
+    index = 0
+    while index < len(rest):
+        action = rest[index]
+        if action["id"] == "captures_open":
+            frames.append((action, margin, top, width - 2.0 * margin, 26.0))
+            top += 32.0
+            index += 1
+            continue
+        frames.append((action, margin, top, col_w, 24.0))
+        nxt = index + 1
+        if nxt < len(rest) and rest[nxt]["id"] != "captures_open":
+            frames.append((rest[nxt], margin + col_w + 8.0, top, col_w, 24.0))
+            index += 2
+        else:
+            index += 1
+        top += 28.0
+    return frames, top
+
+
+def type_focus_hotkey(key_code, flags):
+    """Control-Option-J, without Command, focuses the type field."""
+    try:
+        code = int(key_code)
+        bits = int(flags)
+    except (TypeError, ValueError):
+        return False
+    if code != TYPE_KEY_CODE:
+        return False
+    if not (bits & TYPE_FLAG_CONTROL) or not (bits & TYPE_FLAG_OPTION):
+        return False
+    if bits & TYPE_FLAG_COMMAND:
+        return False
+    return True
+
+
+class TypedHistory:
+    """A short list of typed lines and the replies that came back."""
+
+    def __init__(self, limit=8):
+        self.limit = int(limit)
+        self.rows = []
+        self.pending = ""
+
+    def note_request(self, text):
+        cleaned = " ".join(str(text or "").split())
+        if not cleaned:
+            return ""
+        self.pending = cleaned
+        self.rows.append(("you", cleaned))
+        self._trim()
+        return cleaned
+
+    def note_reply(self, text):
+        """Record one reply for the open request. A second status line does not duplicate it."""
+        if not self.pending:
+            return ""
+        cleaned = " ".join(str(text or "").split())
+        if not cleaned:
+            return ""
+        self.rows.append(("jev", cleaned))
+        self.pending = ""
+        self._trim()
+        return cleaned
+
+    def text(self):
+        lines = []
+        for who, line in self.rows:
+            prefix = "You" if who == "you" else "Jev"
+            lines.append("{0}: {1}".format(prefix, line))
+        return "\n".join(lines)
+
+    def _trim(self):
+        extra = len(self.rows) - self.limit
+        if extra > 0:
+            self.rows = self.rows[extra:]
+
+
 def _capture_follow_rows():
     """Share and Ask rows for the capture that was just saved."""
     return (
+        _menu_action("ask_jev", "Ask Jev", "ask_jev", "sparkles"),
         _menu_action("share_notes", "Save to Notes", "share_notes", "note.text"),
         _menu_action("share_email", "Email\u2026", "share_email", "envelope"),
         _menu_action("share_imessage", "iMessage\u2026", "share_imessage", "message"),
@@ -391,6 +544,7 @@ def plus_menu(can_attach=None, recording=False):
     items = [
         {"id": "shots", "title": "Screenshot", "kind": "submenu", "symbol": "camera.viewfinder", "items": shots},
         record,
+        _menu_action("captures_open", "Open Captures Folder", "captures_open", "folder"),
         {"id": "recent", "title": "Recent Captures", "kind": "submenu", "symbol": "clock", "items": _capture_follow_rows()},
         {
             "id": "ask_question",

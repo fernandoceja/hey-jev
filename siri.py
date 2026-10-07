@@ -389,6 +389,8 @@ ACTIONS = {
     "ask_gemini": lambda _arg, text: commands.ask_from_text(text),
     "ask_siri": lambda _arg, text: commands.ask_from_text(text),
     "ask_google": lambda _arg, text: commands.ask_from_text(text),
+    "ask_jev": lambda _arg, text: commands.ask_jev_from_text(text),
+    "captures_open": lambda _arg, _text: commands.open_captures_folder(),
     "empty_trash": lambda _arg, _text: commands.empty_trash(),
     "show_desktop": lambda _arg, _text: commands.show_desktop(),
     "folder_open": lambda _arg, text: commands.open_folder_from_text(text),
@@ -1064,6 +1066,17 @@ def handle(text, stt_ms=None, notify=None, reply_sink=None, quiet=False):
         return "expect_reply"
 
 
+def _ask_jev_turn(question, notify):
+    """The one capture action that uploads a picture, and only because he asked."""
+    try:
+        line = commands.ask_jev_from_text("", question=question)
+    except Exception as exc:
+        print("  capture ask failed: {0}".format(exc))
+        line = "I couldn't ask about that picture. Check the network and try again."
+    say(line, notify)
+    emit(notify, "Ready", line)
+
+
 def say(line, notify):
     print(f"  say: {line}")
     emit(notify, "Speaking", line)
@@ -1463,10 +1476,14 @@ def run_voice_assistant(notify=None, controls=None, mode="ptt", mic=""):
             elif command == "release":
                 stop_recording()
             elif isinstance(command, tuple) and command[0] == "text":
-                # Mini bar. Same turn as a voice command, including TypeSafe or the
-                # LLM when nothing local matches. Does not ask the window to come forward.
+                # Mini bar and the Home field. Same turn as a voice command, including
+                # TypeSafe or the LLM when nothing local matches. Does not ask the
+                # window to come forward.
                 typed = str(command[1] if len(command) > 1 else "")
                 threading.Thread(target=run_turn, args=(typed, None), daemon=True).start()
+            elif isinstance(command, tuple) and command[0] == "ask_jev":
+                question = str(command[1] if len(command) > 1 else "")
+                threading.Thread(target=_ask_jev_turn, args=(question, notify), daemon=True).start()
 
     if rec.wake:
         threading.Event().wait()

@@ -192,7 +192,7 @@ class TestSubmit(unittest.TestCase):
 class TestPlacement(unittest.TestCase):
     def test_default_is_bottom_center_above_the_dock(self):
         self.assertEqual((BAR_W, BAR_H), (420.0, 44.0))
-        self.assertEqual(PLACEHOLDER, "Message Jev")
+        self.assertEqual(PLACEHOLDER, "Type to Jev\u2026")
         x, y = place_bar(None, AIR)
         self.assertEqual(x, AIR[0] + (AIR[2] - BAR_W) / 2)
         self.assertEqual(y, AIR[1] + DOCK_GAP)
@@ -499,6 +499,8 @@ _CAPTURE_MENU_IDS = (
     "ask_question_gemini",
     "ask_question_siri",
     "ask_question_google",
+    "ask_jev",
+    "captures_open",
 )
 
 
@@ -615,7 +617,12 @@ class TestGlass(unittest.TestCase):
         self.assertIn("showCaptureResult_", ui)
         self.assertIn("stop.circle.fill", ui)
         self.assertIn("systemRedColor", ui)
-        self.assertIn("capture_follow_up_items", ui)
+        self.assertIn("_show_capture_choices", ui)
+        self.assertIn("Type to Jev", ui)
+        self.assertIn("homeSubmit:", ui)
+        self.assertIn("focusTypeField:", ui)
+        self.assertIn("setBezeled_(True)", _func(ui, "_build_mini_bar"))
+        self.assertIn("addGlobalMonitorForEventsMatchingMask_handler_", ui)
         self.assertNotIn("NSOpenPanel", ui)
         self.assertIn('setCornerCurve_("continuous")', ui)
         self.assertIn("plus_menu(recording=", ui)

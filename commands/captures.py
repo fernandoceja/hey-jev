@@ -22,6 +22,9 @@ from datetime import datetime
 import os
 import signal
 import subprocess
+import tempfile
+import threading
+import time
 from urllib.parse import quote
 
 from .config import CAPTURES_DIR
@@ -29,7 +32,8 @@ from .config import CAPTURES_DIR
 _AUTO = object()
 PRIVACY_URL = "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_ScreenCapture"
 MESSAGE_SERVICE = "com.apple.share.Messages.compose"
-_PERM_WORDS = ("screen recording", "not permitted", "not authorized", "could not create", "operation not permitted")
+# Real TCC denials. A generic screencapture failure is not one of these.
+_TCC_WORDS = ("declined tcc", "not authorized", "not permitted")
 _FFMPEG_PATHS = ("/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg")
 
 
@@ -116,15 +120,27 @@ def _apple_quote(path):
 
 def _run_capture(args, input=None, timeout=30):
     result = subprocess.run(list(args), input=input, capture_output=True, text=True, timeout=timeout)
+    err = (result.stderr or "").strip()
+    if err:
+        print("  capture stderr: {0}".format(err))
     if result.returncode:
         detail = (result.stderr or result.stdout or "command failed").strip()
         raise RuntimeError(detail)
     return result.stdout or ""
 
 
+def permission_failure(text):
+    """True only for a Screen Recording TCC denial, not every screencapture error."""
+    lowered = str(text or "").lower()
+    return any(word in lowered for word in _TCC_WORDS)
+
+
 def _permission_failure(exc):
-    text = str(exc or "").lower()
-    return any(word in text for word in _PERM_WORDS)
+    return permission_failure(exc)
+
+
+def _log_capture(kind, detail):
+    print("  capture {0} failed: {1}".format(kind, detail or "command failed"))
 
 
 def _open_privacy(run):
@@ -158,19 +174,65 @@ def take_screenshot(mode="full", folder=None, when=None, run=None, book=None, en
     try:
         runner(screenshot_command(mode, path), timeout=timeout)
     except Exception as exc:
-        if mode == "full" or _permission_failure(exc):
+        detail = str(exc).strip() or "command failed"
+        _log_capture("screenshot", detail)
+        if permission_failure(detail):
             opened = _open_privacy(runner)
             if opened:
                 return "I couldn't take a screenshot. Allow Screen Recording for Hey Jev. I opened the Privacy pane."
             return "I couldn't take a screenshot. Allow Screen Recording for Hey Jev."
-        return "Cancelled."
+        if mode != "full":
+            return "Cancelled."
+        return "Couldn't take a screenshot."
     target = book if book is not None else BOOK
     target.remember(path, "screenshot")
     return _saved_sentence(mode, path)
 
 
 def _popen(args):
-    return subprocess.Popen(list(args), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    """stderr is a pipe so a denial can be logged. The caller drains it."""
+    return subprocess.Popen(list(args), stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+
+
+def _drain_stderr(proc):
+    stream = getattr(proc, "stderr", None)
+    if stream is None:
+        return
+    try:
+        err = stream.read()
+    except Exception:
+        return
+    text = str(err or "").strip()
+    if text:
+        print("  capture stderr: {0}".format(text))
+
+
+def _early_exit(proc):
+    """Return code if screencapture quit immediately, else None while it is still recording."""
+    poll = getattr(proc, "poll", None)
+    if not callable(poll):
+        return None
+    try:
+        code = poll()
+    except Exception:
+        return None
+    if code is not None:
+        return code
+    time.sleep(0.25)
+    try:
+        return poll()
+    except Exception:
+        return None
+
+
+def _read_stderr(proc):
+    stream = getattr(proc, "stderr", None)
+    if stream is None:
+        return ""
+    try:
+        return str(stream.read() or "")
+    except Exception:
+        return ""
 
 
 def start_screen_recording(text="", folder=None, when=None, book=None, popen=None, env=None, run=None):
@@ -186,9 +248,23 @@ def start_screen_recording(text="", folder=None, when=None, book=None, popen=Non
     args = recording_command(path, mic=mic)
     try:
         proc = (popen or _popen)(args)
-    except Exception:
-        _open_privacy(run or _run_capture)
-        return "I couldn't start a recording. Allow Screen Recording for Hey Jev. I opened the Privacy pane."
+    except Exception as exc:
+        detail = str(exc).strip() or "command failed"
+        _log_capture("recording", detail)
+        if permission_failure(detail):
+            _open_privacy(run or _run_capture)
+            return "I couldn't start a recording. Allow Screen Recording for Hey Jev. I opened the Privacy pane."
+        return "Couldn't start a recording."
+    code = _early_exit(proc)
+    if code is not None:
+        detail = _read_stderr(proc).strip() or "screencapture exited {0}".format(code)
+        _log_capture("recording", detail)
+        if permission_failure(detail):
+            _open_privacy(run or _run_capture)
+            return "I couldn't start a recording. Allow Screen Recording for Hey Jev. I opened the Privacy pane."
+        return "Couldn't start a recording."
+    if getattr(proc, "stderr", None) is not None:
+        threading.Thread(target=_drain_stderr, args=(proc,), daemon=True).start()
     target.recording = {
         "path": path,
         "started": when.timestamp(),
@@ -677,6 +753,69 @@ def ask_from_text(text, book=None, run=None):
     return execute_ask(plan, run=run)
 
 
+def open_captures_folder(folder=None, run=None, env=None):
+    """Create the captures folder if needed and reveal it in Finder."""
+    dest = captures_folder(override=folder, env=env)
+    os.makedirs(dest, exist_ok=True)
+    runner = run or _run_capture
+    try:
+        runner(["open", dest])
+    except Exception:
+        return "I couldn't open the captures folder."
+    return "Opening your captures folder."
+
+
+def prepare_capture_still(path, run=None, ffmpeg=_AUTO):
+    """One JPEG the vision call can send. Recordings use the middle frame."""
+    from .vision import (
+        duration_command,
+        frame_command,
+        is_movie,
+        media_type_for,
+        middle_second,
+        prepare_image,
+    )
+    runner = run or _run_capture
+    work = tempfile.mkdtemp(prefix="jev-ask-")
+    source = path
+    if is_movie(path):
+        tool = find_ffmpeg() if ffmpeg is _AUTO else (ffmpeg or "")
+        if not tool:
+            raise RuntimeError("no ffmpeg for a recording")
+        frame = os.path.join(work, "frame.png")
+        probe = os.path.join(os.path.dirname(tool), "ffprobe")
+        duration = runner(duration_command(probe, path))
+        runner(frame_command(tool, path, frame, middle_second(duration)))
+        source = frame
+    dest = os.path.join(work, "ask.jpg")
+    prepare_image(source, dest, runner, os.path.getsize)
+    return dest, media_type_for(dest)
+
+
+def ask_jev_from_text(text, book=None, question=None, post=None, key=None, run=None, prepare=None, ffmpeg=_AUTO):
+    """Look at the last capture. Voice uses the default question. He has to ask."""
+    from .vision import ask_about_capture, is_movie
+    target = book if book is not None else BOOK
+    path = _require_capture(target)
+    if not path:
+        return "Take a screenshot or record the screen first."
+    if prepare is None and is_movie(path):
+        tool = find_ffmpeg() if ffmpeg is _AUTO else (ffmpeg or "")
+        if not tool:
+            return "I can describe a screenshot. This capture is a recording."
+
+    def _prepare(image_path):
+        return prepare_capture_still(image_path, run=run, ffmpeg=ffmpeg)
+
+    return ask_about_capture(
+        path,
+        "" if question is None else question,
+        post=post,
+        key=key,
+        prepare=prepare or _prepare,
+    )
+
+
 def run_capture_menu(kind, book=None, run=None, popen=None, share=None, ffmpeg=_AUTO):
     """One + menu or follow-up row. kind matches the menu item id."""
     target = book if book is not None else BOOK
@@ -716,6 +855,10 @@ def run_capture_menu(kind, book=None, run=None, popen=None, share=None, ffmpeg=_
         if not path:
             return "Take a screenshot or record the screen first."
         return delete_capture(path, run=run, book=target)
+    if kind == "captures_open":
+        return open_captures_folder(run=run)
+    if kind == "ask_jev":
+        return ask_jev_from_text("ask jev about this", book=target, run=run, ffmpeg=ffmpeg)
     if kind.startswith("ask_capture_"):
         name = kind.split("_")[-1]
         return ask_from_text("ask {0} about this".format(name), book=target, run=run)
@@ -742,4 +885,6 @@ CAPTURE_ROUTE_KEYS = (
     "ask_gemini",
     "ask_siri",
     "ask_google",
+    "ask_jev",
+    "captures_open",
 )
