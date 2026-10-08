@@ -227,3 +227,56 @@ class TestBridgeValidation(unittest.TestCase):
         self.assertIsNone(commands.bridge_allowed("check my messages from My Love"))
         self.assertIsNone(commands.bridge_allowed("move $600 to Zoe"))
         self.assertIsNone(commands.bridge_allowed("confirm the transfer"))
+
+    def test_video_quick_actions_are_refused(self):
+        """Video commands are Mac-only. A signed inbox file never reaches run_text."""
+        from commands.video import VIDEO_ROUTE_KEYS
+
+        bridge_src = open(os.path.join(os.path.dirname(__file__), "..", "commands", "bridge.py"), encoding="utf-8").read()
+        for key in VIDEO_ROUTE_KEYS:
+            self.assertNotIn(key, commands.BRIDGE_ALLOW, key)
+            self.assertNotIn(key, bridge_src, key)
+        phrases = (
+            ("convert the recording to mp4", "video_mp4"),
+            ("convert the last recording to mp4", "video_mp4"),
+            ("convert this video to mp4", "video_mp4"),
+            ("convert the video to an mp4", "video_mp4"),
+            ("make the recording an mp4", "video_mp4"),
+            ("please convert the last recording to mp4", "video_mp4"),
+            ("trim the recording from 0:05 to 0:30", "video_trim"),
+            ("trim the last recording from 0:05 to 0:30", "video_trim"),
+            ("trim this video from 1:02:03 to 1:10:00", "video_trim"),
+            ("trim the video from 5 to 30", "video_trim"),
+            ("trim it from 0:05 to 0:30", "video_trim"),
+            ("please trim the recording from 0:05 to 0:30", "video_trim"),
+            ("compress the recording", "video_compress"),
+            ("compress the last recording", "video_compress"),
+            ("compress this video", "video_compress"),
+            ("compress the video", "video_compress"),
+            ("make the recording smaller", "video_compress"),
+            ("make the last recording smaller", "video_compress"),
+            ("extract the audio from the recording", "video_audio"),
+            ("extract audio from the recording", "video_audio"),
+            ("extract the audio from the last recording", "video_audio"),
+            ("extract audio from the last recording", "video_audio"),
+            ("extract the audio from this video", "video_audio"),
+            ("save the audio from the recording", "video_audio"),
+            ("save the audio from the last recording", "video_audio"),
+            ("choose a video", "video_choose"),
+            ("choose a video file", "video_choose"),
+            ("pick a video", "video_choose"),
+            ("pick a video file", "video_choose"),
+            ("open a video file", "video_choose"),
+            ("please choose a video", "video_choose"),
+        )
+        for index, (phrase, key) in enumerate(phrases):
+            nonce = "vqa{0:05d}".format(index)
+            self.assertEqual(commands.route_before_api(phrase), key, phrase)
+            self.assertIsNone(commands.bridge_allowed(phrase), phrase)
+            self.assertNotIn(key, commands.BRIDGE_ALLOW, phrase)
+            calls, path = self._process(phrase, nonce, name=nonce + ".json")
+            self.assertEqual(calls, [], phrase)
+            self.assertFalse(os.path.exists(path), phrase)
+            reply = self._reply(nonce)
+            self.assertFalse(reply["ok"], phrase)
+            self.assertIn("can't do that from your phone", reply["reply"].lower(), phrase)

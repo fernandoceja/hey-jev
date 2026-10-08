@@ -119,9 +119,9 @@ from mini_bar import (
     pill_chrome,
     capture_choice_actions,
     capture_saved,
-    choice_button_frames,
     choice_due,
     choice_origin,
+    choice_panel_box,
     pointer_inside,
     place_bar,
     plus_item,
@@ -2141,6 +2141,12 @@ class AppDelegate(NSObject):
             mode = {"screenshot_area": "area", "screenshot_window": "window"}.get(kind, "full")
             threading.Thread(target=self._capture_for_bar, args=(mode,), daemon=True).start()
             return
+        if kind == "video_choose":
+            self.chooseVideoFile_(sender)
+            return
+        if str(kind).startswith("video_"):
+            threading.Thread(target=self._run_video_kind, args=(str(kind),), daemon=True).start()
+            return
         if kind in ("record_start", "record_stop", "share_notes", "share_email", "share_imessage",
                     "share_finder", "share_copy", "share_delete", "captures_open", "ask_jev") or str(kind).startswith("ask_"):
             threading.Thread(target=self._run_capture_kind, args=(str(kind),), daemon=True).start()
@@ -2194,6 +2200,30 @@ class AppDelegate(NSObject):
             print(f"  mini bar capture failed: {exc}")
         self.performSelectorOnMainThread_withObject_waitUntilDone_("showCaptureResult:", str(sentence or ""), False)
 
+    def _run_video_kind(self, kind):
+        """Export on this background thread, then show the finished sentence."""
+        try:
+            import commands
+            sentence = commands.video_from_text(str(kind), "")
+        except Exception as exc:
+            sentence = "Couldn't do that."
+            print(f"  mini bar video failed: {exc}")
+        self.performSelectorOnMainThread_withObject_waitUntilDone_("showCaptureResult:", str(sentence or ""), False)
+
+    def chooseVideoFile_(self, _sender):
+        """Open panel on the main thread. The picker itself lives in commands.video."""
+        try:
+            import commands
+            sentence = commands.choose_video()
+            chosen = getattr(commands.BOOK, "video", None)
+        except Exception as exc:
+            sentence = "I couldn't open the video picker."
+            chosen = None
+            print(f"  mini bar video picker failed: {exc}")
+        self._show_bar_reply(str(sentence or ""))
+        if chosen:
+            self._show_capture_choices()
+
     def showCaptureResult_(self, sentence):
         self._show_bar_reply(str(sentence or ""))
         self._sync_recording_ui()
@@ -2236,7 +2266,11 @@ class AppDelegate(NSObject):
         if not path:
             return
         from commands.vision import offer_ask_jev
+        from commands.video import is_video_extension
         ask = offer_ask_jev(path, bool(commands.find_ffmpeg()))
+        video = is_video_extension(path)
+        actions = capture_choice_actions(ask_jev=ask, video=video)
+        box = choice_panel_box(actions)
         panel = getattr(self, "choice_panel", None)
         if panel is not None and panel.isVisible() and getattr(self, "_choice_path", "") == path:
             return
@@ -2244,11 +2278,11 @@ class AppDelegate(NSObject):
         self._choice_shown_at = time.time()
         if panel is None:
             panel = self._build_choice_panel()
-        self._fill_choice_panel(path, ask)
         screens = self._visible_screens() or [(0.0, 0.0, 1440.0, 900.0)]
-        size = (300.0, 420.0)
+        size = box["size"]
         origin = choice_origin(self._capture_anchor(), screens[0], size)
         panel.setFrame_display_(NSMakeRect(origin[0], origin[1], size[0], size[1]), True)
+        self._fill_choice_panel(path, ask, box)
         panel.orderFrontRegardless()
 
     @objc.python_method
@@ -2285,7 +2319,7 @@ class AppDelegate(NSObject):
         return panel
 
     @objc.python_method
-    def _fill_choice_panel(self, path, ask_jev):
+    def _fill_choice_panel(self, path, ask_jev, box=None):
         self.choice_name.setStringValue_(os.path.basename(path))
         image = NSImage.alloc().initWithContentsOfFile_(path)
         if image is not None:
@@ -2299,8 +2333,26 @@ class AppDelegate(NSObject):
         self.choice_answer.setStringValue_("")
         for view in list(self.choice_buttons.subviews()):
             view.removeFromSuperview()
-        actions = capture_choice_actions(ask_jev=ask_jev)
-        frames, _height = choice_button_frames(actions, 300.0)
+        if box is None:
+            from commands.video import is_video_extension
+            actions = capture_choice_actions(ask_jev=ask_jev, video=is_video_extension(path))
+            box = choice_panel_box(actions)
+        panel = getattr(self, "choice_panel", None)
+        if panel is not None:
+            frame = panel.frame()
+            width, height = box["size"]
+            panel.setFrame_display_(
+                NSMakeRect(float(frame.origin.x), float(frame.origin.y), width, height), False)
+            root = panel.contentView()
+            if root is not None:
+                root.setFrame_(NSMakeRect(0, 0, width, height))
+        name = box["name"]
+        image_box = box["image"]
+        buttons = box["buttons"]
+        self.choice_name.setFrame_(NSMakeRect(name[0], name[1], name[2], name[3]))
+        self.choice_image.setFrame_(NSMakeRect(image_box[0], image_box[1], image_box[2], image_box[3]))
+        self.choice_buttons.setFrame_(NSMakeRect(buttons[0], buttons[1], buttons[2], buttons[3]))
+        frames = box["frames"]
         host_h = float(self.choice_buttons.frame().size.height)
         for action, x, top, width, height in frames:
             y = host_h - top - height
@@ -2334,6 +2386,9 @@ class AppDelegate(NSObject):
 
     @objc.python_method
     def _queue_choice(self, ident):
+        if str(ident).startswith("video_"):
+            threading.Thread(target=self._run_video_kind, args=(str(ident),), daemon=True).start()
+            return
         actions = {row["id"]: row for row in capture_choice_actions(ask_jev=True)}
         action = actions.get(ident)
         if not action or not action.get("phrase"):
