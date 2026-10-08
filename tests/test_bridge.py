@@ -236,7 +236,15 @@ class TestBridgeValidation(unittest.TestCase):
         """
         marker = "MARKER-clipboard-body-not-for-icloud"
         commands.CLIPBOARD.clear_items()
-        self.addCleanup(commands.CLIPBOARD.clear_items)
+        commands.CLIPBOARD.last_change = None
+        commands.CLIPBOARD.paused = False
+
+        def _reset():
+            commands.CLIPBOARD.clear_items()
+            commands.CLIPBOARD.last_change = None
+            commands.CLIPBOARD.paused = False
+
+        self.addCleanup(_reset)
         from commands.clipboard_history import Snapshot
         self.assertEqual(commands.CLIPBOARD.observe(Snapshot(1, marker)), "stored")
         phrases = (
@@ -276,3 +284,196 @@ class TestBridgeValidation(unittest.TestCase):
 
         bridge._process_bridge_file(path, run_text)
         return calls, path
+
+    def test_zoe_mode_cannot_be_entered_or_left_from_the_phone(self):
+        """Zoe mode keys are not on BRIDGE_ALLOW. A signed file never reaches run_text."""
+        phrases = (
+            ("zoe mode", "zoemode1", "zoe_mode_on"),
+            ("kid mode", "kidmode1", "zoe_mode_on"),
+            ("kid mode on", "kidon001", "zoe_mode_on"),
+            ("turn on zoe mode", "turnonz1", "zoe_mode_on"),
+            ("turn on kid mode", "turnonk1", "zoe_mode_on"),
+            ("start zoe mode", "startzo1", "zoe_mode_on"),
+            ("enter zoe mode", "enterzo1", "zoe_mode_on"),
+            ("zoe mode on", "zoemode2", "zoe_mode_on"),
+            ("exit zoe mode", "exitzom1", "zoe_mode_off"),
+            ("leave zoe mode", "leavezo1", "zoe_mode_off"),
+            ("turn off zoe mode", "offfzoe1", "zoe_mode_off"),
+            ("turn off kid mode", "offkidm1", "zoe_mode_off"),
+            ("kid mode off", "kidoff01", "zoe_mode_off"),
+            ("stop zoe mode", "stopzoe1", "zoe_mode_off"),
+            ("end zoe mode", "endzoe01", "zoe_mode_off"),
+            ("leave kid mode", "leavekd1", "zoe_mode_off"),
+            ("stop kid mode", "stopkid1", "zoe_mode_off"),
+            ("joke", "jokephr1", "zoe_joke"),
+            ("tell a joke", "tellajk1", "zoe_joke"),
+            ("tell me a joke", "telljok1", "zoe_joke"),
+            ("tell zoe a joke", "zoejoke1", "zoe_joke"),
+            ("fun fact", "funfact1", "zoe_joke"),
+            ("a fun fact", "afunfact", "zoe_joke"),
+            ("tell me a fun fact", "funfact2", "zoe_joke"),
+        )
+        self.assertIsInstance(commands.BRIDGE_ALLOW, frozenset)
+        for key in ("zoe_mode_on", "zoe_mode_off", "zoe_joke"):
+            self.assertNotIn(key, commands.BRIDGE_ALLOW, key)
+        self.assertNotIn("info_messages", commands.BRIDGE_ALLOW)
+        for phrase, nonce, key in phrases:
+            self.assertEqual(commands.route_before_api(phrase), key, phrase)
+            self.assertIsNone(commands.bridge_allowed(phrase), phrase)
+            calls, path = self._process(phrase, nonce, name=nonce + ".json")
+            self.assertEqual(calls, [], phrase)
+            self.assertFalse(os.path.exists(path))
+            reply = self._reply(nonce)
+            self.assertFalse(reply["ok"], phrase)
+            self.assertIn("can't do that from your phone", reply["reply"].lower())
+
+    def test_video_quick_actions_are_refused(self):
+        """Video commands are Mac-only. A signed inbox file never reaches run_text."""
+        from commands.video import VIDEO_ROUTE_KEYS
+
+        bridge_src = open(os.path.join(os.path.dirname(__file__), "..", "commands", "bridge.py"), encoding="utf-8").read()
+        for key in VIDEO_ROUTE_KEYS:
+            self.assertNotIn(key, commands.BRIDGE_ALLOW, key)
+            self.assertNotIn(key, bridge_src, key)
+        phrases = (
+            ("convert the recording to mp4", "video_mp4"),
+            ("convert the last recording to mp4", "video_mp4"),
+            ("convert this video to mp4", "video_mp4"),
+            ("convert the video to an mp4", "video_mp4"),
+            ("make the recording an mp4", "video_mp4"),
+            ("please convert the last recording to mp4", "video_mp4"),
+            ("trim the recording from 0:05 to 0:30", "video_trim"),
+            ("trim the last recording from 0:05 to 0:30", "video_trim"),
+            ("trim this video from 1:02:03 to 1:10:00", "video_trim"),
+            ("trim the video from 5 to 30", "video_trim"),
+            ("trim it from 0:05 to 0:30", "video_trim"),
+            ("please trim the recording from 0:05 to 0:30", "video_trim"),
+            ("compress the recording", "video_compress"),
+            ("compress the last recording", "video_compress"),
+            ("compress this video", "video_compress"),
+            ("compress the video", "video_compress"),
+            ("make the recording smaller", "video_compress"),
+            ("make the last recording smaller", "video_compress"),
+            ("extract the audio from the recording", "video_audio"),
+            ("extract audio from the recording", "video_audio"),
+            ("extract the audio from the last recording", "video_audio"),
+            ("extract audio from the last recording", "video_audio"),
+            ("extract the audio from this video", "video_audio"),
+            ("save the audio from the recording", "video_audio"),
+            ("save the audio from the last recording", "video_audio"),
+            ("choose a video", "video_choose"),
+            ("choose a video file", "video_choose"),
+            ("pick a video", "video_choose"),
+            ("pick a video file", "video_choose"),
+            ("open a video file", "video_choose"),
+            ("please choose a video", "video_choose"),
+        )
+        for index, (phrase, key) in enumerate(phrases):
+            nonce = "vqa{0:05d}".format(index)
+            self.assertEqual(commands.route_before_api(phrase), key, phrase)
+            self.assertIsNone(commands.bridge_allowed(phrase), phrase)
+            self.assertNotIn(key, commands.BRIDGE_ALLOW, phrase)
+            calls, path = self._process(phrase, nonce, name=nonce + ".json")
+            self.assertEqual(calls, [], phrase)
+            self.assertFalse(os.path.exists(path), phrase)
+            reply = self._reply(nonce)
+            self.assertFalse(reply["ok"], phrase)
+            self.assertIn("can't do that from your phone", reply["reply"].lower(), phrase)
+
+    def test_morning_brief_memo_is_refused(self):
+        """The memo stays on the Mac. brief me is still allowed on its own name."""
+        self.assertIn("info_brief", commands.BRIDGE_ALLOW)
+        self.assertNotIn("brief_play", commands.BRIDGE_ALLOW)
+        self.assertNotIn("brief_stop", commands.BRIDGE_ALLOW)
+        self.assertNotIn("info_messages", commands.BRIDGE_ALLOW)
+        self.assertIsInstance(commands.BRIDGE_ALLOW, frozenset)
+        for item in commands.BRIDGE_ALLOW:
+            self.assertNotIn("*", item)
+            self.assertNotIn("?", item)
+
+        self.assertEqual(commands.route_before_api("brief me"), "info_brief")
+        self.assertEqual(commands.bridge_allowed("brief me"), "info_brief")
+        calls, path = self._process("brief me", "briefme01")
+        self.assertEqual(calls, ["brief me"])
+        self.assertFalse(os.path.exists(path))
+        self.assertTrue(self._reply("briefme01")["ok"])
+
+        phrases = (
+            ("play my brief", "memo0001", "brief_play"),
+            ("play the brief", "memo0002", "brief_play"),
+            ("play my morning brief", "memo0003", "brief_play"),
+            ("play the morning brief", "memo0004", "brief_play"),
+            ("play today's brief", "memo0005", "brief_play"),
+            ("please play my brief", "memo0006", "brief_play"),
+            ("play my brief please", "memo0007", "brief_play"),
+            ("stop", "memo0008", "brief_stop"),
+            ("please stop", "memo0009", "brief_stop"),
+            ("stop the brief", "memo0010", "brief_stop"),
+            ("stop my brief", "memo0011", "brief_stop"),
+            ("stop playback", "memo0012", "brief_stop"),
+            ("stop the playback", "memo0013", "brief_stop"),
+            ("stop the memo", "memo0014", "brief_stop"),
+        )
+        for phrase, nonce, key in phrases:
+            self.assertEqual(commands.route_before_api(phrase), key, phrase)
+            self.assertIsNone(commands.bridge_allowed(phrase), phrase)
+            self.assertNotIn(key, commands.BRIDGE_ALLOW, phrase)
+            calls, path = self._process(phrase, nonce, name=nonce + ".json")
+            self.assertEqual(calls, [], phrase)
+            self.assertFalse(os.path.exists(path), phrase)
+            reply = self._reply(nonce)
+            self.assertFalse(reply["ok"], phrase)
+            self.assertIn("can't do that from your phone", reply["reply"].lower())
+
+        self.assertIsNone(commands.bridge_allowed("check my messages from My Love"))
+        self.assertIsNone(commands.bridge_allowed("move $600 to Zoe"))
+
+    def test_apple_reminders_are_refused(self):
+        """remind_add is a Mac command. A signed inbox file does not run it."""
+        self.assertNotIn("remind_add", commands.BRIDGE_ALLOW)
+        self.assertIsInstance(commands.BRIDGE_ALLOW, frozenset)
+        phrases = (
+            ("remind me to buy milk", "milkrem1"),
+            ("remind me to call the dentist at 5 pm", "dentist5"),
+            ("please remind me to walk the dog tonight", "dognight"),
+            ("remind me to check the mail in 20 minutes", "mail20min"),
+            ("remind me to water the plants on Friday", "plantsfr"),
+            ("remind me to submit the report next Monday at noon", "reportmo"),
+        )
+        for phrase, nonce in phrases:
+            self.assertEqual(commands.route_before_api(phrase), "remind_add", phrase)
+            self.assertIsNone(commands.bridge_allowed(phrase), phrase)
+            self.assertNotIn("remind_add", commands.BRIDGE_ALLOW)
+            calls, path = self._process(phrase, nonce, name=nonce + ".json")
+            self.assertEqual(calls, [], phrase)
+            self.assertFalse(os.path.exists(path))
+            reply = self._reply(nonce)
+            self.assertFalse(reply["ok"], phrase)
+            self.assertIn("can't do that from your phone", reply["reply"])
+
+    def test_leave_reminder_toggles_are_refused(self):
+        """Leave-reminder toggles are Mac-only. info_leave stays allowlisted."""
+        phrases = (
+            ("turn on leave reminders", "leaveon01", "leave_reminders_on"),
+            ("turn off leave reminders", "leaveoff1", "leave_reminders_off"),
+            ("leave reminders on", "leaveon02", "leave_reminders_on"),
+            ("leave reminders off", "leaveoff2", "leave_reminders_off"),
+            ("enable leave reminders", "leaveon03", "leave_reminders_on"),
+            ("disable leave reminders", "leaveoff3", "leave_reminders_off"),
+            ("please turn on leave reminders", "leaveon04", "leave_reminders_on"),
+            ("turn off leave reminders please", "leaveoff4", "leave_reminders_off"),
+        )
+        self.assertIn("info_leave", commands.BRIDGE_ALLOW)
+        self.assertNotIn("leave_reminders_on", commands.BRIDGE_ALLOW)
+        self.assertNotIn("leave_reminders_off", commands.BRIDGE_ALLOW)
+        self.assertNotIn("info_messages", commands.BRIDGE_ALLOW)
+        for phrase, nonce, key in phrases:
+            self.assertEqual(commands.route_before_api(phrase), key, phrase)
+            self.assertNotIn(key, commands.BRIDGE_ALLOW, phrase)
+            self.assertIsNone(commands.bridge_allowed(phrase), phrase)
+            calls, path = self._process(phrase, nonce, name=nonce + ".json")
+            self.assertEqual(calls, [], phrase)
+            self.assertFalse(os.path.exists(path), phrase)
+            reply = self._reply(nonce)
+            self.assertFalse(reply["ok"], phrase)
+            self.assertIn("can't do that from your phone", reply["reply"].lower())

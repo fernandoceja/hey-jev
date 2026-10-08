@@ -496,8 +496,21 @@ def choice_origin(anchor, screen, panel_size, gap=8.0):
     return (x, y)
 
 
-def capture_choice_actions(ask_jev=True):
-    """Buttons on the post-capture panel. Ask Jev is first and highlighted."""
+def video_choice_rows():
+    """Quick actions for a movie. Trim has no phrase: the times come from speech."""
+    return (
+        {"id": "video_mp4", "title": "Convert to MP4", "primary": False, "phrase": "convert the recording to mp4"},
+        {"id": "video_trim", "title": "Trim", "primary": False, "phrase": ""},
+        {"id": "video_compress", "title": "Compress", "primary": False, "phrase": "compress the recording"},
+        {"id": "video_audio", "title": "Extract Audio", "primary": False, "phrase": "extract the audio from the recording"},
+    )
+
+
+def capture_choice_actions(ask_jev=True, video=False):
+    """Buttons on the post-capture panel. Ask Jev is first and highlighted.
+
+    video adds convert, trim, compress, and extract audio. Screenshots omit them.
+    """
     rows = []
     if ask_jev:
         rows.append({
@@ -515,8 +528,12 @@ def capture_choice_actions(ask_jev=True):
         {"id": "ask_gemini", "title": "Ask Gemini", "primary": False, "phrase": "ask gemini about this"},
         {"id": "ask_chatgpt", "title": "Ask ChatGPT", "primary": False, "phrase": "ask chatgpt about this"},
         {"id": "ask_claude", "title": "Ask Claude", "primary": False, "phrase": "ask claude about this"},
-        {"id": "captures_open", "title": "Open Captures Folder", "primary": False, "phrase": "open my screenshots"},
     ))
+    if video:
+        rows.extend(video_choice_rows())
+    rows.append(
+        {"id": "captures_open", "title": "Open Captures Folder", "primary": False, "phrase": "open my screenshots"},
+    )
     return rows
 
 
@@ -549,6 +566,23 @@ def choice_button_frames(actions, width=300.0, margin=12.0):
             index += 1
         top += 28.0
     return frames, top
+
+
+def choice_panel_box(actions, width=300.0):
+    """Panel geometry so every choice button fits, including video actions.
+
+    The question row stays at the bottom. Extra buttons grow the panel upward.
+    """
+    frames, stack = choice_button_frames(actions, width)
+    buttons_h = max(210.0, float(stack) + 8.0)
+    extra = buttons_h - 210.0
+    return {
+        "size": (width, 420.0 + extra),
+        "frames": frames,
+        "buttons": (0.0, 84.0, width, buttons_h),
+        "image": (12.0, 300.0 + extra, width - 24.0, 82.0),
+        "name": (12.0, 388.0 + extra, width - 24.0, 20.0),
+    }
 
 
 def type_focus_hotkey(key_code, flags):
@@ -627,6 +661,17 @@ def _capture_follow_rows():
             "symbol": "questionmark.circle",
             "items": _ask_items("ask_capture"),
         },
+    )
+
+
+def _video_rows():
+    """Pill menu for the last recording, or a video picked in the Open panel."""
+    return (
+        _menu_action("video_mp4", "Convert to MP4", "video_mp4", "film"),
+        _menu_action("video_trim", "Trim", "video_trim", "scissors"),
+        _menu_action("video_compress", "Compress", "video_compress", "arrow.down.right.and.arrow.up.left"),
+        _menu_action("video_audio", "Extract Audio", "video_audio", "waveform"),
+        _menu_action("video_choose", "Choose a Video\u2026", "video_choose", "folder.badge.plus"),
     )
 
 
@@ -737,12 +782,14 @@ def clipboard_menu(entries=None, paused=False):
     }
 
 
-def plus_menu(can_attach=None, recording=False, clipboard_entries=None, clipboard_paused=False):
+def plus_menu(can_attach=None, recording=False, clipboard_entries=None, clipboard_paused=False, zoe_mode=False):
     """Items for the + button. Only commands the app already runs.
 
     `can_attach` defaults to attachments_supported(). Attach File is included
     only when that is true. Screenshot does not pretend to send the picture.
     No item sends money or reads My Love. Mail and Messages stay unsent.
+    Zoe Mode is checked while kid-safe mode is on. Turning it off is a
+    separate confirmation in the window, not a phrase this menu types.
     """
     if can_attach is None:
         can_attach = attachments_supported()
@@ -757,8 +804,11 @@ def plus_menu(can_attach=None, recording=False, clipboard_entries=None, clipboar
         record = _menu_action("record_start", "Start Screen Recording", "record_start", "record.circle")
     quick = (
         _menu_text("brief", "Brief Me", "brief me", "newspaper"),
+        _menu_text("play_brief", "Play My Brief", "play my brief", "play.circle"),
         _menu_text("next_shift", "Next Shift", "what's my next shift", "calendar"),
         _menu_text("leave", "When Should I Leave", "when should I leave", "car.fill"),
+        _menu_text("leave_reminders_on", "Turn On Leave Reminders", "turn on leave reminders", "bell.badge"),
+        _menu_text("leave_reminders_off", "Turn Off Leave Reminders", "turn off leave reminders", "bell.slash"),
         _menu_text("payday", "Payday Check", "payday check", "bell"),
         {"kind": "separator"},
         _menu_text("blue_pill", "Blue Pill", "blue pill", "play.rectangle"),
@@ -783,10 +833,21 @@ def plus_menu(can_attach=None, recording=False, clipboard_entries=None, clipboar
             ),
         },
     )
+    zoe_item = _menu_action(
+        "zoe_mode",
+        "Turn Off Zoe Mode\u2026" if zoe_mode else "Zoe Mode",
+        "zoe_mode",
+        "heart.fill",
+    )
+    if zoe_mode:
+        zoe_item["checked"] = True
     items = [
         clipboard_menu(clipboard_entries, clipboard_paused),
+        zoe_item,
+        {"kind": "separator"},
         {"id": "shots", "title": "Screenshot", "kind": "submenu", "symbol": "camera.viewfinder", "items": shots},
         record,
+        {"id": "video", "title": "Video", "kind": "submenu", "symbol": "film", "items": _video_rows()},
         _menu_action("captures_open", "Open Captures Folder", "captures_open", "folder"),
         {"id": "recent", "title": "Recent Captures", "kind": "submenu", "symbol": "clock", "items": _capture_follow_rows()},
         {

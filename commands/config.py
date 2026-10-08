@@ -31,6 +31,23 @@ BREA_STORE_ADDRESS = "Apple Brea Mall, 1016C Brea Mall, Brea, CA 92821"
 LEAVE_BUFFER_MINUTES = 15
 # Used only when MapKit can't return a drive time. The reply says it is an estimate.
 LEAVE_TYPICAL_DRIVE_MINUTES = 35
+# Proactive leave nudges. On by default. A spoken toggle writes enabled into
+# LEAVE_NUDGE_STATE_PATH and that file wins over this default.
+LEAVE_REMINDERS_ENABLED = True
+# Spoken once, this many minutes before the computed leave time. 0 skips it.
+LEAVE_PREWARN_MINUTES = 10
+# How often the Mac scheduler re-reads the calendar and MapKit. Far from the
+# leave time it waits. Closer in, it checks again so a traffic change can
+# move the nudge. Disabled reminders skip the calendar and only re-check the
+# toggle at the close interval.
+LEAVE_POLL_FAR_SECONDS = 15 * 60
+LEAVE_POLL_NEAR_SECONDS = 5 * 60
+LEAVE_POLL_CLOSE_SECONDS = 60
+LEAVE_NEAR_MINUTES = 180
+LEAVE_CLOSE_MINUTES = 45
+LEAVE_NUDGE_STATE_PATH = os.path.expanduser(
+    "~/Library/Application Support/Hey Jev/leave-reminders.json"
+)
 SCHOOL_HORIZON_DAYS = 30
 BILL_HORIZON_DAYS = 45
 # Apple pay is every other Friday. This date is one payday. Override it in money.md.
@@ -42,6 +59,23 @@ SWEEP_ACCOUNT_LABEL = "Zoe …4157"
 # The launch reminder writes the date here so the same day is not spoken again.
 SWEEP_SPOKEN_PATH = os.path.expanduser(
     "~/Library/Application Support/Hey Jev/sweep-spoken.txt"
+)
+# "on" means Zoe mode is active. A missing file means off. No secrets.
+ZOE_MODE_PATH = os.path.expanduser(
+    "~/Library/Application Support/Hey Jev/zoe-mode.txt"
+)
+# Morning brief voice memo. Local files only, played with afplay. No network.
+# BRIEF_MEMO_DIR overrides the folder. BRIEF_MEMO_TIME is HH:MM local time.
+# BRIEF_MEMO_ENABLED=0 turns the automatic play off. "play my brief" still works.
+# Retries are extra looks after the first one, spread across the window.
+BRIEF_MEMO_DIR = os.path.expanduser("~/Documents/Daily Brief")
+BRIEF_MEMO_TIME = "07:10"
+BRIEF_MEMO_ENABLED = True
+BRIEF_MEMO_RETRIES = 2
+BRIEF_MEMO_WINDOW_MINUTES = 20
+BRIEF_MEMO_POLL_SECONDS = 30
+BRIEF_MEMO_STATE_PATH = os.path.expanduser(
+    "~/Library/Application Support/Hey Jev/brief-memo.json"
 )
 PRINCESS_SHORTCUT = "Zoe's Princess Academy"
 # Used when that shortcut is not in the Jev folder.
@@ -83,6 +117,8 @@ IHSS_PATH = os.path.join(JEV_DOCS, "ihss_hours.csv")
 MONEY_PATH = os.path.join(JEV_DOCS, "money.md")
 # Today through this many days ahead, including today.
 DUE_HORIZON_DAYS = 7
+# "remind me to ..." writes an Apple Reminders item. Blank uses the default list.
+REMINDERS_LIST = ""
 
 # Upland, CA. Open-Meteo needs no key.
 UPLAND_LAT = 34.0975
@@ -289,6 +325,10 @@ JOINER_RE = re.compile(r"\b(?:and|then)\b", re.I)
 # Whole-utterance commands. Checked before the looser patterns below.
 _PLEASE = r"(?:please\s+)?"
 _TAIL = r"(?:\s+please)?[.!?]*$"
+# "the last recording", "this video", "the recording".
+_VIDEO_WHEN = r"(?:(?:the|this)\s+)?(?:last\s+)?(?:recording|video)"
+# 0:05, 1:02:03, 1:02:03.5, or whole seconds.
+_VIDEO_CLOCK = r"(?:(?:\d{1,2}:){1,2}\d{2}(?:\.\d+)?|\d+(?:\.\d+)?)"
 # "my shift Monday is 9:30 to 6:30 at Brea" and "clear my shift Monday".
 _SHIFT_WHEN = (
     r"(?:today|tomorrow|(?:this|next)\s+"
@@ -307,10 +347,21 @@ STRICT_PATTERNS = (
     (re.compile(rf"^{_PLEASE}help{_TAIL}", re.I), "info_help"),
     (re.compile(rf"^{_PLEASE}what(?:'s| is) today{_TAIL}", re.I), "info_today"),
     (re.compile(rf"^{_PLEASE}brief me{_TAIL}", re.I), "info_brief"),
+    (re.compile(
+        rf"^{_PLEASE}play\s+(?:my|the|today'?s)\s+(?:morning\s+)?brief{_TAIL}",
+        re.I), "brief_play"),
     (re.compile(rf"^{_PLEASE}(?:what(?:'s| is) the weather(?:\s+like)?|how(?:'s| is) the weather|weather){_TAIL}", re.I), "info_weather"),
     (re.compile(rf"^{_PLEASE}what(?:'s| is| does| has)\s+zoe\b.*\btomorrow\b{_TAIL}", re.I), "info_zoe"),
     (re.compile(rf"^{_PLEASE}open\s+(?:zoe'?s\s+)?princess\s+academy{_TAIL}", re.I), "zoe_academy"),
     (re.compile(rf"^{_PLEASE}(?:start|set)\s+(?:a\s+|an\s+)?(?:[\w.]+\s+)*timer\s+for\s+zoe\b.*{_TAIL}", re.I), "zoe_timer"),
+    (re.compile(rf"^{_PLEASE}(?:zoe\s+mode|kid\s+mode)(?:\s+on)?{_TAIL}", re.I), "zoe_mode_on"),
+    (re.compile(rf"^{_PLEASE}(?:turn\s+on|start|enter)\s+(?:zoe|kid)\s+mode{_TAIL}", re.I), "zoe_mode_on"),
+    (re.compile(rf"^{_PLEASE}(?:exit|leave|stop|end)\s+(?:zoe|kid)\s+mode{_TAIL}", re.I), "zoe_mode_off"),
+    (re.compile(rf"^{_PLEASE}turn\s+off\s+(?:zoe|kid)\s+mode{_TAIL}", re.I), "zoe_mode_off"),
+    (re.compile(rf"^{_PLEASE}kid\s+mode\s+off{_TAIL}", re.I), "zoe_mode_off"),
+    (re.compile(
+        rf"^{_PLEASE}(?:joke|tell(?:\s+(?:me|zoe))?\s+(?:a\s+)?joke|(?:a\s+)?fun\s+fact|tell(?:\s+(?:me|zoe))?\s+(?:a\s+)?fun\s+fact){_TAIL}",
+        re.I), "zoe_joke"),
     (re.compile(rf"^{_PLEASE}what(?:'s| is)\s+due(?:\s+this\s+week)?\s+for\s+(?:umgc|school|class|my\s+class){_TAIL}", re.I), "info_school"),
     (re.compile(rf"^{_PLEASE}what(?:'s| is)\s+due\s+for\s+(?:umgc|school|class|my\s+class){_TAIL}", re.I), "info_school"),
     (re.compile(rf"^{_PLEASE}(?:any|what(?:'s| is))\s+(?:umgc|school)\s+(?:work\s+)?due{_TAIL}", re.I), "info_school"),
@@ -344,9 +395,20 @@ STRICT_PATTERNS = (
         rf"|^{_PLEASE}what\s+time\s+should\s+i\s+leave(?:\s+for\s+(?:work|brea))?{_TAIL}"
         rf"|^{_PLEASE}when\s+do\s+i\s+(?:need\s+to\s+)?leave\s+for\s+(?:work|brea){_TAIL}",
         re.I), "info_leave"),
+    (re.compile(
+        rf"^{_PLEASE}(?:turn\s+on|enable)\s+leave\s+reminders{_TAIL}"
+        rf"|^{_PLEASE}leave\s+reminders\s+on{_TAIL}",
+        re.I), "leave_reminders_on"),
+    (re.compile(
+        rf"^{_PLEASE}(?:turn\s+off|disable)\s+leave\s+reminders{_TAIL}"
+        rf"|^{_PLEASE}leave\s+reminders\s+off{_TAIL}",
+        re.I), "leave_reminders_off"),
     (re.compile(rf"^{_PLEASE}how\s+many\s+(?:ihss\s+)?hours(?:\s+do\s+i\s+have)?\s+this\s+pay\s+period{_TAIL}", re.I), "ihss_hours"),
     (re.compile(rf"^{_PLEASE}how\s+many\s+hours\s+have\s+i\s+logged(?:\s+this\s+pay\s+period)?{_TAIL}", re.I), "ihss_hours"),
     (re.compile(rf"^{_PLEASE}remind\s+me\s+to\s+submit\s+(?:my\s+)?(?:ihss\s+)?timesheet{_TAIL}", re.I), "ihss_remind"),
+    # After the timesheet phrase, so that one keeps its own command.
+    # "remind me in 20 minutes ..." is a local timer and does not match here.
+    (re.compile(rf"^{_PLEASE}remind\s+me\s+to\s+\S.*{_TAIL}", re.I), "remind_add"),
     (re.compile(rf"^{_PLEASE}play\s+(.+?)\s+on\s+youtube{_TAIL}", re.I), "youtube_play"),
     (re.compile(rf"^{_PLEASE}what(?:'s| is)\s+playing{_TAIL}", re.I), "media_now"),
     (re.compile(rf"^{_PLEASE}what(?:'s| is)\s+this\s+song{_TAIL}", re.I), "media_now"),
@@ -453,9 +515,30 @@ STRICT_PATTERNS = (
         rf"^{_PLEASE}(?:stop\s+(?:the\s+)?(?:screen\s+)?recording){_TAIL}",
         re.I), "record_stop"),
     (re.compile(
+        rf"^{_PLEASE}stop(?:\s+my\s+brief|\s+(?:the\s+)?(?:brief|memo|playback))?{_TAIL}",
+        re.I), "brief_stop"),
+    (re.compile(
         rf"^{_PLEASE}(?:start\s+(?:a\s+)?(?:screen\s+)?recording|record\s+(?:my\s+)?screen)"
         rf"(?:\s+with\s+(?:the\s+)?(?:mic|audio|microphone))?{_TAIL}",
         re.I), "record_start"),
+    (re.compile(
+        rf"^{_PLEASE}(?:convert\s+{_VIDEO_WHEN}\s+to\s+(?:an?\s+)?mp4|make\s+{_VIDEO_WHEN}\s+an\s+mp4){_TAIL}",
+        re.I), "video_mp4"),
+    (re.compile(
+        rf"^{_PLEASE}trim\s+(?:{_VIDEO_WHEN}|it)\s+from\s+{_VIDEO_CLOCK}\s+to\s+{_VIDEO_CLOCK}{_TAIL}",
+        re.I), "video_trim"),
+    (re.compile(
+        rf"^{_PLEASE}compress\s+{_VIDEO_WHEN}{_TAIL}"
+        rf"|^{_PLEASE}make\s+{_VIDEO_WHEN}\s+smaller{_TAIL}",
+        re.I), "video_compress"),
+    (re.compile(
+        rf"^{_PLEASE}extract\s+(?:the\s+)?audio\s+from\s+{_VIDEO_WHEN}{_TAIL}"
+        rf"|^{_PLEASE}save\s+the\s+audio\s+from\s+{_VIDEO_WHEN}{_TAIL}",
+        re.I), "video_audio"),
+    (re.compile(
+        rf"^{_PLEASE}(?:choose|pick)\s+a\s+video(?:\s+file)?{_TAIL}"
+        rf"|^{_PLEASE}open\s+a\s+video\s+file{_TAIL}",
+        re.I), "video_choose"),
     (re.compile(
         rf"^{_PLEASE}save\s+(?:it|this|that|the\s+(?:screenshot|recording|capture|picture|video))\s+to\s+notes{_TAIL}",
         re.I), "capture_note"),
@@ -562,13 +645,18 @@ HELP_TEXT = (
     "I can open your apps and work sites, control volume, brightness, and the Mac, "
     "silence notifications, and toggle the accessibility settings macOS allows. "
     "I can play Apple Music or a YouTube search. I can read your calendar, shifts, school, "
-    "and bills, log IHSS hours, remind you on payday, save a shift for one day, "
-    "and say when to leave for Brea. I can run shortcuts that are in the Jev folder. "
-    "I can also help with Zoe. Say blue pill for the Matrix and red pill to leave it. "
+    "and bills, log IHSS hours, remind you on payday, and add an Apple Reminder when you say remind me to. "
+    "I can save a shift for one day, "
+    "and say when to leave for Brea. I can nudge you when it's time to leave, "
+    "and you can turn leave reminders on or off. I can run shortcuts that are in the Jev folder. "
+    "I can also help with Zoe. Say Zoe mode for a kid-safe mode. Leaving it takes a second step. "
+    "Say blue pill for the Matrix and red pill to leave it. "
     "I can take a screenshot, record the screen, and open Notes, Mail, or Messages with the file. "
+    "I can convert, trim, or compress a recording, and extract its audio, on this Mac. "
     "I can open the captures folder, and I can look at a screenshot when you ask. "
     "I can open ChatGPT, Claude, Gemini, Siri, or Google with a capture or your last question. "
     "I can read your clipboard history, copy or paste an item, and clear it. That stays on this Mac. "
+    "I can play your morning brief memo. Stop stops that playback. "
     "I won't send a message or move money."
 )
 SCHOOL_RE = re.compile(r"(?:#|\b)(?:umgc|school|class)\b", re.I)
