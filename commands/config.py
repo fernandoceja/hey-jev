@@ -31,6 +31,23 @@ BREA_STORE_ADDRESS = "Apple Brea Mall, 1016C Brea Mall, Brea, CA 92821"
 LEAVE_BUFFER_MINUTES = 15
 # Used only when MapKit can't return a drive time. The reply says it is an estimate.
 LEAVE_TYPICAL_DRIVE_MINUTES = 35
+# Proactive leave nudges. On by default. A spoken toggle writes enabled into
+# LEAVE_NUDGE_STATE_PATH and that file wins over this default.
+LEAVE_REMINDERS_ENABLED = True
+# Spoken once, this many minutes before the computed leave time. 0 skips it.
+LEAVE_PREWARN_MINUTES = 10
+# How often the Mac scheduler re-reads the calendar and MapKit. Far from the
+# leave time it waits. Closer in, it checks again so a traffic change can
+# move the nudge. Disabled reminders skip the calendar and only re-check the
+# toggle at the close interval.
+LEAVE_POLL_FAR_SECONDS = 15 * 60
+LEAVE_POLL_NEAR_SECONDS = 5 * 60
+LEAVE_POLL_CLOSE_SECONDS = 60
+LEAVE_NEAR_MINUTES = 180
+LEAVE_CLOSE_MINUTES = 45
+LEAVE_NUDGE_STATE_PATH = os.path.expanduser(
+    "~/Library/Application Support/Hey Jev/leave-reminders.json"
+)
 SCHOOL_HORIZON_DAYS = 30
 BILL_HORIZON_DAYS = 45
 # Apple pay is every other Friday. This date is one payday. Override it in money.md.
@@ -336,6 +353,14 @@ STRICT_PATTERNS = (
         rf"|^{_PLEASE}what\s+time\s+should\s+i\s+leave(?:\s+for\s+(?:work|brea))?{_TAIL}"
         rf"|^{_PLEASE}when\s+do\s+i\s+(?:need\s+to\s+)?leave\s+for\s+(?:work|brea){_TAIL}",
         re.I), "info_leave"),
+    (re.compile(
+        rf"^{_PLEASE}(?:turn\s+on|enable)\s+leave\s+reminders{_TAIL}"
+        rf"|^{_PLEASE}leave\s+reminders\s+on{_TAIL}",
+        re.I), "leave_reminders_on"),
+    (re.compile(
+        rf"^{_PLEASE}(?:turn\s+off|disable)\s+leave\s+reminders{_TAIL}"
+        rf"|^{_PLEASE}leave\s+reminders\s+off{_TAIL}",
+        re.I), "leave_reminders_off"),
     (re.compile(rf"^{_PLEASE}how\s+many\s+(?:ihss\s+)?hours(?:\s+do\s+i\s+have)?\s+this\s+pay\s+period{_TAIL}", re.I), "ihss_hours"),
     (re.compile(rf"^{_PLEASE}how\s+many\s+hours\s+have\s+i\s+logged(?:\s+this\s+pay\s+period)?{_TAIL}", re.I), "ihss_hours"),
     (re.compile(rf"^{_PLEASE}remind\s+me\s+to\s+submit\s+(?:my\s+)?(?:ihss\s+)?timesheet{_TAIL}", re.I), "ihss_remind"),
@@ -539,7 +564,8 @@ HELP_TEXT = (
     "I can play Apple Music or a YouTube search. I can read your calendar, shifts, school, "
     "and bills, log IHSS hours, remind you on payday, and add an Apple Reminder when you say remind me to. "
     "I can save a shift for one day, "
-    "and say when to leave for Brea. I can run shortcuts that are in the Jev folder. "
+    "and say when to leave for Brea. I can nudge you when it's time to leave, "
+    "and you can turn leave reminders on or off. I can run shortcuts that are in the Jev folder. "
     "I can also help with Zoe. Say blue pill for the Matrix and red pill to leave it. "
     "I can take a screenshot, record the screen, and open Notes, Mail, or Messages with the file. "
     "I can open the captures folder, and I can look at a screenshot when you ask. "
