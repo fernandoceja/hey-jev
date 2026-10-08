@@ -335,6 +335,12 @@ class TestBriefMemo(unittest.TestCase):
             "stop reading": "screen_stop",
             "stop the matrix": "matrix_off",
             "stop voiceover": "voiceover_off",
+            "remind me to buy milk": "remind_add",
+            "remind me to call the dentist at 5 pm": "remind_add",
+            "turn on leave reminders": "leave_reminders_on",
+            "turn off leave reminders": "leave_reminders_off",
+            "leave reminders on": "leave_reminders_on",
+            "enable leave reminders": "leave_reminders_on",
         }
         for phrase, key in untouched.items():
             self.assertEqual(commands.route_before_api(phrase), key, phrase)

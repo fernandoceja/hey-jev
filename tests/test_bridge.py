@@ -275,3 +275,53 @@ class TestBridgeValidation(unittest.TestCase):
 
         self.assertIsNone(commands.bridge_allowed("check my messages from My Love"))
         self.assertIsNone(commands.bridge_allowed("move $600 to Zoe"))
+
+    def test_apple_reminders_are_refused(self):
+        """remind_add is a Mac command. A signed inbox file does not run it."""
+        self.assertNotIn("remind_add", commands.BRIDGE_ALLOW)
+        self.assertIsInstance(commands.BRIDGE_ALLOW, frozenset)
+        phrases = (
+            ("remind me to buy milk", "milkrem1"),
+            ("remind me to call the dentist at 5 pm", "dentist5"),
+            ("please remind me to walk the dog tonight", "dognight"),
+            ("remind me to check the mail in 20 minutes", "mail20min"),
+            ("remind me to water the plants on Friday", "plantsfr"),
+            ("remind me to submit the report next Monday at noon", "reportmo"),
+        )
+        for phrase, nonce in phrases:
+            self.assertEqual(commands.route_before_api(phrase), "remind_add", phrase)
+            self.assertIsNone(commands.bridge_allowed(phrase), phrase)
+            self.assertNotIn("remind_add", commands.BRIDGE_ALLOW)
+            calls, path = self._process(phrase, nonce, name=nonce + ".json")
+            self.assertEqual(calls, [], phrase)
+            self.assertFalse(os.path.exists(path))
+            reply = self._reply(nonce)
+            self.assertFalse(reply["ok"], phrase)
+            self.assertIn("can't do that from your phone", reply["reply"])
+
+    def test_leave_reminder_toggles_are_refused(self):
+        """Leave-reminder toggles are Mac-only. info_leave stays allowlisted."""
+        phrases = (
+            ("turn on leave reminders", "leaveon01", "leave_reminders_on"),
+            ("turn off leave reminders", "leaveoff1", "leave_reminders_off"),
+            ("leave reminders on", "leaveon02", "leave_reminders_on"),
+            ("leave reminders off", "leaveoff2", "leave_reminders_off"),
+            ("enable leave reminders", "leaveon03", "leave_reminders_on"),
+            ("disable leave reminders", "leaveoff3", "leave_reminders_off"),
+            ("please turn on leave reminders", "leaveon04", "leave_reminders_on"),
+            ("turn off leave reminders please", "leaveoff4", "leave_reminders_off"),
+        )
+        self.assertIn("info_leave", commands.BRIDGE_ALLOW)
+        self.assertNotIn("leave_reminders_on", commands.BRIDGE_ALLOW)
+        self.assertNotIn("leave_reminders_off", commands.BRIDGE_ALLOW)
+        self.assertNotIn("info_messages", commands.BRIDGE_ALLOW)
+        for phrase, nonce, key in phrases:
+            self.assertEqual(commands.route_before_api(phrase), key, phrase)
+            self.assertNotIn(key, commands.BRIDGE_ALLOW, phrase)
+            self.assertIsNone(commands.bridge_allowed(phrase), phrase)
+            calls, path = self._process(phrase, nonce, name=nonce + ".json")
+            self.assertEqual(calls, [], phrase)
+            self.assertFalse(os.path.exists(path), phrase)
+            reply = self._reply(nonce)
+            self.assertFalse(reply["ok"], phrase)
+            self.assertIn("can't do that from your phone", reply["reply"].lower())

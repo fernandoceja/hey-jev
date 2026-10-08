@@ -39,6 +39,7 @@ COMMAND_PROMPT = (
     "What time is it. What's the date. What's today. What's the weather. Brief me. "
     "What's my schedule today. When's my next meeting. What's on my calendar. When's my next shift. What's next. "
     "What's due today. Payday check. Any reminders today. "
+    "Remind me to call the dentist tomorrow at 9. "
     "What apps are open. Check my messages from My Love. Take a note. What's due this week. "
     "Start focus mode for 25 minutes. Log IHSS hours. Check my case status. What's Zoe got tomorrow. "
     "Run shortcut Leaving for work. Set a timer for five minutes. "
@@ -46,6 +47,7 @@ COMMAND_PROMPT = (
     "Turn the volume up. Set the volume to 40. Mute. Lock the screen. What's my battery. "
     "When's my next shift. Am I working this weekend. How long until payday. "
     "My shift Monday is 9:30 to 6:30 at Brea. Clear my shift Monday. When should I leave for work. "
+    "Turn on leave reminders. Turn off leave reminders. "
     "Open settings. Open business email. Run shortcut Leaving for work. What can you do."
 )
 # No prompt in wake mode: on noise Whisper echoes the prompt back, which looked like a real "Hey Jev"
@@ -360,8 +362,8 @@ ACTIONS = {
     "brightness_up": lambda _arg, text: commands.change_brightness("up", text),
     "brightness_down": lambda _arg, text: commands.change_brightness("down", text),
     "brightness_set": lambda _arg, text: commands.change_brightness("set", text),
-    "notify_off": lambda _arg, _text: commands.silence_notifications(True),
-    "notify_on": lambda _arg, _text: commands.silence_notifications(False),
+    "notify_off": lambda _arg, _text: _silence_notifications(True),
+    "notify_on": lambda _arg, _text: _silence_notifications(False),
     "screen_speak": lambda _arg, _text: commands.speak_screen(),
     "screen_stop": lambda _arg, _text: commands.stop_reading(),
     "selection_read": lambda _arg, _text: commands.read_selection(),
@@ -415,6 +417,8 @@ ACTIONS = {
     "shift_set": lambda _arg, text: commands.set_shift_override(text),
     "shift_clear": lambda _arg, text: commands.clear_shift_override(text),
     "info_leave": lambda _arg, _text: commands.speak_leave_time(),
+    "leave_reminders_on": lambda _arg, _text: commands.set_leave_reminders(True),
+    "leave_reminders_off": lambda _arg, _text: commands.set_leave_reminders(False),
     "info_school": lambda _arg, _text: commands.speak_school_due(),
     "info_rent": lambda _arg, _text: commands.speak_rent(),
     "info_bills": lambda _arg, _text: commands.speak_bills(),
@@ -423,6 +427,7 @@ ACTIONS = {
     "info_battery": lambda _arg, _text: commands.speak_battery(),
     "ihss_hours": lambda _arg, _text: commands.speak_ihss_period(),
     "ihss_remind": lambda _arg, _text: commands.remind_timesheet(),
+    "remind_add": lambda _arg, text: commands.add_reminder(text),
     "zoe_academy": lambda _arg, _text: commands.open_princess_academy(),
     "zoe_timer": lambda _arg, text: _start_zoe_timer(text),
     "system_lock": _quiet(lambda _arg, _text: osa('tell application "System Events" to keystroke "q" using {control down, command down}')),
@@ -683,6 +688,16 @@ def _start_zoe_timer(text):
         return "How many minutes should I set for Zoe?"
     add_timer(secs, label="Zoe")
     return f"Timer for Zoe is set for {say_duration(secs)}."
+
+
+def _silence_notifications(on):
+    """Silence or restore notifications, and hold leave nudges to match.
+
+    "Silence notifications" and "do not disturb" keep the nudge quiet until
+    "turn off do not disturb". The hold is in this process only.
+    """
+    commands.hold_leave_nudges(on)
+    return commands.silence_notifications(on)
 
 
 def _start_focus(text):
@@ -1507,6 +1522,34 @@ def run_voice_assistant(notify=None, controls=None, mode="ptt", mic=""):
                 rec.paused = False
 
     commands.start_brief_memo_thread(brief_speaker)
+
+    def _leave_quiet():
+        try:
+            if commands.mac_output_muted():
+                return True
+        except Exception:
+            pass
+        with TIMERS_LOCK:
+            return any(bool(t.get("focus")) for t in TIMERS)
+
+    def _leave_deliver(line):
+        # Dictation already owns the speaker. Leave the fired flag unset.
+        if rec.dictating:
+            return False
+        posted = False
+        try:
+            posted = commands.post_leave_notification(line)
+        except Exception as exc:
+            print(f"  leave nudge: {type(exc).__name__}")
+        spoken = False
+        try:
+            say(line, notify)
+            spoken = True
+        except Exception as exc:
+            print(f"  leave nudge: {type(exc).__name__}")
+        return posted or spoken
+
+    commands.start_leave_nudge_thread(_leave_deliver, quiet_check=_leave_quiet)
     threading.Thread(target=warm_cache, daemon=True).start()
     threading.Thread(target=wake_loop, daemon=True).start()
     set_mode(mode)
