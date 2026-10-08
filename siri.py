@@ -39,6 +39,7 @@ COMMAND_PROMPT = (
     "What time is it. What's the date. What's today. What's the weather. Brief me. "
     "What's my schedule today. When's my next meeting. What's on my calendar. When's my next shift. What's next. "
     "What's due today. Payday check. Any reminders today. "
+    "Remind me to call the dentist tomorrow at 9. "
     "What apps are open. Check my messages from My Love. Take a note. What's due this week. "
     "Start focus mode for 25 minutes. Log IHSS hours. Check my case status. What's Zoe got tomorrow. "
     "Run shortcut Leaving for work. Set a timer for five minutes. "
@@ -423,6 +424,7 @@ ACTIONS = {
     "info_battery": lambda _arg, _text: commands.speak_battery(),
     "ihss_hours": lambda _arg, _text: commands.speak_ihss_period(),
     "ihss_remind": lambda _arg, _text: commands.remind_timesheet(),
+    "remind_add": lambda _arg, text: commands.add_reminder(text),
     "zoe_academy": lambda _arg, _text: commands.open_princess_academy(),
     "zoe_timer": lambda _arg, text: _start_zoe_timer(text),
     "system_lock": _quiet(lambda _arg, _text: osa('tell application "System Events" to keystroke "q" using {control down, command down}')),

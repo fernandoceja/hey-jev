@@ -73,6 +73,8 @@ IHSS_PATH = os.path.join(JEV_DOCS, "ihss_hours.csv")
 MONEY_PATH = os.path.join(JEV_DOCS, "money.md")
 # Today through this many days ahead, including today.
 DUE_HORIZON_DAYS = 7
+# "remind me to ..." writes an Apple Reminders item. Blank uses the default list.
+REMINDERS_LIST = ""
 
 # Upland, CA. Open-Meteo needs no key.
 UPLAND_LAT = 34.0975
@@ -337,6 +339,9 @@ STRICT_PATTERNS = (
     (re.compile(rf"^{_PLEASE}how\s+many\s+(?:ihss\s+)?hours(?:\s+do\s+i\s+have)?\s+this\s+pay\s+period{_TAIL}", re.I), "ihss_hours"),
     (re.compile(rf"^{_PLEASE}how\s+many\s+hours\s+have\s+i\s+logged(?:\s+this\s+pay\s+period)?{_TAIL}", re.I), "ihss_hours"),
     (re.compile(rf"^{_PLEASE}remind\s+me\s+to\s+submit\s+(?:my\s+)?(?:ihss\s+)?timesheet{_TAIL}", re.I), "ihss_remind"),
+    # After the timesheet phrase, so that one keeps its own command.
+    # "remind me in 20 minutes ..." is a local timer and does not match here.
+    (re.compile(rf"^{_PLEASE}remind\s+me\s+to\s+\S.*{_TAIL}", re.I), "remind_add"),
     (re.compile(rf"^{_PLEASE}play\s+(.+?)\s+on\s+youtube{_TAIL}", re.I), "youtube_play"),
     (re.compile(rf"^{_PLEASE}what(?:'s| is)\s+playing{_TAIL}", re.I), "media_now"),
     (re.compile(rf"^{_PLEASE}what(?:'s| is)\s+this\s+song{_TAIL}", re.I), "media_now"),
@@ -532,7 +537,8 @@ HELP_TEXT = (
     "I can open your apps and work sites, control volume, brightness, and the Mac, "
     "silence notifications, and toggle the accessibility settings macOS allows. "
     "I can play Apple Music or a YouTube search. I can read your calendar, shifts, school, "
-    "and bills, log IHSS hours, remind you on payday, save a shift for one day, "
+    "and bills, log IHSS hours, remind you on payday, and add an Apple Reminder when you say remind me to. "
+    "I can save a shift for one day, "
     "and say when to leave for Brea. I can run shortcuts that are in the Jev folder. "
     "I can also help with Zoe. Say blue pill for the Matrix and red pill to leave it. "
     "I can take a screenshot, record the screen, and open Notes, Mail, or Messages with the file. "
