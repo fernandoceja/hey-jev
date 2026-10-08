@@ -53,7 +53,7 @@ COMMAND_PROMPT = (
 )
 # No prompt in wake mode: on noise Whisper echoes the prompt back, which looked like a real "Hey Jev"
 WAKE_PROMPT = None
-NO_SPEECH_MAX = 0.6  # Whisper's own "this probably isn't speech" score, above this the segment is dropped
+NO_SPEECH_MAX = commands.NO_SPEECH_MAX  # above this, a segment is silence and is dropped
 WAKE_CHIME = "/System/Library/Sounds/Tink.aiff"
 SAVE_CLIPS = os.path.expanduser("~/Library/Logs/Hey Jev clips")  # set to None to stop saving ignored phrases
 # Whisper often hears "Jev" as Jeff or Jeb, so accept the close ones; can be mid-phrase since calls run sentences together
@@ -1369,9 +1369,11 @@ def run_voice_assistant(notify=None, controls=None, mode="ptt", mic=""):
 
     def transcribe(audio, prompt, drop_noise=False):
         t = time.time()
-        segs, _ = model.transcribe(audio, language="en", beam_size=1, vad_filter=True, initial_prompt=prompt)
-        segs = [s for s in segs if not drop_noise or s.no_speech_prob <= NO_SPEECH_MAX]
-        return " ".join(s.text.strip() for s in segs).strip(), int((time.time() - t) * 1000)
+        # Hotwords bias ChatGPT and the other names. They are not part of the
+        # prompt, and a transcript that is only that list is dropped as silence.
+        segs, _ = model.transcribe(audio, **commands.whisper_transcribe_kwargs(prompt))
+        text = commands.transcript_from_segments(segs, drop_noise=drop_noise)
+        return text, int((time.time() - t) * 1000)
 
     def save_clip(audio):
         if not SAVE_CLIPS:
@@ -1451,7 +1453,7 @@ def run_voice_assistant(notify=None, controls=None, mode="ptt", mic=""):
     def ptt_turn(audio):
         emit(notify, "Transcribing", "Working out what you said\u2026")
         try:
-            text, ms = transcribe(audio, COMMAND_PROMPT)
+            text, ms = transcribe(audio, COMMAND_PROMPT, drop_noise=True)
         except Exception as exc:
             emit(notify, "Something went wrong", str(exc))
             return

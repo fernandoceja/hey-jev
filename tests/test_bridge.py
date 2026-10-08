@@ -105,6 +105,24 @@ class TestBridgeValidation(unittest.TestCase):
             self.assertNotIn(key, commands.BRIDGE_ALLOW)
         self.assertNotIn("info_messages", commands.BRIDGE_ALLOW)
 
+    def test_chatgpt_and_tv_aliases_stay_off_the_phone(self):
+        phrases = (
+            ("open ChatGPT", "opgpt001", "app_open"),
+            ("open chat g p t", "opgpt002", "app_open"),
+            ("close Apple TV", "qappltv1", "app_quit"),
+            ("close the TV app", "qtvapp01", "app_quit"),
+            ("open YouTube TV", "oyttv001", "app_open"),
+            ("close YouTube TV", "qyttv001", "app_quit"),
+        )
+        for phrase, nonce, key in phrases:
+            self.assertEqual(commands.route_before_api(phrase), key, phrase)
+            self.assertIsNone(commands.bridge_allowed(phrase), phrase)
+            self.assertNotIn(key, commands.BRIDGE_ALLOW)
+            calls, path = self._process(phrase, nonce, name=nonce + ".json")
+            self.assertEqual(calls, [], phrase)
+            self.assertFalse(os.path.exists(path))
+            self.assertIn("can't do that from your phone", self._reply(nonce)["reply"])
+
     def test_disallowed_command_is_rejected(self):
         phrases = (
             ("empty the trash", "nonce1234"),

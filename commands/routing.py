@@ -3,7 +3,7 @@ import re
 from .config import JOINER_RE, LOCAL_PATTERNS, STRICT_PATTERNS, _BARE_RUN_RE, _FOCUS_VERBS, _HIDE_VERBS, _IHSS_CMD_RE, _NOTE_CMD_RE, _OPEN_VERBS, _PLEASE, _QUIT_VERBS
 from .textutil import _clean
 from .confirm import is_private_message_request, is_quit_all
-from .apps import known_app_name, parse_app_name, resolve_app, resolve_folder, resolve_site
+from .apps import known_app_name, parse_app_name, resolve_app, resolve_folder, resolve_site, unclear_app_guess
 from .shortcuts import jev_shortcut_catalog, parse_shortcut_name, resolve_shortcut
 
 def route_before_api(text):
@@ -72,7 +72,7 @@ def route_open_phrase(raw):
         return "folder_open"
     if resolve_site(spoken):
         return "site_open"
-    if known_app_name(spoken) or resolve_app(spoken):
+    if known_app_name(spoken) or resolve_app(spoken) or unclear_app_guess(spoken):
         return "app_open"
     return None
 
@@ -98,7 +98,7 @@ def route_named_app(raw):
         spoken = parse_app_name(raw, kind)
         if not spoken or len(spoken.split()) > 6:
             return None
-        if known_app_name(spoken) or resolve_app(spoken):
+        if known_app_name(spoken) or resolve_app(spoken) or unclear_app_guess(spoken):
             return action
         return None
     return None

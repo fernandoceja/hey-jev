@@ -180,6 +180,9 @@ from .apps import (
     _is_running,
     launch_app,
     open_any_app,
+    normalize_app_phrase,
+    unclear_app_guess,
+    UNCLEAR_APP,
     quit_any_app,
     hide_any_app,
     focus_any_app,
@@ -526,6 +529,14 @@ from .brief import (
     speak_today,
     _count_today_events,
     speak_brief,
+)
+
+from .stt import (
+    NO_SPEECH_MAX,
+    WHISPER_HOTWORDS,
+    is_hotword_echo,
+    transcript_from_segments,
+    whisper_transcribe_kwargs,
 )
 
 from .brief_memo import (

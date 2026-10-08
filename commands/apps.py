@@ -41,6 +41,29 @@ def _tidy_spoken(spoken):
     return text.strip(".,!?;:").strip()
 
 
+# "chat gpt", "chat g p t", "chatgpt", and "chat GPT" are one app.
+# "ChatGPT Classic" does not match: the pattern is the whole name.
+_CHAT_GPT_RE = re.compile(r"(?:chat\s*g\s*p\s*t|chat\s*gpt|chatgpt)", re.I)
+
+# Spoken when a fuzzy hit is too weak or too short to launch. "to TV" is close
+# to the two-letter TV app at the loose cutoff, and that used to open it.
+UNCLEAR_APP = "I didn't catch which app."
+# Fuzzy matches onto "TV" (two letters) are guesses. Exact names still match.
+_FUZZY_MIN_LEN = 4
+
+
+def normalize_app_phrase(spoken):
+    """Map ChatGPT spellings to ChatGPT. Every other name is only tidied.
+
+    'chat gpt', 'chat g p t', 'chatgpt', and 'chat GPT' become ChatGPT.
+    'ChatGPT Classic' and 'YouTube TV' are unchanged.
+    """
+    text = _tidy_spoken(spoken)
+    if _CHAT_GPT_RE.fullmatch(text):
+        return "ChatGPT"
+    return text
+
+
 def _drop_my(spoken):
     """'my phone' stays available for nicknames; callers may also try the shorter form."""
     shorter = re.sub(r"^my\s+", "", (spoken or "").strip(), flags=re.I).strip()
@@ -72,17 +95,39 @@ def _lookup_app(spoken):
     return aliases[matches[0]]
 
 
+def _strip_app_words(spoken):
+    """'the TV app' becomes 'TV'. A name that does not change is left out."""
+    text = re.sub(r"^(?:the|an|a)\s+", "", _tidy_spoken(spoken), flags=re.I).strip()
+    text = re.sub(r"\s+(?:app|application)$", "", text, flags=re.I).strip()
+    if text and _norm(text) != _norm(spoken):
+        return text
+    return None
+
+
 def known_app_name(spoken):
     """Prefer the full phrase, so 'my phone' is iPhone Mirroring and not the Phone app.
 
-    imessage, iMessage, and messages all resolve to Messages. The same map is
+    imessage, iMessage, and messages all resolve to Messages. Apple TV, the TV
+    app, and TV app resolve to TV. YouTube TV stays YouTube TV. The same map is
     what open, close, quit, hide, and focus consult.
     """
-    spoken = _tidy_spoken(spoken)
+    spoken = normalize_app_phrase(spoken)
     hit = _lookup_app(spoken)
     if hit:
         return hit
     shorter = _drop_my(spoken)
+    if shorter:
+        hit = _lookup_app(normalize_app_phrase(shorter))
+        if hit:
+            return hit
+    trimmed = _strip_app_words(spoken)
+    if not trimmed:
+        return None
+    trimmed = normalize_app_phrase(trimmed)
+    hit = _lookup_app(trimmed)
+    if hit:
+        return hit
+    shorter = _drop_my(trimmed)
     return _lookup_app(shorter) if shorter else None
 
 
@@ -143,25 +188,64 @@ def _display_name(path):
     return base[:-4] if base.lower().endswith(".app") else base
 
 
+def _rate_fuzzy(wanted, keys):
+    """('clear', key), ('weak', key), or ('none', None) for a fuzzy installed name.
+
+    A clear hit is a long name, well above the app cutoff, and not a toss-up
+    between two apps. Anything else that still beats the loose cutoff is a
+    guess: 'to TV' versus 'TV' is one of those.
+    """
+    keys = list(keys)
+    if not wanted or len(wanted) < 3 or not keys:
+        return "none", None
+    matches = difflib.get_close_matches(wanted, keys, n=2, cutoff=FUZZY_CUTOFF)
+    if not matches:
+        return "none", None
+    best = difflib.SequenceMatcher(None, wanted, matches[0]).ratio()
+    second = difflib.SequenceMatcher(None, wanted, matches[1]).ratio() if len(matches) > 1 else 0.0
+    unclear = (
+        len(matches[0]) < _FUZZY_MIN_LEN
+        or best < APP_FUZZY_CUTOFF
+        or (len(matches) > 1 and best - second < 0.05)
+    )
+    return ("weak" if unclear else "clear"), matches[0]
+
+
+def _installed_fuzzy(spoken, idx):
+    """('exact'|'clear'|'weak'|'none', index key or None). Exact wins over fuzzy."""
+    wanted = _norm(known_app_name(spoken) or spoken)
+    if not wanted:
+        return "none", None
+    if wanted in idx:
+        return "exact", wanted
+    return _rate_fuzzy(wanted, idx.keys())
+
+
 def resolve_app(spoken, idx=None):
-    """Return (path, display name) for a spoken app, or None."""
+    """Return (path, display name) for a spoken app, or None.
+
+    A low-confidence or very short fuzzy match is not a result. Callers that
+    open or quit ask unclear_app_guess and say they didn't catch the name.
+    """
     if not spoken:
         return None
     idx = app_index() if idx is None else idx
-    wanted = _norm(known_app_name(spoken) or spoken)
-    if not wanted:
+    kind, key = _installed_fuzzy(spoken, idx)
+    if kind not in ("exact", "clear") or key not in idx:
         return None
-    path = idx.get(wanted)
-    if path:
-        return path, _display_name(path)
-    # One- and two-letter names fuzzy-match almost anything, so require an exact hit.
-    if len(wanted) < 3:
-        return None
-    match = difflib.get_close_matches(wanted, list(idx.keys()), n=1, cutoff=FUZZY_CUTOFF)
-    if not match:
-        return None
-    path = idx[match[0]]
-    return path, _display_name(path)
+    return idx[key], _display_name(idx[key])
+
+
+def unclear_app_guess(spoken, idx=None):
+    """True when the only installed hit would be a guess, not a clear name.
+
+    An alias such as Apple TV or chat gpt is clear and returns False.
+    """
+    if not spoken or known_app_name(spoken):
+        return False
+    idx = app_index() if idx is None else idx
+    kind, _key = _installed_fuzzy(spoken, idx)
+    return kind == "weak"
 
 
 def parse_app_name(text, kind=None):
@@ -242,15 +326,15 @@ def _running_match(spoken):
     exact = [app for app in apps if _norm(str(app.localizedName() or "")) == wanted]
     if exact:
         return exact[0]
-    if len(wanted) < 3:
-        return None
     by_key = {}
     for app in apps:
         key = _norm(str(app.localizedName() or ""))
         if key and key not in by_key:
             by_key[key] = app
-    match = difflib.get_close_matches(wanted, list(by_key.keys()), n=1, cutoff=FUZZY_CUTOFF)
-    return by_key[match[0]] if match else None
+    kind, key = _rate_fuzzy(wanted, by_key.keys())
+    if kind != "clear":
+        return None
+    return by_key.get(key)
 
 
 def _is_running(target):
@@ -310,6 +394,8 @@ def open_any_app(arg, text, favourites):
         found = resolve_app(spoken) or resolve_app(spoken, app_index(force=True))
         if found:
             display = found[1]
+        elif unclear_app_guess(spoken):
+            return UNCLEAR_APP
     if not display:
         return f"{spoken} isn't installed."
     try:
@@ -335,6 +421,8 @@ def quit_any_app(arg, text, favourites):
     spoken, display = _spoken_target(text, "quit", arg, favourites)
     if not spoken:
         return "Which app should I quit?"
+    if unclear_app_guess(spoken):
+        return UNCLEAR_APP
     try:
         app = _running_match(spoken)
     except Exception:
@@ -354,6 +442,8 @@ def hide_any_app(arg, text, favourites):
     spoken, display = _spoken_target(text, "hide", arg, favourites)
     if not spoken:
         return "Which app should I hide?"
+    if unclear_app_guess(spoken):
+        return UNCLEAR_APP
     try:
         app = _running_match(spoken)
     except Exception:
@@ -381,6 +471,8 @@ def focus_any_app(arg, text, favourites):
     spoken, display = _spoken_target(text, "focus", arg, favourites)
     if not spoken:
         return "Which app should I switch to?"
+    if unclear_app_guess(spoken):
+        return UNCLEAR_APP
     app = None
     try:
         app = _running_match(spoken)
