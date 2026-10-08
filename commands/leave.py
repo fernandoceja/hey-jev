@@ -38,11 +38,20 @@ def _leave_at(shift_start, travel_minutes, buffer_minutes):
     return shift_start - timedelta(minutes=travel_minutes + buffer_minutes)
 
 
-def speak_leave_time(now=None, path=None, events=None):
-    """Leave time for the next shift. Brea uses MapKit, then the typical drive.
+def _minutes_from_travel(travel):
+    """(minutes, estimate). None from MapKit is the typical drive."""
+    if travel is None:
+        return int(config.LEAVE_TYPICAL_DRIVE_MINUTES), True
+    return max(1, int(round(float(travel) / 60.0))), False
+
+
+def describe_leave(now=None, path=None, events=None):
+    """The next leave, for the spoken answer and the proactive nudge.
 
     `events` skips the calendar read. Tests pass a list. Omit it to read
     EventKit the same way the other shift answers do, then apply overrides.
+    MapKit is asked only for a future Brea shift. A started shift and any
+    other store do not request a drive time.
     """
     now = now or datetime.now().astimezone()
     horizon = now + timedelta(days=config.SHIFT_HORIZON_DAYS)
@@ -51,33 +60,66 @@ def speak_leave_time(now=None, path=None, events=None):
     else:
         loaded = events
     loaded, error = events_with_overrides(loaded, now, horizon, path=path)
+    plan = {
+        "shift": None,
+        "started": False,
+        "brea": False,
+        "error": None,
+        "travel_minutes": None,
+        "estimate": False,
+        "buffer": int(config.LEAVE_BUFFER_MINUTES),
+        "leave": None,
+        "place": "",
+    }
     if error and not loaded:
-        return error
+        plan["error"] = error
+        return plan
     shift, started = _next_shift(loaded, now, horizon)
     if shift is None:
-        return "I don't see a shift to leave for."
-    place = shift.get("place") or shift.get("title") or "work"
-    if started:
-        if _is_brea(shift):
-            return f"Your Brea shift already started at {_clock(shift['start'])}."
-        return f"You're already on {shift['title']}."
-    if not _is_brea(shift):
-        return (
-            f"Your next shift is {shift['title']} {_day_phrase(shift['start'], now)} "
-            f"at {_clock(shift['start'])}. I only have a drive time from home to Brea."
-        )
+        return plan
+    plan["shift"] = shift
+    plan["started"] = started
+    plan["place"] = shift.get("place") or shift.get("title") or "work"
+    plan["brea"] = _is_brea(shift)
+    if started or not plan["brea"]:
+        return plan
     try:
         travel = expected_travel_seconds(
             config.HOME_ADDRESS, config.BREA_STORE_ADDRESS, shift["start"])
     except Exception:
         travel = None
-    estimate = travel is None
-    if estimate:
-        travel_minutes = int(config.LEAVE_TYPICAL_DRIVE_MINUTES)
-    else:
-        travel_minutes = max(1, int(round(travel / 60.0)))
-    buffer = int(config.LEAVE_BUFFER_MINUTES)
-    leave = _leave_at(shift["start"], travel_minutes, buffer)
+    minutes, estimate = _minutes_from_travel(travel)
+    plan["travel_minutes"] = minutes
+    plan["estimate"] = estimate
+    plan["leave"] = _leave_at(shift["start"], minutes, plan["buffer"])
+    return plan
+
+
+def speak_leave_time(now=None, path=None, events=None):
+    """Leave time for the next shift. Brea uses MapKit, then the typical drive.
+
+    The numbers come from describe_leave, which the leave nudge uses too.
+    """
+    now = now or datetime.now().astimezone()
+    plan = describe_leave(now=now, path=path, events=events)
+    if plan["error"] and plan["shift"] is None:
+        return plan["error"]
+    shift = plan["shift"]
+    if shift is None:
+        return "I don't see a shift to leave for."
+    place = plan["place"]
+    if plan["started"]:
+        if plan["brea"]:
+            return f"Your Brea shift already started at {_clock(shift['start'])}."
+        return f"You're already on {shift['title']}."
+    if not plan["brea"]:
+        return (
+            f"Your next shift is {shift['title']} {_day_phrase(shift['start'], now)} "
+            f"at {_clock(shift['start'])}. I only have a drive time from home to Brea."
+        )
+    travel_minutes = plan["travel_minutes"]
+    buffer = plan["buffer"]
+    leave = plan["leave"]
     drive = _hours_minutes(travel_minutes)
     cushion = _hours_minutes(buffer)
     when = _day_phrase(shift["start"], now)
@@ -92,6 +134,6 @@ def speak_leave_time(now=None, path=None, events=None):
         if when != "today":
             head += f" {when}"
         head += "."
-    if estimate:
+    if plan["estimate"]:
         return f"{head} I'm using a typical drive of {drive} as an estimate, plus a buffer of {cushion}."
     return f"{head} The drive is about {drive}, plus a buffer of {cushion}."
