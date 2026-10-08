@@ -83,6 +83,8 @@ from .config import (
     QUIT_ALL_ONLY_RE,
     _OPEN_VERBS,
     _QUIT_VERBS,
+    _HIDE_VERBS,
+    _FOCUS_VERBS,
     JOINER_RE,
     _PLEASE,
     _TAIL,
@@ -155,6 +157,8 @@ from .apps import (
     launch_app,
     open_any_app,
     quit_any_app,
+    hide_any_app,
+    focus_any_app,
     quit_all_apps,
     speak_open_apps,
     app_is_installed,
@@ -375,6 +379,7 @@ from .routing import (
     route_before_api,
     preview_action,
     route_open_phrase,
+    route_named_app,
     bare_run_matches_folder,
 )
 
