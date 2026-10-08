@@ -710,8 +710,11 @@ def plus_menu(can_attach=None, recording=False):
         record = _menu_action("record_start", "Start Screen Recording", "record_start", "record.circle")
     quick = (
         _menu_text("brief", "Brief Me", "brief me", "newspaper"),
+        _menu_text("play_brief", "Play My Brief", "play my brief", "play.circle"),
         _menu_text("next_shift", "Next Shift", "what's my next shift", "calendar"),
         _menu_text("leave", "When Should I Leave", "when should I leave", "car.fill"),
+        _menu_text("leave_reminders_on", "Turn On Leave Reminders", "turn on leave reminders", "bell.badge"),
+        _menu_text("leave_reminders_off", "Turn Off Leave Reminders", "turn off leave reminders", "bell.slash"),
         _menu_text("payday", "Payday Check", "payday check", "bell"),
         {"kind": "separator"},
         _menu_text("blue_pill", "Blue Pill", "blue pill", "play.rectangle"),

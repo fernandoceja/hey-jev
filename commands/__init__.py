@@ -4,8 +4,9 @@ Names are parsed from the transcript here, the same way timers parse a duration.
 decide() in siri.py calls route_before_api() before any TypeSafe or LLM call.
 
 Nothing in this module listens on a socket. The iPhone bridge only polls an
-iCloud Drive folder. App launches, site URLs, and shortcut runs go through
-argument lists, never a shell string. A shortcut runs only when the Jev folder
+iCloud Drive folder. The morning brief memo is a local file played with afplay
+and is not on the bridge allowlist. App launches, site URLs, and shortcut runs
+go through argument lists, never a shell string. A shortcut runs only when the Jev folder
 can be verified; `shortcuts list --folder-name` alone is not proof, because a
 missing folder makes that command print every shortcut. Message text is
 returned as LocalSpeech so the caller can speak it with the macOS say command
@@ -30,9 +31,24 @@ from .config import (
     BREA_STORE_ADDRESS,
     LEAVE_BUFFER_MINUTES,
     LEAVE_TYPICAL_DRIVE_MINUTES,
+    LEAVE_REMINDERS_ENABLED,
+    LEAVE_PREWARN_MINUTES,
+    LEAVE_POLL_FAR_SECONDS,
+    LEAVE_POLL_NEAR_SECONDS,
+    LEAVE_POLL_CLOSE_SECONDS,
+    LEAVE_NEAR_MINUTES,
+    LEAVE_CLOSE_MINUTES,
+    LEAVE_NUDGE_STATE_PATH,
     SWEEP_AMOUNT,
     SWEEP_ACCOUNT_LABEL,
     SWEEP_SPOKEN_PATH,
+    BRIEF_MEMO_DIR,
+    BRIEF_MEMO_TIME,
+    BRIEF_MEMO_ENABLED,
+    BRIEF_MEMO_RETRIES,
+    BRIEF_MEMO_WINDOW_MINUTES,
+    BRIEF_MEMO_POLL_SECONDS,
+    BRIEF_MEMO_STATE_PATH,
     PRINCESS_SHORTCUT,
     PRINCESS_ACADEMY_URL,
     SHOPIFY_ORDERS_URL,
@@ -49,6 +65,7 @@ from .config import (
     IHSS_PATH,
     MONEY_PATH,
     DUE_HORIZON_DAYS,
+    REMINDERS_LIST,
     UPLAND_LAT,
     UPLAND_LON,
     WEATHER_TIMEOUT,
@@ -223,7 +240,23 @@ from .travel import (
 )
 
 from .leave import (
+    describe_leave,
     speak_leave_time,
+)
+
+from .leave_nudge import (
+    deliver_due_nudges,
+    due_leave_nudges,
+    hold_leave_nudges,
+    leave_poll_seconds,
+    leave_reminders_enabled,
+    mac_output_muted,
+    post_leave_notification,
+    record_leave_nudge,
+    run_leave_nudge_once,
+    set_leave_quiet_probe,
+    set_leave_reminders,
+    start_leave_nudge_thread,
 )
 
 from .weather import (
@@ -240,6 +273,17 @@ from .notes_due import (
     _dated_lines,
     _read_due_lines,
     speak_due,
+)
+
+from .reminders import (
+    REMINDERS_AUTOMATION,
+    REMINDERS_DENIED,
+    REMINDERS_FAIL,
+    REMINDERS_NO_DEFAULT,
+    REMINDERS_UNCLEAR,
+    add_reminder,
+    confirmation_line,
+    parse_reminder_request,
 )
 
 from .money import (
@@ -425,4 +469,19 @@ from .brief import (
     speak_today,
     _count_today_events,
     speak_brief,
+)
+
+from .brief_memo import (
+    BriefPlayback,
+    EMPTY_FOLDER_LINE,
+    MISSING_FOLDER_LINE,
+    NOT_READY_LINE,
+    afplay_command,
+    brief_memo_settings,
+    list_memos,
+    play_memo_file,
+    request_brief,
+    run_scheduled_brief,
+    start_brief_memo_thread,
+    stop_brief,
 )
