@@ -44,6 +44,12 @@ from .config import (
     MY_LOVE_HANDLES,
     MESSAGES_DB,
     JEV_DOCS,
+    CLIPBOARD_HISTORY_LIMIT,
+    CLIPBOARD_ITEM_MAX,
+    CLIPBOARD_PREVIEW_LEN,
+    CLIPBOARD_SPOKEN_COUNT,
+    CLIPBOARD_POLL_SECONDS,
+    CLIPBOARD_HISTORY_PATH,
     NOTES_PATH,
     DUE_PATH,
     IHSS_PATH,
@@ -348,6 +354,26 @@ from .access import (
 from .matrix import (
     start_matrix,
     stop_matrix,
+)
+
+from .clipboard_history import (
+    CLIPBOARD,
+    CLIPBOARD_KEYS,
+    activate_clipboard_index,
+    clear_clipboard_history,
+    clipboard_is_paused,
+    clipboard_menu_entries,
+    copy_clipboard_from_text,
+    icloud_clipboard_path,
+    load_clipboard,
+    outbox_reply,
+    paste_clipboard_from_text,
+    pause_clipboard_history,
+    poll_once,
+    resume_clipboard_history,
+    save_clipboard,
+    speak_clipboard_history,
+    start_clipboard_thread,
 )
 
 from .shortcuts import (

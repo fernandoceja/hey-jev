@@ -126,6 +126,10 @@ from mini_bar import (
     place_bar,
     plus_item,
     plus_menu,
+    clipboard_item_index,
+    clipboard_menu,
+    clipboard_menu_phrase,
+    option_held,
     remembered_size,
     reply_text,
     reset_origin,
@@ -163,13 +167,15 @@ ACTION_NAMES = {"app_open": "Open app", "app_quit": "Quit app", "app_hide": "Hid
 APPS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "apps.json")
 HOW_TO = ("“Hey Jev, open Spotify” runs a command. In Hold Option mode, hold right Option and just say it.\n"
           "“Hey Jev, transcribe” starts dictating, with a bubble at the bottom of the screen. "
-          "Say “stop transcribing” and it pastes where your cursor is.")
+          "Say “stop transcribing” and it pastes where your cursor is.\n"
+          "“Clipboard history” reads recent plain-text copies. That list stays on this Mac.")
 PRIVACY = (
     ("Stays on your Mac", "Everything the mic hears. Whisper listens for \u201cHey Jev\u201d on your Mac and throws away anything that isn't for her. Your dictionary, dictation history and logs stay in this folder and ~/Library/Logs."),
     ("TypeSafe (Jev)  \u00b7  text", "Only the words after \u201cHey Jev\u201d, like \u201copen Spotify\u201d, to work out what to do."),
     ("OpenRouter or OpenAI  \u00b7  audio", "Dictation audio, only between \u201ctranscribe\u201d and \u201cstop transcribing\u201d. It goes to OpenAI directly if you added that key, otherwise through OpenRouter. Questions that aren't commands go to Claude Haiku on OpenRouter as text."),
     ("Fish Audio  \u00b7  text", "The text of her replies, to turn into her voice. Scripted replies are saved after the first time, so most are never sent again."),
     ("GitHub  \u00b7  read only", "Check for updates, only when you click it, asks api.github.com whether henryklunaris/hey-jev has new commits. No token is sent. Nothing is downloaded or installed."),
+    ("Clipboard history  \u00b7  on this Mac", "Recent plain-text copies stay in memory. Secrets, one-time codes, and password-manager copies are skipped. Nothing is sent to an API, and the iPhone bridge cannot read it."),
 )
 KEY_ROWS = (
     ("TypeSafe", "TYPESAFE_API_KEY", "Jev, decides what each command means"),
@@ -2075,12 +2081,18 @@ class AppDelegate(NSObject):
     def miniPlus_(self, sender):
         menu = NSMenu.alloc().initWithTitle_("Message Jev")
         recording = False
+        entries = ()
+        paused = False
         try:
             import commands
             recording = bool(commands.is_recording())
+            entries = commands.clipboard_menu_entries()
+            paused = commands.clipboard_is_paused()
         except Exception:
             recording = False
-        self._fill_plus_menu(menu, plus_menu(recording=recording))
+            entries = ()
+            paused = False
+        self._fill_plus_menu(menu, plus_menu(recording=recording, clipboard_entries=entries, clipboard_paused=paused))
         if sender is None:
             return
         height = float(sender.bounds().size.height)
@@ -2121,7 +2133,7 @@ class AppDelegate(NSObject):
             item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
                 title, "miniPlusItem:", spec.get("key") or "")
             item.setTarget_(self)
-            item.setEnabled_(True)
+            item.setEnabled_(kind != "clipboard_empty")
             item.setRepresentedObject_(spec.get("id") or "")
             image = self._menu_symbol(spec.get("symbol") or "", title)
             if image is not None:
@@ -2130,7 +2142,19 @@ class AppDelegate(NSObject):
 
     def miniPlusItem_(self, sender):
         raw = sender.representedObject() if sender is not None else None
-        spec = plus_item("" if raw is None else str(raw))
+        item_id = "" if raw is None else str(raw)
+        # History rows are an index, not a phrase. The preview is the title only.
+        index = clipboard_item_index(item_id)
+        if index:
+            paste = self._clipboard_option_paste()
+            threading.Thread(
+                target=self._activate_clipboard_from_menu, args=(index, paste), daemon=True).start()
+            return
+        phrase = clipboard_menu_phrase(item_id)
+        if phrase:
+            self._queue_bar_phrase(phrase)
+            return
+        spec = plus_item(item_id)
         if not spec:
             return
         kind = spec.get("kind")
@@ -2161,6 +2185,50 @@ class AppDelegate(NSObject):
         if kind == "reset_size":
             self.resetMiniBarSize_(sender)
             return
+
+    @objc.python_method
+    def _clipboard_option_paste(self):
+        """Option-click pastes. A plain click only copies the item back."""
+        try:
+            return option_held(NSEvent.modifierFlags(), NSEventModifierFlagOption)
+        except Exception:
+            return False
+
+    @objc.python_method
+    def _clipboard_status_line(self, status):
+        """A pill line that does not include the clipboard text."""
+        if status == "copied":
+            return "Copied."
+        if status == "pasted":
+            return "Pasted."
+        if status == "paste_failed":
+            return "Copied, but I couldn't paste it."
+        return "No clipboard item there."
+
+    @objc.python_method
+    def _activate_clipboard_from_menu(self, index, paste):
+        try:
+            import commands
+            status, _speech = commands.activate_clipboard_index(index, paste=bool(paste))
+        except Exception:
+            status = "missing"
+        line = self._clipboard_status_line(status)
+        self.performSelectorOnMainThread_withObject_waitUntilDone_("showBarSentence:", line, False)
+
+    def clipboardMenuItem_(self, sender):
+        raw = sender.representedObject() if sender is not None else None
+        index = clipboard_item_index("" if raw is None else str(raw))
+        if not index:
+            return
+        paste = self._clipboard_option_paste()
+        threading.Thread(
+            target=self._activate_clipboard_from_menu, args=(index, paste), daemon=True).start()
+
+    def clipboardMenuPhrase_(self, sender):
+        raw = sender.representedObject() if sender is not None else None
+        phrase = clipboard_menu_phrase("" if raw is None else str(raw))
+        if phrase:
+            self._queue_bar_phrase(phrase)
 
     @objc.python_method
     def _queue_bar_phrase(self, phrase):
@@ -2646,8 +2714,52 @@ class AppDelegate(NSObject):
             NSWorkspace.sharedWorkspace().openURL_(NSURL.URLWithString_(open_url))
 
 
+class ClipboardMenuController(NSObject):
+    """Fills the Clipboard History menu when it opens. Titles are previews only."""
+
+    def menuNeedsUpdate_(self, menu):
+        self._refill(menu)
+
+    @objc.python_method
+    def _refill(self, menu):
+        while menu.numberOfItems() > 0:
+            menu.removeItemAtIndex_(0)
+        entries = ()
+        paused = False
+        try:
+            import commands
+            entries = commands.clipboard_menu_entries()
+            paused = commands.clipboard_is_paused()
+        except Exception:
+            entries = ()
+            paused = False
+        spec = clipboard_menu(entries, paused)
+        delegate = NSApp.delegate()
+        for item in spec.get("items") or ():
+            kind = item.get("kind")
+            if kind == "separator":
+                menu.addItem_(NSMenuItem.separatorItem())
+                continue
+            title = item.get("title") or ""
+            entry = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(title, None, "")
+            entry.setEnabled_(kind != "clipboard_empty")
+            if kind == "clipboard_item":
+                entry.setAction_("clipboardMenuItem:")
+                entry.setRepresentedObject_(item.get("id") or "")
+            elif kind == "text":
+                entry.setAction_("clipboardMenuPhrase:")
+                entry.setRepresentedObject_(item.get("id") or "")
+            if delegate is not None and entry.action():
+                entry.setTarget_(delegate)
+            menu.addItem_(entry)
+
+
+_clipboard_menu_controller = None
+
+
 def build_menu():
-    """App and Edit menus, so Cmd+Q works and Cmd+V pastes into the key fields."""
+    """App, Clipboard History, and Edit menus, so Cmd+Q works and Cmd+V pastes into the key fields."""
+    global _clipboard_menu_controller
     bar = NSMenu.alloc().init()
     app_item = NSMenuItem.alloc().init()
     bar.addItem_(app_item)
@@ -2655,6 +2767,13 @@ def build_menu():
     app_menu.addItemWithTitle_action_keyEquivalent_("Check for Updates\u2026", "checkForUpdates:", "")
     app_menu.addItemWithTitle_action_keyEquivalent_("Quit Hey Jev", "terminate:", "q")
     app_item.setSubmenu_(app_menu)
+    clip_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("Clipboard History", None, "")
+    bar.addItem_(clip_item)
+    clip = NSMenu.alloc().initWithTitle_("Clipboard History")
+    clip.setAutoenablesItems_(False)
+    _clipboard_menu_controller = ClipboardMenuController.alloc().init()
+    clip.setDelegate_(_clipboard_menu_controller)
+    clip_item.setSubmenu_(clip)
     edit_item = NSMenuItem.alloc().init()
     bar.addItem_(edit_item)
     edit = NSMenu.alloc().initWithTitle_("Edit")

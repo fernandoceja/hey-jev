@@ -227,3 +227,52 @@ class TestBridgeValidation(unittest.TestCase):
         self.assertIsNone(commands.bridge_allowed("check my messages from My Love"))
         self.assertIsNone(commands.bridge_allowed("move $600 to Zoe"))
         self.assertIsNone(commands.bridge_allowed("confirm the transfer"))
+
+    def test_clipboard_history_is_refused_on_the_bridge(self):
+        """Clipboard commands are local. A signed file never runs them or copies the text out.
+
+        The stand-in run_text would return the spoken history if it were called.
+        The outbox reply is the phone refusal, and it does not contain the item.
+        """
+        marker = "MARKER-clipboard-body-not-for-icloud"
+        commands.CLIPBOARD.clear_items()
+        self.addCleanup(commands.CLIPBOARD.clear_items)
+        from commands.clipboard_history import Snapshot
+        self.assertEqual(commands.CLIPBOARD.observe(Snapshot(1, marker)), "stored")
+        phrases = (
+            ("clipboard history", "cliphist1", "clipboard_history"),
+            ("show me my clipboard history", "cliphist2", "clipboard_history"),
+            ("paste item 2", "clipaste2", "clipboard_paste"),
+            ("copy item 2", "clipcopy2", "clipboard_copy"),
+            ("clear clipboard history", "clipclr01", "clipboard_clear"),
+            ("pause clipboard history", "clipause1", "clipboard_pause"),
+            ("resume clipboard history", "clipresum", "clipboard_resume"),
+        )
+        for phrase, nonce, key in phrases:
+            self.assertEqual(commands.route_before_api(phrase), key, phrase)
+            self.assertIsNone(commands.bridge_allowed(phrase), phrase)
+            self.assertNotIn(key, commands.BRIDGE_ALLOW, key)
+            calls, path = self._process_clipboard(phrase, nonce)
+            self.assertEqual(calls, [], phrase)
+            self.assertFalse(os.path.exists(path))
+            reply = self._reply(nonce)
+            self.assertFalse(reply["ok"], phrase)
+            self.assertIn("can't do that from your phone", reply["reply"].lower())
+            self.assertNotIn(marker, reply["reply"])
+            self.assertNotIn(marker, json.dumps(reply))
+
+    def _process_clipboard(self, cmd, nonce, ts=NOW, name=None):
+        """Like _process, but a mistaken allow would write the clipboard speech."""
+        sig = _sign(cmd, ts, nonce)
+        path = os.path.join(self.tmp.name, name or nonce + ".json")
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump({"cmd": cmd, "ts": ts, "nonce": nonce, "sig": sig}, handle)
+        calls = []
+
+        def run_text(text):
+            calls.append(text)
+            speech = commands.speak_clipboard_history()
+            return getattr(speech, "text", "")
+
+        bridge._process_bridge_file(path, run_text)
+        return calls, path

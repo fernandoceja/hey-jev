@@ -445,6 +445,12 @@ ACTIONS = {
     "case_status": lambda _arg, _text: commands.open_case_status(),
     "matrix_on": lambda _arg, _text: commands.start_matrix(),
     "matrix_off": lambda _arg, _text: commands.stop_matrix(),
+    "clipboard_history": lambda _arg, _text: commands.speak_clipboard_history(),
+    "clipboard_copy": lambda _arg, text: commands.copy_clipboard_from_text(text),
+    "clipboard_paste": lambda _arg, text: commands.paste_clipboard_from_text(text),
+    "clipboard_clear": lambda _arg, _text: commands.clear_clipboard_history(),
+    "clipboard_pause": lambda _arg, _text: commands.pause_clipboard_history(),
+    "clipboard_resume": lambda _arg, _text: commands.resume_clipboard_history(),
     "shortcut_run": lambda _arg, text: commands.run_named_shortcut(text),
 }
 
@@ -1132,7 +1138,7 @@ def _run_local(payload, text, notify, reply_sink):
         _deliver(prompt, notify, reply_sink)
         commands.refresh_confirmation()
         return "expect_reply"
-    private = action == "info_messages"
+    private = action == "info_messages" or action in commands.CLIPBOARD_KEYS
     if action in SPEAK_FIRST:
         line = say_line(reply_key, **fmt) if reply_key in REPLIES else "Okay."
         _deliver(line, notify, reply_sink)
@@ -1148,9 +1154,12 @@ def _run_local(payload, text, notify, reply_sink):
         emit(notify, "Doing it", "On this Mac" if private else text)
         result = ACTIONS[action](arg, text)
     except Exception as exc:
+        # Private replies must not land in the log. The exception text can echo a clipboard item.
         print(f"  action failed: {action} {type(exc).__name__ if private else exc}")
-        if private:
+        if action == "info_messages":
             _deliver("I couldn't read those messages.", notify, reply_sink, private=True)
+        elif action in commands.CLIPBOARD_KEYS:
+            _deliver("I couldn't use the clipboard history.", notify, reply_sink, private=True)
         else:
             _deliver(say_line("unsupported"), notify, reply_sink)
         return
@@ -1473,6 +1482,7 @@ def run_voice_assistant(notify=None, controls=None, mode="ptt", mic=""):
         return spoken[-1] if spoken else ""
 
     commands.start_bridge_thread(bridge_turn)
+    commands.start_clipboard_thread()
     threading.Thread(target=warm_cache, daemon=True).start()
     threading.Thread(target=wake_loop, daemon=True).start()
     set_mode(mode)

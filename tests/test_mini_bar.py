@@ -475,6 +475,9 @@ _MENU_ROUTES = {
     "brightness_40": "brightness_set",
     "brightness_70": "brightness_set",
     "brightness_100": "brightness_set",
+    "clipboard_show": "clipboard_history",
+    "clipboard_clear": "clipboard_clear",
+    "clipboard_pause": "clipboard_pause",
 }
 _MENU_ACTIONS = {
     "window": "window",
@@ -558,7 +561,8 @@ class TestGlass(unittest.TestCase):
                 key = commands.route_before_api(phrase)
                 self.assertEqual(key, _MENU_ROUTES[item["id"]], phrase)
                 self.assertNotEqual(key, "info_messages")
-                if key in ("matrix_on", "matrix_off", "notify_off", "volume_set", "volume_mute", "brightness_set"):
+                if key in ("matrix_on", "matrix_off", "notify_off", "volume_set", "volume_mute", "brightness_set",
+                           "clipboard_history", "clipboard_clear", "clipboard_pause"):
                     self.assertNotIn(key, commands.BRIDGE_ALLOW)
                 routed[item["id"]] = key
             else:
