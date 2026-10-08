@@ -92,7 +92,7 @@ ZOE_BLOCKED = {
     ),
     "shortcuts": ("shortcut_run", "focus_on"),
     "reminders": ("remind_add", "ihss_remind"),
-    "leave": ("leave_reminders_on", "leave_reminders_off", "info_leave"),
+    "leave": ("leave_reminders_on", "leave_reminders_off", "info_leave", "info_eta_work"),
     "brief": ("brief_play", "brief_stop", "info_brief"),
     "video": (
         "video_mp4",

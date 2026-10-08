@@ -48,6 +48,7 @@ COMMAND_PROMPT = (
     "Turn the volume up. Set the volume to 40. Mute. Lock the screen. What's my battery. "
     "When's my next shift. Am I working this weekend. How long until payday. "
     "My shift Monday is 9:30 to 6:30 at Brea. Clear my shift Monday. When should I leave for work. "
+    "What's my ETA to work. "
     "Turn on leave reminders. Turn off leave reminders. "
     "Open settings. Open business email. Run shortcut Leaving for work. What can you do."
 )
@@ -423,6 +424,7 @@ ACTIONS = {
     "shift_set": lambda _arg, text: commands.set_shift_override(text),
     "shift_clear": lambda _arg, text: commands.clear_shift_override(text),
     "info_leave": lambda _arg, _text: commands.speak_leave_time(),
+    "info_eta_work": lambda _arg, _text: commands.speak_eta_to_work(),
     "leave_reminders_on": lambda _arg, _text: commands.set_leave_reminders(True),
     "leave_reminders_off": lambda _arg, _text: commands.set_leave_reminders(False),
     "info_school": lambda _arg, _text: commands.speak_school_due(),

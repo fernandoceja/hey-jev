@@ -495,3 +495,33 @@ class TestBridgeValidation(unittest.TestCase):
             reply = self._reply(nonce)
             self.assertFalse(reply["ok"], phrase)
             self.assertIn("can't do that from your phone", reply["reply"].lower())
+
+    def test_eta_to_work_is_refused(self):
+        """The current drive to work is Mac-only. A signed file does not run it."""
+        phrases = (
+            ("what's my ETA to work", "etawork01"),
+            ("what is my ETA to work", "etawork02"),
+            ("ETA to work", "etawork03"),
+            ("my ETA to work", "etawork04"),
+            ("how long to get to work", "etawork05"),
+            ("how long will it take me to get to work", "etawork06"),
+            ("how long is my drive to work", "etawork07"),
+            ("how far am I from work", "etawork08"),
+            ("please what's my ETA to work", "etawork09"),
+            ("hey jev, what's my ETA to work", "etawork10"),
+            ("what's my ETA to work please", "etawork11"),
+        )
+        self.assertNotIn("info_eta_work", commands.BRIDGE_ALLOW)
+        self.assertIn("info_leave", commands.BRIDGE_ALLOW)
+        self.assertNotIn("info_messages", commands.BRIDGE_ALLOW)
+        self.assertIsInstance(commands.BRIDGE_ALLOW, frozenset)
+        for phrase, nonce in phrases:
+            self.assertEqual(commands.route_before_api(phrase), "info_eta_work", phrase)
+            self.assertIsNone(commands.bridge_allowed(phrase), phrase)
+            self.assertNotIn("info_eta_work", commands.BRIDGE_ALLOW, phrase)
+            calls, path = self._process(phrase, nonce, name=nonce + ".json")
+            self.assertEqual(calls, [], phrase)
+            self.assertFalse(os.path.exists(path), phrase)
+            reply = self._reply(nonce)
+            self.assertFalse(reply["ok"], phrase)
+            self.assertIn("can't do that from your phone", reply["reply"])

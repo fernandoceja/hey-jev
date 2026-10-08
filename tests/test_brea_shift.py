@@ -70,6 +70,9 @@ class _Request(_Obj):
     def setArrivalDate_(self, when):
         self.arrival = when
 
+    def setDepartureDate_(self, when):
+        self.departure = when
+
 
 class _Response:
     def __init__(self, seconds):
@@ -394,6 +397,16 @@ class TestLeaveTime(unittest.TestCase):
         self.assertIsNone(seconds)
         self.assertIn("estimate", spoken)
         self.assertIn("8:40 AM", spoken)
+
+    def test_depart_now_sets_the_departure_date(self):
+        now = _at(2026, 10, 5, 12, 15)
+        with mock.patch.dict("sys.modules", _frameworks()):
+            seconds = travel_mod.expected_travel_seconds(
+                commands.HOME_ADDRESS, commands.BREA_STORE_ADDRESS, now, depart=True)
+        self.assertEqual(seconds, 1800.0)
+        self.assertEqual(_Directions.last_request.departure, now.timestamp())
+        self.assertFalse(hasattr(_Directions.last_request, "arrival"))
+        self.assertEqual(_Directions.last_request.kind, 1)
 
     def test_missing_mapkit_returns_none(self):
         blocked = {

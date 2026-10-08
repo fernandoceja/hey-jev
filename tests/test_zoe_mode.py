@@ -91,6 +91,7 @@ BLOCKED_PHRASES = (
     ("leave", "turn on leave reminders", "leave_reminders_on"),
     ("leave", "turn off leave reminders", "leave_reminders_off"),
     ("leave", "when should I leave for work", "info_leave"),
+    ("leave", "what's my ETA to work", "info_eta_work"),
     ("brief", "play my brief", "brief_play"),
     ("brief", "stop", "brief_stop"),
     ("brief", "brief me", "info_brief"),

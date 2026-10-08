@@ -45,15 +45,12 @@ def _minutes_from_travel(travel):
     return max(1, int(round(float(travel) / 60.0))), False
 
 
-def describe_leave(now=None, path=None, events=None):
-    """The next leave, for the spoken answer and the proactive nudge.
+def _shift_context(now, path, events):
+    """The next shift, with overrides applied. This does not ask MapKit.
 
     `events` skips the calendar read. Tests pass a list. Omit it to read
     EventKit the same way the other shift answers do, then apply overrides.
-    MapKit is asked only for a future Brea shift. A started shift and any
-    other store do not request a drive time.
     """
-    now = now or datetime.now().astimezone()
     horizon = now + timedelta(days=config.SHIFT_HORIZON_DAYS)
     if events is None:
         loaded = _load_plain_events(now - timedelta(hours=18), horizon)
@@ -65,10 +62,6 @@ def describe_leave(now=None, path=None, events=None):
         "started": False,
         "brea": False,
         "error": None,
-        "travel_minutes": None,
-        "estimate": False,
-        "buffer": int(config.LEAVE_BUFFER_MINUTES),
-        "leave": None,
         "place": "",
     }
     if error and not loaded:
@@ -81,17 +74,43 @@ def describe_leave(now=None, path=None, events=None):
     plan["started"] = started
     plan["place"] = shift.get("place") or shift.get("title") or "work"
     plan["brea"] = _is_brea(shift)
-    if started or not plan["brea"]:
+    return plan
+
+
+def describe_leave(now=None, path=None, events=None):
+    """The next leave, for the spoken answer and the proactive nudge.
+
+    `events` skips the calendar read. Tests pass a list. Omit it to read
+    EventKit the same way the other shift answers do, then apply overrides.
+    MapKit is asked only for a future Brea shift. A started shift and any
+    other store do not request a drive time.
+    """
+    now = now or datetime.now().astimezone()
+    found = _shift_context(now, path, events)
+    plan = {
+        "shift": found["shift"],
+        "started": found["started"],
+        "brea": found["brea"],
+        "error": found["error"],
+        "travel_minutes": None,
+        "estimate": False,
+        "buffer": int(config.LEAVE_BUFFER_MINUTES),
+        "leave": None,
+        "place": found["place"],
+    }
+    if plan["error"] and plan["shift"] is None:
+        return plan
+    if plan["shift"] is None or plan["started"] or not plan["brea"]:
         return plan
     try:
         travel = expected_travel_seconds(
-            config.HOME_ADDRESS, config.BREA_STORE_ADDRESS, shift["start"])
+            config.HOME_ADDRESS, config.BREA_STORE_ADDRESS, plan["shift"]["start"])
     except Exception:
         travel = None
     minutes, estimate = _minutes_from_travel(travel)
     plan["travel_minutes"] = minutes
     plan["estimate"] = estimate
-    plan["leave"] = _leave_at(shift["start"], minutes, plan["buffer"])
+    plan["leave"] = _leave_at(plan["shift"]["start"], minutes, plan["buffer"])
     return plan
 
 
@@ -137,3 +156,54 @@ def speak_leave_time(now=None, path=None, events=None):
     if plan["estimate"]:
         return f"{head} I'm using a typical drive of {drive} as an estimate, plus a buffer of {cushion}."
     return f"{head} The drive is about {drive}, plus a buffer of {cushion}."
+
+
+def _shift_gap(now, arrive, path, events):
+    """Early or late against a shift today that has not started. Else ''."""
+    found = _shift_context(now, path, events)
+    shift = found["shift"]
+    if shift is None or found["started"]:
+        return ""
+    start = shift["start"]
+    if start.date() != now.date():
+        return ""
+    delta = int(round((start - arrive).total_seconds() / 60.0))
+    start_clock = _clock(start)
+    if delta > 0:
+        return f"Your shift starts at {start_clock}, so you'd be about {_hours_minutes(delta)} early."
+    if delta < 0:
+        return f"Your shift starts at {start_clock}, so you'd be about {_hours_minutes(-delta)} late."
+    return f"Your shift starts at {start_clock}, so you'd be right on time."
+
+
+def speak_eta_to_work(now=None, path=None, events=None):
+    """How long the drive to work is if you leave now.
+
+    MapKit is asked for a departure of now, from home to the Brea store.
+    A missing or failed result uses the typical drive and says so.
+    A shift today that has not started, including a saved override, adds
+    whether that arrival is early or late. A started shift, or none today,
+    skips that part.
+    """
+    now = now or datetime.now().astimezone()
+    try:
+        travel = expected_travel_seconds(
+            config.HOME_ADDRESS, config.BREA_STORE_ADDRESS, now, depart=True)
+    except Exception:
+        travel = None
+    minutes, estimate = _minutes_from_travel(travel)
+    arrive = now + timedelta(minutes=minutes)
+    drive = _hours_minutes(minutes)
+    arrival = _clock(arrive)
+    if estimate:
+        spoken = (
+            f"About {drive} to work right now. "
+            f"I'm using a typical drive of {drive} as an estimate. "
+            f"You'd get there around {arrival}."
+        )
+    else:
+        spoken = f"About {drive} to work right now. You'd get there around {arrival}."
+    gap = _shift_gap(now, arrive, path, events)
+    if gap:
+        return f"{spoken} {gap}"
+    return spoken
