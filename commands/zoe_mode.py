@@ -91,6 +91,16 @@ ZOE_BLOCKED = {
         "ask_google",
     ),
     "shortcuts": ("shortcut_run", "focus_on"),
+    "reminders": ("remind_add", "ihss_remind"),
+    "leave": ("leave_reminders_on", "leave_reminders_off", "info_leave"),
+    "brief": ("brief_play", "brief_stop", "info_brief"),
+    "video": (
+        "video_mp4",
+        "video_trim",
+        "video_compress",
+        "video_audio",
+        "video_choose",
+    ),
     "shell": (),
     "system": (
         "volume_up",

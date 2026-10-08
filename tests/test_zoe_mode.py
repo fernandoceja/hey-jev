@@ -86,6 +86,19 @@ BLOCKED_PHRASES = (
     ("system", "silence notifications", "notify_off"),
     ("system", "turn on voiceover", "voiceover_on"),
     ("llm", "why is the sky blue", None),
+    ("reminders", "remind me to buy milk", "remind_add"),
+    ("reminders", "remind me to submit my timesheet", "ihss_remind"),
+    ("leave", "turn on leave reminders", "leave_reminders_on"),
+    ("leave", "turn off leave reminders", "leave_reminders_off"),
+    ("leave", "when should I leave for work", "info_leave"),
+    ("brief", "play my brief", "brief_play"),
+    ("brief", "stop", "brief_stop"),
+    ("brief", "brief me", "info_brief"),
+    ("video", "convert the recording to mp4", "video_mp4"),
+    ("video", "trim the recording from 0:05 to 0:30", "video_trim"),
+    ("video", "compress the recording", "video_compress"),
+    ("video", "extract the audio from the recording", "video_audio"),
+    ("video", "choose a video", "video_choose"),
 )
 
 
@@ -120,6 +133,20 @@ class TestZoeMode(unittest.TestCase):
         self.assertEqual(commands.route_before_api("start a 5 minute timer for Zoe"), "zoe_timer")
         self.assertEqual(commands.route_before_api("play"), "media_play")
         self.assertEqual(commands.route_before_api("pause the music"), "media_pause")
+        self.assertEqual(commands.route_before_api("remind me to buy milk"), "remind_add")
+        self.assertEqual(commands.route_before_api("remind me to submit my timesheet"), "ihss_remind")
+        self.assertEqual(commands.route_before_api("turn on leave reminders"), "leave_reminders_on")
+        self.assertEqual(commands.route_before_api("turn off leave reminders"), "leave_reminders_off")
+        self.assertEqual(commands.route_before_api("play my brief"), "brief_play")
+        self.assertEqual(commands.route_before_api("stop"), "brief_stop")
+        self.assertEqual(commands.route_before_api("stop recording"), "record_stop")
+        self.assertEqual(commands.route_before_api("stop zoe mode"), "zoe_mode_off")
+        self.assertEqual(commands.route_before_api("stop kid mode"), "zoe_mode_off")
+        self.assertEqual(commands.route_before_api("convert the recording to mp4"), "video_mp4")
+        self.assertEqual(commands.route_before_api("trim the recording from 0:05 to 0:30"), "video_trim")
+        self.assertEqual(commands.route_before_api("compress the recording"), "video_compress")
+        self.assertEqual(commands.route_before_api("extract the audio from the recording"), "video_audio")
+        self.assertEqual(commands.route_before_api("choose a video"), "video_choose")
         self.assertEqual(commands.route_before_api("blue pill"), "matrix_on")
         self.assertEqual(commands.route_before_api("red pill"), "matrix_off")
         self.assertEqual(commands.route_before_api("what time is it"), "info_time")
@@ -142,6 +169,11 @@ class TestZoeMode(unittest.TestCase):
         self.assertIsNone(commands.zoe_guard("payday check"))
         self.assertIsNone(commands.zoe_guard("quit Safari"))
         self.assertIsNone(commands.zoe_guard("why is the sky blue"))
+        self.assertIsNone(commands.zoe_guard("remind me to buy milk"))
+        self.assertIsNone(commands.zoe_guard("turn on leave reminders"))
+        self.assertIsNone(commands.zoe_guard("play my brief"))
+        self.assertIsNone(commands.zoe_guard("stop"))
+        self.assertIsNone(commands.zoe_guard("convert the recording to mp4"))
         entered = commands.zoe_guard("zoe mode")
         self.assertEqual(entered["kind"], "speak")
         self.assertIn("Zoe mode is on", entered["line"])
@@ -207,6 +239,11 @@ class TestZoeMode(unittest.TestCase):
         self.assertFalse(os.path.exists(self.path))
         commands.enter_zoe_mode()
         commands.zoe_guard("stop zoe mode")
+        stayed_stop = commands.zoe_guard("stop")
+        self.assertIn("stays on", stayed_stop["line"].lower())
+        self.assertTrue(commands.zoe_mode_active())
+        self.assertFalse(commands.zoe_exit_pending())
+        self._refuse("stop")
         for phrase in ("grown-ups only", "GROWNUPS ONLY"):
             commands.enter_zoe_mode()
             commands.zoe_guard("exit zoe mode")
