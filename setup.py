@@ -20,6 +20,8 @@ setup(
             "NSAppleEventsUsageDescription": "Hey Jev controls Music, volume, brightness, Accessibility, Focus, Reminders, Notes, Mail, ChatGPT, and shortcuts in the Jev folder.",
             "NSCalendarsFullAccessUsageDescription": "Hey Jev reads your calendar to answer what's next, today's events, your next shift, the morning brief, Zoe's day, and when to leave for a shift.",
             "NSCalendarsUsageDescription": "Hey Jev reads your calendar to answer what's next, today's events, your next shift, the morning brief, Zoe's day, and when to leave for a shift.",
+            "NSRemindersFullAccessUsageDescription": "Hey Jev adds an Apple Reminder when you say remind me to, including a due time such as tomorrow at 9.",
+            "NSRemindersUsageDescription": "Hey Jev adds an Apple Reminder when you say remind me to, including a due time such as tomorrow at 9.",
         },
     }},
     setup_requires=["py2app"],

@@ -57,6 +57,7 @@ from .config import (
     IHSS_PATH,
     MONEY_PATH,
     DUE_HORIZON_DAYS,
+    REMINDERS_LIST,
     UPLAND_LAT,
     UPLAND_LON,
     WEATHER_TIMEOUT,
@@ -264,6 +265,17 @@ from .notes_due import (
     _dated_lines,
     _read_due_lines,
     speak_due,
+)
+
+from .reminders import (
+    REMINDERS_AUTOMATION,
+    REMINDERS_DENIED,
+    REMINDERS_FAIL,
+    REMINDERS_NO_DEFAULT,
+    REMINDERS_UNCLEAR,
+    add_reminder,
+    confirmation_line,
+    parse_reminder_request,
 )
 
 from .money import (
