@@ -4,8 +4,9 @@ Names are parsed from the transcript here, the same way timers parse a duration.
 decide() in siri.py calls route_before_api() before any TypeSafe or LLM call.
 
 Nothing in this module listens on a socket. The iPhone bridge only polls an
-iCloud Drive folder. App launches, site URLs, and shortcut runs go through
-argument lists, never a shell string. A shortcut runs only when the Jev folder
+iCloud Drive folder. The morning brief memo is a local file played with afplay
+and is not on the bridge allowlist. App launches, site URLs, and shortcut runs
+go through argument lists, never a shell string. A shortcut runs only when the Jev folder
 can be verified; `shortcuts list --folder-name` alone is not proof, because a
 missing folder makes that command print every shortcut. Message text is
 returned as LocalSpeech so the caller can speak it with the macOS say command
@@ -33,6 +34,13 @@ from .config import (
     SWEEP_AMOUNT,
     SWEEP_ACCOUNT_LABEL,
     SWEEP_SPOKEN_PATH,
+    BRIEF_MEMO_DIR,
+    BRIEF_MEMO_TIME,
+    BRIEF_MEMO_ENABLED,
+    BRIEF_MEMO_RETRIES,
+    BRIEF_MEMO_WINDOW_MINUTES,
+    BRIEF_MEMO_POLL_SECONDS,
+    BRIEF_MEMO_STATE_PATH,
     PRINCESS_SHORTCUT,
     PRINCESS_ACADEMY_URL,
     SHOPIFY_ORDERS_URL,
@@ -405,4 +413,19 @@ from .brief import (
     speak_today,
     _count_today_events,
     speak_brief,
+)
+
+from .brief_memo import (
+    BriefPlayback,
+    EMPTY_FOLDER_LINE,
+    MISSING_FOLDER_LINE,
+    NOT_READY_LINE,
+    afplay_command,
+    brief_memo_settings,
+    list_memos,
+    play_memo_file,
+    request_brief,
+    run_scheduled_brief,
+    start_brief_memo_thread,
+    stop_brief,
 )

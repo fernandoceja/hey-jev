@@ -227,3 +227,51 @@ class TestBridgeValidation(unittest.TestCase):
         self.assertIsNone(commands.bridge_allowed("check my messages from My Love"))
         self.assertIsNone(commands.bridge_allowed("move $600 to Zoe"))
         self.assertIsNone(commands.bridge_allowed("confirm the transfer"))
+
+    def test_morning_brief_memo_is_refused(self):
+        """The memo stays on the Mac. brief me is still allowed on its own name."""
+        self.assertIn("info_brief", commands.BRIDGE_ALLOW)
+        self.assertNotIn("brief_play", commands.BRIDGE_ALLOW)
+        self.assertNotIn("brief_stop", commands.BRIDGE_ALLOW)
+        self.assertNotIn("info_messages", commands.BRIDGE_ALLOW)
+        self.assertIsInstance(commands.BRIDGE_ALLOW, frozenset)
+        for item in commands.BRIDGE_ALLOW:
+            self.assertNotIn("*", item)
+            self.assertNotIn("?", item)
+
+        self.assertEqual(commands.route_before_api("brief me"), "info_brief")
+        self.assertEqual(commands.bridge_allowed("brief me"), "info_brief")
+        calls, path = self._process("brief me", "briefme01")
+        self.assertEqual(calls, ["brief me"])
+        self.assertFalse(os.path.exists(path))
+        self.assertTrue(self._reply("briefme01")["ok"])
+
+        phrases = (
+            ("play my brief", "memo0001", "brief_play"),
+            ("play the brief", "memo0002", "brief_play"),
+            ("play my morning brief", "memo0003", "brief_play"),
+            ("play the morning brief", "memo0004", "brief_play"),
+            ("play today's brief", "memo0005", "brief_play"),
+            ("please play my brief", "memo0006", "brief_play"),
+            ("play my brief please", "memo0007", "brief_play"),
+            ("stop", "memo0008", "brief_stop"),
+            ("please stop", "memo0009", "brief_stop"),
+            ("stop the brief", "memo0010", "brief_stop"),
+            ("stop my brief", "memo0011", "brief_stop"),
+            ("stop playback", "memo0012", "brief_stop"),
+            ("stop the playback", "memo0013", "brief_stop"),
+            ("stop the memo", "memo0014", "brief_stop"),
+        )
+        for phrase, nonce, key in phrases:
+            self.assertEqual(commands.route_before_api(phrase), key, phrase)
+            self.assertIsNone(commands.bridge_allowed(phrase), phrase)
+            self.assertNotIn(key, commands.BRIDGE_ALLOW, phrase)
+            calls, path = self._process(phrase, nonce, name=nonce + ".json")
+            self.assertEqual(calls, [], phrase)
+            self.assertFalse(os.path.exists(path), phrase)
+            reply = self._reply(nonce)
+            self.assertFalse(reply["ok"], phrase)
+            self.assertIn("can't do that from your phone", reply["reply"].lower())
+
+        self.assertIsNone(commands.bridge_allowed("check my messages from My Love"))
+        self.assertIsNone(commands.bridge_allowed("move $600 to Zoe"))

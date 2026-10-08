@@ -462,6 +462,7 @@ class TestSize(unittest.TestCase):
 # Phrases the + menu types, and the local command each one already routes to.
 _MENU_ROUTES = {
     "brief": "info_brief",
+    "play_brief": "brief_play",
     "next_shift": "info_next_shift",
     "leave": "info_leave",
     "payday": "info_payday_check",
@@ -558,7 +559,7 @@ class TestGlass(unittest.TestCase):
                 key = commands.route_before_api(phrase)
                 self.assertEqual(key, _MENU_ROUTES[item["id"]], phrase)
                 self.assertNotEqual(key, "info_messages")
-                if key in ("matrix_on", "matrix_off", "notify_off", "volume_set", "volume_mute", "brightness_set"):
+                if key in ("matrix_on", "matrix_off", "notify_off", "volume_set", "volume_mute", "brightness_set", "brief_play"):
                     self.assertNotIn(key, commands.BRIDGE_ALLOW)
                 routed[item["id"]] = key
             else:
