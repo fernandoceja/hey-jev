@@ -28,7 +28,9 @@ from AppKit import (
     NSEvent,
     NSEventMaskFlagsChanged,
     NSEventMaskKeyDown,
+    NSEventModifierFlagControl,
     NSEventModifierFlagOption,
+    NSImageView,
     NSEventMaskLeftMouseDragged,
     NSEventMaskLeftMouseUp,
     NSEventTypeLeftMouseUp,
@@ -54,6 +56,7 @@ from AppKit import (
     NSTableView,
     NSTextField,
     NSTextFieldCell,
+    NSTextView,
     NSTrackingActiveAlways,
     NSTrackingArea,
     NSTrackingInVisibleRect,
@@ -114,7 +117,12 @@ from mini_bar import (
     mic_event,
     parse_origin,
     pill_chrome,
-    capture_follow_up_items,
+    capture_choice_actions,
+    capture_saved,
+    choice_button_frames,
+    choice_due,
+    choice_origin,
+    pointer_inside,
     place_bar,
     plus_item,
     plus_menu,
@@ -125,8 +133,11 @@ from mini_bar import (
     resize_frame,
     submission,
     trailing_symbol,
+    type_focus_hotkey,
+    TypedHistory,
 )
 from secrets_store import KEY_NAMES, OPTIONAL, get_secret, missing_secrets, save_secret
+from commands.model import CLAUDE_MODEL, MODEL_PREF
 from updates import check_upstream, safe_browser_url
 
 
@@ -594,6 +605,9 @@ class AppDelegate(NSObject):
         self.key_monitor = NSEvent.addLocalMonitorForEventsMatchingMask_handler_(
             NSEventMaskKeyDown, self._local_key
         )
+        self.type_monitor = NSEvent.addGlobalMonitorForEventsMatchingMask_handler_(
+            NSEventMaskKeyDown, self._global_type_key
+        )
         self._sync_mini_bar()
         if missing_secrets():
             self.updateStatus_({"state": "Starting", "detail": "Add your API keys to begin"})
@@ -742,6 +756,27 @@ class AppDelegate(NSObject):
         self.how_text.setFont_(NSFont.systemFontOfSize_(13))
         self.how_text.setTextColor_(NSColor.secondaryLabelColor())
         page.addSubview_(self.how_text)
+        self.typed = TypedHistory()
+        self.home_field = text_field(NSMakeRect(0, 0, 10, 10), PLACEHOLDER)
+        self.home_field.setTarget_(self)
+        self.home_field.setAction_("homeSubmit:")
+        self.home_field.setDelegate_(self)
+        self.home_send = button("Send", self, "homeSubmit:", NSMakeRect(0, 0, 10, 10))
+        self.home_captures = button("Captures", self, "openCaptures:", NSMakeRect(0, 0, 10, 10))
+        self.home_history = NSTextView.alloc().initWithFrame_(NSMakeRect(0, 0, 10, 10))
+        self.home_history.setEditable_(False)
+        self.home_history.setSelectable_(True)
+        self.home_history.setDrawsBackground_(False)
+        self.home_history.setFont_(NSFont.systemFontOfSize_(12))
+        self.home_history.setTextColor_(NSColor.secondaryLabelColor())
+        self.home_history_scroll = NSScrollView.alloc().initWithFrame_(NSMakeRect(0, 0, 10, 10))
+        self.home_history_scroll.setDrawsBackground_(False)
+        self.home_history_scroll.setHasVerticalScroller_(True)
+        self.home_history_scroll.setAutohidesScrollers_(True)
+        self.home_history_scroll.setBorderType_(1)
+        self.home_history_scroll.setDocumentView_(self.home_history)
+        for view in (self.home_field, self.home_send, self.home_captures, self.home_history_scroll):
+            page.addSubview_(view)
         return page
 
     @objc.python_method
@@ -885,7 +920,7 @@ class AppDelegate(NSObject):
 
     @objc.python_method
     def _build_settings(self):
-        page = self._page("settings", "Settings", "Pick the microphone Jev listens with. It switches straight away.")
+        page = self._page("settings", "Settings", "Pick the microphone and the Claude model. Both switch straight away.")
         self.settings_name = label("Microphone", NSMakeRect(0, 0, 10, 10), 14, weight=0.6)
         self.settings_hint = label("Plugged in a new one? Restart Jev to see it here.", NSMakeRect(0, 0, 10, 10), 11,
                                    NSColor.secondaryLabelColor(), 0.0)
@@ -897,6 +932,15 @@ class AppDelegate(NSObject):
         page.addSubview_(self.mic_menu)
         self.mic_message = label("", NSMakeRect(0, 0, 10, 10), 12, NSColor.secondaryLabelColor(), 0.0)
         page.addSubview_(self.mic_message)
+        self.model_name = label("Claude model", NSMakeRect(0, 0, 10, 10), 14, weight=0.6)
+        self.model_hint = label("Questions and Ask Jev. Blank keeps Claude Haiku 5.5.", NSMakeRect(0, 0, 10, 10), 11,
+                                NSColor.secondaryLabelColor(), 0.0)
+        page.addSubview_(self.model_name)
+        page.addSubview_(self.model_hint)
+        self.model_field = text_field(NSMakeRect(0, 0, 10, 10), CLAUDE_MODEL)
+        self.model_field.setDelegate_(self)
+        page.addSubview_(self.model_field)
+        self._load_model()
         self.mini_name = label("Mini bar", NSMakeRect(0, 0, 10, 10), 14, weight=0.6)
         self.mini_hint = label("On when this window is minimized or closed. Esc hides it.", NSMakeRect(0, 0, 10, 10), 11,
                                NSColor.secondaryLabelColor(), 0.0)
@@ -942,6 +986,20 @@ class AppDelegate(NSObject):
         NSUserDefaults.standardUserDefaults().setObject_forKey_(self.mic, "mic")
         self.controls.put(("mic", self.mic))
         self._load_mics()
+
+    @objc.python_method
+    def _load_model(self):
+        saved = " ".join(str(NSUserDefaults.standardUserDefaults().stringForKey_(MODEL_PREF) or "").split())
+        if saved == CLAUDE_MODEL:
+            saved = ""
+        self.model_field.setStringValue_(saved)
+
+    @objc.python_method
+    def _save_model(self):
+        raw = " ".join(str(self.model_field.stringValue() or "").split())
+        if raw == CLAUDE_MODEL:
+            raw = ""
+        NSUserDefaults.standardUserDefaults().setObject_forKey_(raw, MODEL_PREF)
 
     @objc.python_method
     def _build_keys(self):
@@ -1039,6 +1097,11 @@ class AppDelegate(NSObject):
             _place(self.top_actions, page["top_actions"])
             _place(self.how_label, page["how_label"])
             _place(self.how_text, page["how"])
+            _place(self.home_field, page["composer"])
+            _place(self.home_send, page["composer_send"])
+            _place(self.home_captures, page["composer_folder"])
+            _place(self.home_history_scroll, page["history"])
+            self.home_history.setFrame_(NSMakeRect(0, 0, page["history"][2], max(page["history"][3], 40)))
         elif key == "dict":
             _place(self.search, page["search"])
             _place(self.new_word, page["fields"][0])
@@ -1067,6 +1130,9 @@ class AppDelegate(NSObject):
             _place(self.settings_hint, page["hint"])
             _place(self.mic_menu, page["popup"])
             _place(self.mic_message, page["message"])
+            _place(self.model_name, page["model_name"])
+            _place(self.model_hint, page["model_hint"])
+            _place(self.model_field, page["model_field"])
             _place(self.mini_name, page["mini_name"])
             _place(self.mini_hint, page["mini_hint"])
             _place(self.mini_toggle, page["mini_toggle"])
@@ -1093,6 +1159,7 @@ class AppDelegate(NSObject):
             self._load_stats()
         if key == "settings":
             self._load_mics()
+            self._load_model()
         for name, page in self.pages.items():
             page.setHidden_(name != key)
         for name, (box, tab) in self.tab_rows.items():
@@ -1291,11 +1358,23 @@ class AppDelegate(NSObject):
 
     @objc.python_method
     def _local_key(self, event):
-        panel = getattr(self, "mini_panel", None)
-        if event.keyCode() == 53 and panel is not None and panel.isKeyWindow():
-            self.miniDismiss_(None)
+        if type_focus_hotkey(event.keyCode(), event.modifierFlags()):
+            self.focusTypeField_(None)
             return None
+        if event.keyCode() == 53:
+            choices = getattr(self, "choice_panel", None)
+            if choices is not None and choices.isVisible():
+                self._close_capture_choices()
+                return None
+            panel = getattr(self, "mini_panel", None)
+            if panel is not None and panel.isKeyWindow():
+                self.miniDismiss_(None)
+                return None
         return event
+
+    def _global_type_key(self, event):
+        if type_focus_hotkey(event.keyCode(), event.modifierFlags()):
+            self.performSelectorOnMainThread_withObject_waitUntilDone_("focusTypeField:", None, False)
 
     @objc.python_method
     def _handle_flags(self, event):
@@ -1331,6 +1410,9 @@ class AppDelegate(NSObject):
         self.on_top_item.setTarget_(self)
         self.on_top_item.setState_(1 if self.on_top else 0)
         menu.addItemWithTitle_action_keyEquivalent_("Show Hey Jev", "showMain:", "1").setTarget_(self)
+        type_item = menu.addItemWithTitle_action_keyEquivalent_("Type to Jev\u2026", "focusTypeField:", "j")
+        type_item.setKeyEquivalentModifierMask_(NSEventModifierFlagControl | NSEventModifierFlagOption)
+        type_item.setTarget_(self)
         menu.addItemWithTitle_action_keyEquivalent_("Hide Mini Bar", "hideMiniBar:", "").setTarget_(self)
         menu.addItemWithTitle_action_keyEquivalent_("Reset Mini Bar Position", "resetMiniBarPosition:", "").setTarget_(self)
         menu.addItemWithTitle_action_keyEquivalent_("Reset Mini Bar Size", "resetMiniBarSize:", "").setTarget_(self)
@@ -1440,13 +1522,15 @@ class AppDelegate(NSObject):
         root.addSubview_(self.mini_plus)
         self.mini_field = NSTextField.alloc().initWithFrame_(NSMakeRect(0, 0, 10, 10))
         self.mini_field.setCell_(CenteredFieldCell.alloc().initTextCell_(""))
-        self.mini_field.setBezeled_(False)
-        self.mini_field.setDrawsBackground_(False)
-        self.mini_field.setFocusRingType_(1)  # none
+        self.mini_field.setBezeled_(True)
+        self.mini_field.setBezelStyle_(1)
+        self.mini_field.setDrawsBackground_(True)
+        self.mini_field.setFocusRingType_(0)  # default ring, so a click shows the field is focused
         self.mini_field.setEditable_(True)
         self.mini_field.setSelectable_(True)
         self.mini_field.setFont_(NSFont.systemFontOfSize_(14))
         self.mini_field.setTextColor_(NSColor.labelColor())
+        self.mini_field.setPlaceholderString_(PLACEHOLDER)
         self.mini_field.setTarget_(self)
         self.mini_field.setAction_("miniSubmit:")
         self.mini_field.setDelegate_(self)
@@ -1648,6 +1732,9 @@ class AppDelegate(NSObject):
         self._apply_bar_visibility()
 
     def control_textView_doCommandBySelector_(self, control, _view, selector):
+        if control == getattr(self, "model_field", None) and str(selector) == "insertNewline:":
+            self._save_model()
+            return True
         if control == getattr(self, "mini_field", None) and str(selector) == "cancelOperation:":
             self.miniDismiss_(control)
             return True
@@ -1656,6 +1743,10 @@ class AppDelegate(NSObject):
     def controlTextDidChange_(self, notification):
         if notification is not None and notification.object() == getattr(self, "mini_field", None):
             self._refresh_trailing_symbol()
+
+    def controlTextDidEndEditing_(self, notification):
+        if notification is not None and notification.object() == getattr(self, "model_field", None):
+            self._save_model()
 
     def windowDidMiniaturize_(self, notification):
         if notification.object() == self.panel:
@@ -1848,6 +1939,8 @@ class AppDelegate(NSObject):
         if field is None:
             return
         field.setTextColor_(NSColor.labelColor())
+        field.setDrawsBackground_(True)
+        field.setBackgroundColor_(NSColor.textBackgroundColor().colorWithAlphaComponent_(0.72))
         font = field.font() or NSFont.systemFontOfSize_(14)
         attrs = {
             NSForegroundColorAttributeName: NSColor.secondaryLabelColor(),
@@ -2018,7 +2111,7 @@ class AppDelegate(NSObject):
             threading.Thread(target=self._capture_for_bar, args=(mode,), daemon=True).start()
             return
         if kind in ("record_start", "record_stop", "share_notes", "share_email", "share_imessage",
-                    "share_finder", "share_copy", "share_delete") or str(kind).startswith("ask_"):
+                    "share_finder", "share_copy", "share_delete", "captures_open", "ask_jev") or str(kind).startswith("ask_"):
             threading.Thread(target=self._run_capture_kind, args=(str(kind),), daemon=True).start()
             return
         if kind == "window":
@@ -2073,8 +2166,7 @@ class AppDelegate(NSObject):
     def showCaptureResult_(self, sentence):
         self._show_bar_reply(str(sentence or ""))
         self._sync_recording_ui()
-        if str(sentence or "").startswith("Saved"):
-            self._pop_capture_menu()
+        self._maybe_show_choices(sentence)
 
     def showBarSentence_(self, sentence):
         self._show_bar_reply(str(sentence or ""))
@@ -2083,17 +2175,207 @@ class AppDelegate(NSObject):
         threading.Thread(target=self._run_capture_kind, args=("record_stop",), daemon=True).start()
 
     @objc.python_method
-    def _pop_capture_menu(self):
+    def _maybe_show_choices(self, sentence):
+        if not capture_saved(sentence):
+            return
+        self._show_capture_choices()
+
+    @objc.python_method
+    def _capture_anchor(self):
         panel = getattr(self, "mini_panel", None)
+        if panel is not None and panel.isVisible():
+            frame = panel.frame()
+            return (
+                float(frame.origin.x), float(frame.origin.y),
+                float(frame.size.width), float(frame.size.height),
+            )
+        screens = self._visible_screens() or [(0.0, 0.0, 1440.0, 900.0)]
+        defaults = NSUserDefaults.standardUserDefaults()
+        size = remembered_size(defaults.stringForKey_(SIZE_KEY))
+        saved = parse_origin(defaults.stringForKey_(ORIGIN_KEY))
+        x, y = place_bar(saved, screens, size)
+        return (x, y, size[0], size[1])
+
+    @objc.python_method
+    def _show_capture_choices(self):
+        """Floating thumbnail and actions. Shown even when the main window is up and the pill is hidden."""
+        import commands
+        last = commands.BOOK.last or {}
+        path = last.get("path") or ""
+        if not path:
+            return
+        from commands.vision import offer_ask_jev
+        ask = offer_ask_jev(path, bool(commands.find_ffmpeg()))
+        panel = getattr(self, "choice_panel", None)
+        if panel is not None and panel.isVisible() and getattr(self, "_choice_path", "") == path:
+            return
+        self._choice_path = path
+        self._choice_shown_at = time.time()
+        if panel is None:
+            panel = self._build_choice_panel()
+        self._fill_choice_panel(path, ask)
+        screens = self._visible_screens() or [(0.0, 0.0, 1440.0, 900.0)]
+        size = (300.0, 420.0)
+        origin = choice_origin(self._capture_anchor(), screens[0], size)
+        panel.setFrame_display_(NSMakeRect(origin[0], origin[1], size[0], size[1]), True)
+        panel.orderFrontRegardless()
+
+    @objc.python_method
+    def _build_choice_panel(self):
+        style = NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel
+        panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
+            NSMakeRect(0, 0, 300, 420), style, NSBackingStoreBuffered, False)
+        panel.setLevel_(BAR_LEVEL)
+        panel.setFloatingPanel_(True)
+        panel.setHidesOnDeactivate_(False)
+        panel.setBecomesKeyOnlyIfNeeded_(True)
+        panel.setOpaque_(False)
+        panel.setBackgroundColor_(NSColor.windowBackgroundColor())
+        panel.setHasShadow_(True)
+        panel.setCollectionBehavior_(BAR_COLLECTION)
+        panel.setReleasedWhenClosed_(False)
+        root = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, 300, 420))
+        panel.setContentView_(root)
+        self.choice_name = label("", NSMakeRect(12, 388, 276, 20), 13, weight=0.6)
+        self.choice_image = NSImageView.alloc().initWithFrame_(NSMakeRect(12, 300, 276, 82))
+        self.choice_image.setImageScaling_(NSImageScaleProportionallyUpOrDown)
+        self.choice_question = text_field(NSMakeRect(12, 12, 200, 26), "What do you want to know?")
+        self.choice_question.setTarget_(self)
+        self.choice_question.setAction_("choiceAsk:")
+        self.choice_ask = button("Ask", self, "choiceAsk:", NSMakeRect(218, 12, 70, 26))
+        self.choice_question.setHidden_(True)
+        self.choice_ask.setHidden_(True)
+        self.choice_answer = label("", NSMakeRect(12, 44, 276, 36), 12, NSColor.secondaryLabelColor())
+        self.choice_buttons = NSView.alloc().initWithFrame_(NSMakeRect(0, 84, 300, 210))
+        for view in (self.choice_name, self.choice_image, self.choice_buttons,
+                     self.choice_answer, self.choice_question, self.choice_ask):
+            root.addSubview_(view)
+        self.choice_panel = panel
+        return panel
+
+    @objc.python_method
+    def _fill_choice_panel(self, path, ask_jev):
+        self.choice_name.setStringValue_(os.path.basename(path))
+        image = NSImage.alloc().initWithContentsOfFile_(path)
+        if image is not None:
+            self.choice_image.setImage_(image)
+            self.choice_image.setHidden_(False)
+        else:
+            self.choice_image.setImage_(None)
+            self.choice_image.setHidden_(True)
+        self.choice_question.setHidden_(True)
+        self.choice_ask.setHidden_(True)
+        self.choice_answer.setStringValue_("")
+        for view in list(self.choice_buttons.subviews()):
+            view.removeFromSuperview()
+        actions = capture_choice_actions(ask_jev=ask_jev)
+        frames, _height = choice_button_frames(actions, 300.0)
+        host_h = float(self.choice_buttons.frame().size.height)
+        for action, x, top, width, height in frames:
+            y = host_h - top - height
+            if y < 0:
+                continue
+            item = button(action["title"], self, "captureChoice:", NSMakeRect(x, y, width, height))
+            item.setIdentifier_(action["id"])
+            if action.get("primary"):
+                item.setFont_(NSFont.boldSystemFontOfSize_(13))
+            self.choice_buttons.addSubview_(item)
+
+    def captureChoice_(self, sender):
+        ident = "" if sender is None else str(sender.identifier() or "")
+        if ident == "ask_jev":
+            self.choice_question.setHidden_(False)
+            self.choice_ask.setHidden_(False)
+            panel = self.choice_panel
+            panel.makeKeyAndOrderFront_(None)
+            panel.makeFirstResponder_(self.choice_question)
+            self._choice_shown_at = time.time()
+            return
+        self._queue_choice(ident)
+
+    def choiceAsk_(self, _sender):
+        question = self.choice_question.stringValue() if hasattr(self, "choice_question") else ""
+        if not self.worker_started:
+            self.choice_answer.setStringValue_("Add your API keys in the main window first.")
+            return
+        self.controls.put(("ask_jev", question))
+        self._choice_shown_at = time.time()
+
+    @objc.python_method
+    def _queue_choice(self, ident):
+        actions = {row["id"]: row for row in capture_choice_actions(ask_jev=True)}
+        action = actions.get(ident)
+        if not action or not action.get("phrase"):
+            return
+        if ident == "share_delete":
+            self._close_capture_choices()
+        if self.worker_started:
+            self.controls.put(("text", action["phrase"]))
+            return
+        threading.Thread(target=self._run_capture_kind, args=(ident,), daemon=True).start()
+
+    @objc.python_method
+    def _close_capture_choices(self):
+        panel = getattr(self, "choice_panel", None)
+        if panel is not None and panel.isVisible():
+            panel.orderOut_(None)
+        self._choice_shown_at = 0.0
+
+    @objc.python_method
+    def _choice_pointer_inside(self):
+        panel = getattr(self, "choice_panel", None)
         if panel is None or not panel.isVisible():
+            return False
+        loc = NSEvent.mouseLocation()
+        frame = panel.frame()
+        return pointer_inside(
+            (float(loc.x), float(loc.y)),
+            (float(frame.origin.x), float(frame.origin.y), float(frame.size.width), float(frame.size.height)),
+        )
+
+    def homeSubmit_(self, _sender):
+        field = getattr(self, "home_field", None)
+        if field is None:
             return
-        menu = NSMenu.alloc().initWithTitle_("Capture")
-        self._fill_plus_menu(menu, capture_follow_up_items())
-        view = panel.contentView()
-        if view is None:
+        plan = submission(field.stringValue(), "")
+        if plan is None:
             return
-        height = float(view.bounds().size.height)
-        menu.popUpMenuPositioningItem_atLocation_inView_(None, NSMakePoint(12.0, height + 6.0), view)
+        field.setStringValue_("")
+        if plan["kind"] != "run":
+            return
+        phrase = plan["control"][1]
+        self.typed.note_request(phrase)
+        if not self.worker_started:
+            self.typed.note_reply("Add your API keys in the main window first.")
+            self._refresh_home_history()
+            return
+        self.controls.put(plan["control"])
+        self._refresh_home_history()
+
+    def openCaptures_(self, _sender):
+        if self.worker_started:
+            self.controls.put(("text", "open my screenshots"))
+            return
+        threading.Thread(target=self._run_capture_kind, args=("captures_open",), daemon=True).start()
+
+    def focusTypeField_(self, _sender):
+        panel = getattr(self, "mini_panel", None)
+        if self.bar.should_show() and panel is not None and panel.isVisible():
+            panel.makeKeyAndOrderFront_(None)
+            panel.makeFirstResponder_(self.mini_field)
+            return
+        self.showMain_(None)
+        self._select_tab("home")
+        field = getattr(self, "home_field", None)
+        if field is not None:
+            self.panel.makeFirstResponder_(field)
+
+    @objc.python_method
+    def _refresh_home_history(self):
+        view = getattr(self, "home_history", None)
+        if view is None or not hasattr(self, "typed"):
+            return
+        view.setString_(self.typed.text())
 
     @objc.python_method
     def _sync_recording_ui(self):
@@ -2149,6 +2431,16 @@ class AppDelegate(NSObject):
             field.setStringValue_("")
             self._refresh_trailing_symbol()
         self._sync_recording_ui()
+        self._sync_choice_dismiss()
+
+    @objc.python_method
+    def _sync_choice_dismiss(self):
+        panel = getattr(self, "choice_panel", None)
+        shown = getattr(self, "_choice_shown_at", 0.0)
+        if panel is None or not panel.isVisible() or not shown:
+            return
+        if choice_due(shown, time.time(), self._choice_pointer_inside()):
+            self._close_capture_choices()
 
     def updateStatus_(self, payload):
         state = str(payload["state"])
@@ -2161,10 +2453,18 @@ class AppDelegate(NSObject):
         else:
             self.bubble.hide()
         shown = reply_text(state, detail)
+        if shown and getattr(self, "typed", None) is not None and self.typed.pending:
+            self.typed.note_reply(shown)
+            self._refresh_home_history()
         if shown and getattr(self, "mini_panel", None) is not None and self.mini_panel.isVisible():
             self._show_bar_reply(shown)
         elif getattr(self, "mini_mic", None) is not None:
             self._refresh_trailing_symbol()
+        if shown and getattr(self, "choice_answer", None) is not None:
+            panel = getattr(self, "choice_panel", None)
+            if panel is not None and panel.isVisible() and not capture_saved(shown):
+                self.choice_answer.setStringValue_(shown)
+        self._maybe_show_choices(detail)
 
     def applicationShouldTerminateAfterLastWindowClosed_(self, _application):
         return False  # keep listening with the window closed, the Dock icon reopens it
@@ -2197,6 +2497,8 @@ class AppDelegate(NSObject):
             NSEvent.removeMonitor_(self.local_monitor)
         if getattr(self, "key_monitor", None):
             NSEvent.removeMonitor_(self.key_monitor)
+        if getattr(self, "type_monitor", None) is not None:
+            NSEvent.removeMonitor_(self.type_monitor)
 
 
     def checkForUpdates_(self, _sender):

@@ -458,6 +458,14 @@ STRICT_PATTERNS = (
         rf"^{_PLEASE}(?:delete|trash)\s+(?:the\s+)?(?:screenshot|recording|capture|picture|video){_TAIL}",
         re.I), "capture_delete"),
     (re.compile(
+        rf"^{_PLEASE}(?:open\s+(?:my\s+)?(?:screenshots|screen\s*shots|captures|jev\s+captures)"
+        rf"|show\s+(?:me\s+)?(?:my\s+)?(?:screenshots|captures)){_TAIL}",
+        re.I), "captures_open"),
+    (re.compile(
+        rf"^{_PLEASE}(?:ask\s+jev(?:\s+about\s+(?:this|that|it|the\s+(?:screenshot|recording|picture|screen|capture)))?"
+        rf"|what(?:'s| is)\s+on\s+my\s+screen){_TAIL}",
+        re.I), "ask_jev"),
+    (re.compile(
         rf"^{_PLEASE}ask\s+chat\s*gpt"
         rf"(?:\s+about\s+(?:this|that|it|the\s+(?:screenshot|recording|picture|photo|video|capture|question)|my\s+question))?{_TAIL}",
         re.I), "ask_chatgpt"),
@@ -521,6 +529,7 @@ HELP_TEXT = (
     "and say when to leave for Brea. I can run shortcuts that are in the Jev folder. "
     "I can also help with Zoe. Say blue pill for the Matrix and red pill to leave it. "
     "I can take a screenshot, record the screen, and open Notes, Mail, or Messages with the file. "
+    "I can open the captures folder, and I can look at a screenshot when you ask. "
     "I can open ChatGPT, Claude, Gemini, Siri, or Google with a capture or your last question. "
     "I won't send a message or move money."
 )

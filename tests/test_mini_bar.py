@@ -192,7 +192,7 @@ class TestSubmit(unittest.TestCase):
 class TestPlacement(unittest.TestCase):
     def test_default_is_bottom_center_above_the_dock(self):
         self.assertEqual((BAR_W, BAR_H), (420.0, 44.0))
-        self.assertEqual(PLACEHOLDER, "Message Jev")
+        self.assertEqual(PLACEHOLDER, "Type to Jev\u2026")
         x, y = place_bar(None, AIR)
         self.assertEqual(x, AIR[0] + (AIR[2] - BAR_W) / 2)
         self.assertEqual(y, AIR[1] + DOCK_GAP)
@@ -339,20 +339,25 @@ class TestPlacement(unittest.TestCase):
         self.assertIn("SIZE_KEY", ordered)
 
     def test_settings_toggle_sits_under_the_microphone_row(self):
-        for width, height in ((MIN_W, MIN_H), (DEFAULT_W, DEFAULT_H)):
+        for width, height in ((MIN_W, MIN_H), (DEFAULT_W, DEFAULT_H), (900, 600)):
             page = layout_window(width, height)["settings"]
             bounds = page["document"]
             rows = (page["name"], page["hint"], page["popup"], page["message"],
+                    page["model_name"], page["model_hint"], page["model_field"],
                     page["mini_name"], page["mini_hint"], page["mini_toggle"],
                     page["update_name"], page["update_hint"], page["update_button"])
             for rect in rows:
                 self.assertTrue(rects_inside(rect, bounds), (width, rect))
+            self.assertFalse(_overlaps(page["popup"], page["model_field"]))
+            self.assertFalse(_overlaps(page["message"], page["model_name"]))
+            self.assertFalse(_overlaps(page["model_field"], page["mini_name"]))
             self.assertFalse(_overlaps(page["popup"], page["mini_toggle"]))
             self.assertFalse(_overlaps(page["message"], page["mini_name"]))
             self.assertFalse(_overlaps(page["mini_toggle"], page["update_name"]))
             self.assertFalse(_overlaps(page["update_hint"], page["update_button"]))
             # AppKit origin is the bottom, so a lower row has a smaller y.
-            self.assertLess(page["mini_toggle"][1], page["popup"][1])
+            self.assertLess(page["model_field"][1], page["popup"][1])
+            self.assertLess(page["mini_toggle"][1], page["model_field"][1])
             self.assertLess(page["update_button"][1], page["mini_toggle"][1])
 
 
@@ -499,6 +504,8 @@ _CAPTURE_MENU_IDS = (
     "ask_question_gemini",
     "ask_question_siri",
     "ask_question_google",
+    "ask_jev",
+    "captures_open",
 )
 
 
@@ -615,7 +622,12 @@ class TestGlass(unittest.TestCase):
         self.assertIn("showCaptureResult_", ui)
         self.assertIn("stop.circle.fill", ui)
         self.assertIn("systemRedColor", ui)
-        self.assertIn("capture_follow_up_items", ui)
+        self.assertIn("_show_capture_choices", ui)
+        self.assertIn("Type to Jev", ui)
+        self.assertIn("homeSubmit:", ui)
+        self.assertIn("focusTypeField:", ui)
+        self.assertIn("setBezeled_(True)", _func(ui, "_build_mini_bar"))
+        self.assertIn("addGlobalMonitorForEventsMatchingMask_handler_", ui)
         self.assertNotIn("NSOpenPanel", ui)
         self.assertIn('setCornerCurve_("continuous")', ui)
         self.assertIn("plus_menu(recording=", ui)

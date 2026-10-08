@@ -220,6 +220,13 @@ def _home(page_w, page_h, how_to):
         top = cards_top + row * (card_h + GAP)
         cards.append((x, top, card_w, card_h))
     cards_bottom = cards_top + rows * card_h + (rows - 1) * GAP
+    # The type field and its history sit in the band the title used to use,
+    # so the six stat cards stay on the first screen.
+    field_top, field_h = 14.0, 28.0
+    send_w, folder_w = 64.0, 96.0
+    field_w = max(80.0, inner - send_w - folder_w - 2 * GAP)
+    history_top = field_top + field_h + 6.0
+    history_h = 42.0
     cursor = cards_bottom + 20.0
     most_top, most_h = cursor, 20.0
     cursor += most_h + 4.0
@@ -248,8 +255,17 @@ def _home(page_w, page_h, how_to):
         })
     return {
         "document": (0.0, 0.0, page_w, doc_h),
-        "title": (float(MARGIN), _from_top(doc_h, 20.0, 30.0), min(420.0, text_w), 30.0),
-        "subtitle": (float(MARGIN), _from_top(doc_h, 52.0, 36.0), text_w, 36.0),
+        "title": (float(MARGIN), _from_top(doc_h, 0.0, 0.0), 1.0, 0.0),
+        "subtitle": (float(MARGIN), _from_top(doc_h, 0.0, 0.0), 1.0, 0.0),
+        "composer": (float(MARGIN), _from_top(doc_h, field_top, field_h), field_w, field_h),
+        "composer_send": (
+            float(MARGIN) + field_w + GAP, _from_top(doc_h, field_top, field_h), send_w, field_h,
+        ),
+        "composer_folder": (
+            float(MARGIN) + field_w + GAP + send_w + GAP,
+            _from_top(doc_h, field_top, field_h), folder_w, field_h,
+        ),
+        "history": (float(MARGIN), _from_top(doc_h, history_top, history_h), text_w, history_h),
         "cards": cards_out,
         "columns": cols,
         "most_label": (float(MARGIN), _from_top(doc_h, most_top, most_h), text_w, most_h),
@@ -362,7 +378,8 @@ def _settings(page_w, page_h):
     top = 120.0
     stacked = page_w < 560.0
     text_w = page_w - 2 * MARGIN
-    mini_top = top + (112.0 if stacked else 90.0)
+    model_top = top + (112.0 if stacked else 90.0)
+    mini_top = model_top + (112.0 if stacked else 90.0)
     # The mini-bar switch ends 72pt below mini_top. The update block follows it.
     update_top = mini_top + 88.0
     content_h = update_top + 72.0 + 24.0
@@ -373,6 +390,9 @@ def _settings(page_w, page_h):
         hint = (float(MARGIN), _from_top(doc_h, top + 22.0, 18.0), text_w, 18.0)
         popup = (float(MARGIN), _from_top(doc_h, top + 46.0, 26.0), text_w, 26.0)
         message = (float(MARGIN), _from_top(doc_h, top + 80.0, 20.0), text_w, 20.0)
+        model_name = (float(MARGIN), _from_top(doc_h, model_top, 20.0), text_w, 20.0)
+        model_hint = (float(MARGIN), _from_top(doc_h, model_top + 22.0, 18.0), text_w, 18.0)
+        model_field = (float(MARGIN), _from_top(doc_h, model_top + 46.0, 26.0), text_w, 26.0)
     else:
         label_w = min(220.0, text_w * 0.46)
         popup_w = text_w - label_w - GAP
@@ -380,6 +400,9 @@ def _settings(page_w, page_h):
         hint = (float(MARGIN), _from_top(doc_h, top + 22.0, 18.0), label_w, 18.0)
         popup = (MARGIN + label_w + GAP, _from_top(doc_h, top + 8.0, 26.0), popup_w, 26.0)
         message = (float(MARGIN), _from_top(doc_h, top + 56.0, 20.0), text_w, 20.0)
+        model_name = (float(MARGIN), _from_top(doc_h, model_top, 20.0), label_w, 20.0)
+        model_hint = (float(MARGIN), _from_top(doc_h, model_top + 22.0, 18.0), label_w, 18.0)
+        model_field = (MARGIN + label_w + GAP, _from_top(doc_h, model_top + 8.0, 26.0), popup_w, 26.0)
     mini_name = (float(MARGIN), _from_top(doc_h, mini_top, 20.0), text_w, 20.0)
     mini_hint = (float(MARGIN), _from_top(doc_h, mini_top + 22.0, 18.0), text_w, 18.0)
     mini_toggle = (float(MARGIN), _from_top(doc_h, mini_top + 46.0, 26.0), text_w, 26.0)
@@ -394,6 +417,9 @@ def _settings(page_w, page_h):
         "hint": hint,
         "popup": popup,
         "message": message,
+        "model_name": model_name,
+        "model_hint": model_hint,
+        "model_field": model_field,
         "mini_name": mini_name,
         "mini_hint": mini_hint,
         "mini_toggle": mini_toggle,
