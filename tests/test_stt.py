@@ -15,6 +15,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 NAMES = (
     "ChatGPT", "Claude", "Grok", "Gemini", "Perplexity", "CapCut",
     "WorkJam", "UKG", "Spotify", "YouTube TV", "iMessage",
+    "password", "passwords",
 )
 
 

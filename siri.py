@@ -469,6 +469,7 @@ ACTIONS = {
     "clipboard_clear": lambda _arg, _text: commands.clear_clipboard_history(),
     "clipboard_pause": lambda _arg, _text: commands.pause_clipboard_history(),
     "clipboard_resume": lambda _arg, _text: commands.resume_clipboard_history(),
+    "password_lookup": lambda _arg, text: commands.lookup_password(text),
     "shortcut_run": lambda _arg, text: commands.run_named_shortcut(text),
 }
 
@@ -1006,11 +1007,17 @@ def _run_zoe_allowed(action, text, notify, reply_sink):
 
 def handle(text, stt_ms=None, notify=None, reply_sink=None, quiet=False):
     global misses
-    print(f"\n> heard: {text!r}" + (f"  (stt {stt_ms}ms)" if stt_ms is not None else ""))
     fixed = fix_names(text)
-    if fixed != text:
-        print(f"  fixed: {fixed!r}")
+    # The site name stays in the reply. The raw line can also contain a dictated
+    # password, so that line is not written to the log.
+    if commands.is_password_lookup(fixed):
+        print("\n> heard: (password lookup, kept on this Mac)")
         text = fixed
+    else:
+        print(f"\n> heard: {text!r}" + (f"  (stt {stt_ms}ms)" if stt_ms is not None else ""))
+        if fixed != text:
+            print(f"  fixed: {fixed!r}")
+            text = fixed
     if not text.strip():
         emit(notify, "Ready", "Didn't catch anything")
         return
@@ -1102,7 +1109,11 @@ def handle(text, stt_ms=None, notify=None, reply_sink=None, quiet=False):
                     print(f"  confirm: waiting for yes/no on {action}")
                     break
                 try:
-                    emit(notify, "Doing it", text)
+                    emit(
+                        notify,
+                        "Doing it",
+                        "On this Mac" if action in commands.PASSWORD_KEYS else text,
+                    )
                     if action.startswith("timer_"):
                         timer_reply = run_timer(action, text)
                     elif action.startswith("browser_"):
@@ -1123,7 +1134,10 @@ def handle(text, stt_ms=None, notify=None, reply_sink=None, quiet=False):
                     print(f"  action: {action} {arg or ''}")
                     done += 1
                 except Exception as e:
-                    print(f"  action failed: {action} {e}")
+                    if action in commands.PASSWORD_KEYS:
+                        print("  action failed: {0} {1}".format(action, type(e).__name__))
+                    else:
+                        print(f"  action failed: {action} {e}")
             if speak_first:
                 emit(notify, "Ready", line)
                 return
@@ -1210,7 +1224,11 @@ def _run_local(payload, text, notify, reply_sink):
         _deliver(prompt, notify, reply_sink)
         commands.refresh_confirmation()
         return "expect_reply"
-    private = action == "info_messages" or action in commands.CLIPBOARD_KEYS
+    private = (
+        action == "info_messages"
+        or action in commands.CLIPBOARD_KEYS
+        or action in commands.PASSWORD_KEYS
+    )
     if action in SPEAK_FIRST:
         line = say_line(reply_key, **fmt) if reply_key in REPLIES else "Okay."
         _deliver(line, notify, reply_sink)
@@ -1232,6 +1250,8 @@ def _run_local(payload, text, notify, reply_sink):
             _deliver("I couldn't read those messages.", notify, reply_sink, private=True)
         elif action in commands.CLIPBOARD_KEYS:
             _deliver("I couldn't use the clipboard history.", notify, reply_sink, private=True)
+        elif action in commands.PASSWORD_KEYS:
+            _deliver("I couldn't open Passwords.", notify, reply_sink)
         else:
             _deliver(say_line("unsupported"), notify, reply_sink)
         return

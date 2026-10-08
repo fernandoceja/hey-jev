@@ -13,7 +13,8 @@ NO_SPEECH_MAX = 0.6
 # so silence is less likely to come back as "Open ChatGPT".
 WHISPER_HOTWORDS = (
     "ChatGPT, Claude, Grok, Gemini, Perplexity, CapCut, "
-    "WorkJam, UKG, Spotify, YouTube TV, iMessage"
+    "WorkJam, UKG, Spotify, YouTube TV, iMessage, "
+    "password, passwords"
 )
 
 
