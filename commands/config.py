@@ -60,6 +60,10 @@ SWEEP_ACCOUNT_LABEL = "Zoe …4157"
 SWEEP_SPOKEN_PATH = os.path.expanduser(
     "~/Library/Application Support/Hey Jev/sweep-spoken.txt"
 )
+# "on" means Zoe mode is active. A missing file means off. No secrets.
+ZOE_MODE_PATH = os.path.expanduser(
+    "~/Library/Application Support/Hey Jev/zoe-mode.txt"
+)
 # Morning brief voice memo. Local files only, played with afplay. No network.
 # BRIEF_MEMO_DIR overrides the folder. BRIEF_MEMO_TIME is HH:MM local time.
 # BRIEF_MEMO_ENABLED=0 turns the automatic play off. "play my brief" still works.
@@ -340,6 +344,14 @@ STRICT_PATTERNS = (
     (re.compile(rf"^{_PLEASE}what(?:'s| is| does| has)\s+zoe\b.*\btomorrow\b{_TAIL}", re.I), "info_zoe"),
     (re.compile(rf"^{_PLEASE}open\s+(?:zoe'?s\s+)?princess\s+academy{_TAIL}", re.I), "zoe_academy"),
     (re.compile(rf"^{_PLEASE}(?:start|set)\s+(?:a\s+|an\s+)?(?:[\w.]+\s+)*timer\s+for\s+zoe\b.*{_TAIL}", re.I), "zoe_timer"),
+    (re.compile(rf"^{_PLEASE}(?:zoe\s+mode|kid\s+mode)(?:\s+on)?{_TAIL}", re.I), "zoe_mode_on"),
+    (re.compile(rf"^{_PLEASE}(?:turn\s+on|start|enter)\s+(?:zoe|kid)\s+mode{_TAIL}", re.I), "zoe_mode_on"),
+    (re.compile(rf"^{_PLEASE}(?:exit|leave|stop|end)\s+(?:zoe|kid)\s+mode{_TAIL}", re.I), "zoe_mode_off"),
+    (re.compile(rf"^{_PLEASE}turn\s+off\s+(?:zoe|kid)\s+mode{_TAIL}", re.I), "zoe_mode_off"),
+    (re.compile(rf"^{_PLEASE}kid\s+mode\s+off{_TAIL}", re.I), "zoe_mode_off"),
+    (re.compile(
+        rf"^{_PLEASE}(?:joke|tell(?:\s+(?:me|zoe))?\s+(?:a\s+)?joke|(?:a\s+)?fun\s+fact|tell(?:\s+(?:me|zoe))?\s+(?:a\s+)?fun\s+fact){_TAIL}",
+        re.I), "zoe_joke"),
     (re.compile(rf"^{_PLEASE}what(?:'s| is)\s+due(?:\s+this\s+week)?\s+for\s+(?:umgc|school|class|my\s+class){_TAIL}", re.I), "info_school"),
     (re.compile(rf"^{_PLEASE}what(?:'s| is)\s+due\s+for\s+(?:umgc|school|class|my\s+class){_TAIL}", re.I), "info_school"),
     (re.compile(rf"^{_PLEASE}(?:any|what(?:'s| is))\s+(?:umgc|school)\s+(?:work\s+)?due{_TAIL}", re.I), "info_school"),
@@ -607,7 +619,8 @@ HELP_TEXT = (
     "I can save a shift for one day, "
     "and say when to leave for Brea. I can nudge you when it's time to leave, "
     "and you can turn leave reminders on or off. I can run shortcuts that are in the Jev folder. "
-    "I can also help with Zoe. Say blue pill for the Matrix and red pill to leave it. "
+    "I can also help with Zoe. Say Zoe mode for a kid-safe mode. Leaving it takes a second step. "
+    "Say blue pill for the Matrix and red pill to leave it. "
     "I can take a screenshot, record the screen, and open Notes, Mail, or Messages with the file. "
     "I can convert, trim, or compress a recording, and extract its audio, on this Mac. "
     "I can open the captures folder, and I can look at a screenshot when you ask. "

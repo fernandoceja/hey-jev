@@ -1439,6 +1439,8 @@ class AppDelegate(NSObject):
         type_item.setKeyEquivalentModifierMask_(NSEventModifierFlagControl | NSEventModifierFlagOption)
         type_item.setTarget_(self)
         menu.addItemWithTitle_action_keyEquivalent_("Hide Mini Bar", "hideMiniBar:", "").setTarget_(self)
+        self.zoe_item = menu.addItemWithTitle_action_keyEquivalent_("Zoe Mode", "zoeModeMenu:", "")
+        self.zoe_item.setTarget_(self)
         menu.addItemWithTitle_action_keyEquivalent_("Reset Mini Bar Position", "resetMiniBarPosition:", "").setTarget_(self)
         menu.addItemWithTitle_action_keyEquivalent_("Reset Mini Bar Size", "resetMiniBarSize:", "").setTarget_(self)
         item.setSubmenu_(menu)
@@ -1586,6 +1588,14 @@ class AppDelegate(NSObject):
         self._set_button_symbol(self.rec_stop, "stop.circle.fill", "Stop Recording")
         self.rec_stop.setHidden_(True)
         root.addSubview_(self.rec_stop)
+        self.zoe_label = NSTextField.labelWithString_("")
+        self.zoe_label.setFont_(NSFont.systemFontOfSize_weight_(13, 0.6))
+        self.zoe_label.setHidden_(True)
+        try:
+            self.zoe_label.setTextColor_(NSColor.systemPinkColor())
+        except Exception:
+            self.zoe_label.setTextColor_(NSColor.systemOrangeColor())
+        root.addSubview_(self.zoe_label)
         self._mini_mic_held = False
         self._layout_mini_bar(size[0], size[1])
         self._install_pill_chrome()
@@ -1830,15 +1840,19 @@ class AppDelegate(NSObject):
             return
         frames = bar_controls((width, height))
         metrics = bar_metrics(width, height)
+        on = self._apply_zoe_badge()
         _place(self.mini_plus, frames["plus"])
         self.mini_plus.setFont_(NSFont.systemFontOfSize_weight_(metrics["plus_font"], 0.3))
-        _place(self.mini_field, frames["field"])
+        field = frames["field"]
+        badge = 48.0 if on else 0.0
+        _place(self.mini_field, (field[0], field[1], max(40.0, field[2] - badge), field[3]))
         self.mini_field.setFont_(NSFont.systemFontOfSize_(metrics["field_font"]))
         _place(self.mini_mic, frames["mic"])
         if hasattr(self, "rec_stop"):
             _place(self.rec_stop, frames["mic"])
-            field = frames["field"]
             _place(self.rec_label, (field[0], field[1], min(88.0, field[2]), field[3]))
+        if hasattr(self, "zoe_label"):
+            _place(self.zoe_label, (field[0] + field[2] - 46.0, field[1], 44.0, field[3]))
         self._sync_capsule(width, height)
         self._sync_recording_ui()
         self._style_pill_field()
@@ -2075,12 +2089,15 @@ class AppDelegate(NSObject):
     def miniPlus_(self, sender):
         menu = NSMenu.alloc().initWithTitle_("Message Jev")
         recording = False
+        zoe_on = False
         try:
             import commands
             recording = bool(commands.is_recording())
+            zoe_on = bool(commands.zoe_mode_active())
         except Exception:
             recording = False
-        self._fill_plus_menu(menu, plus_menu(recording=recording))
+            zoe_on = False
+        self._fill_plus_menu(menu, plus_menu(recording=recording, zoe_mode=zoe_on))
         if sender is None:
             return
         height = float(sender.bounds().size.height)
@@ -2123,6 +2140,7 @@ class AppDelegate(NSObject):
             item.setTarget_(self)
             item.setEnabled_(True)
             item.setRepresentedObject_(spec.get("id") or "")
+            item.setState_(1 if spec.get("checked") else 0)
             image = self._menu_symbol(spec.get("symbol") or "", title)
             if image is not None:
                 item.setImage_(image)
@@ -2136,6 +2154,9 @@ class AppDelegate(NSObject):
         kind = spec.get("kind")
         if kind == "text":
             self._queue_bar_phrase(spec.get("phrase") or "")
+            return
+        if kind == "zoe_mode":
+            self._toggle_zoe_mode()
             return
         if str(kind).startswith("screenshot"):
             mode = {"screenshot_area": "area", "screenshot_window": "window"}.get(kind, "full")
@@ -2561,6 +2582,111 @@ class AppDelegate(NSObject):
             "updateStatus:", {"state": state, "detail": detail}, False
         )
 
+    @objc.python_method
+    def _apply_zoe_badge(self):
+        """Pink Zoe badge, placeholder, and the Window menu check. Returns whether the mode is on."""
+        on = False
+        try:
+            import commands
+            on = bool(commands.zoe_mode_active())
+        except Exception:
+            on = False
+        label = getattr(self, "zoe_label", None)
+        if label is not None:
+            label.setHidden_(not on)
+            if on:
+                try:
+                    import commands
+                    label.setStringValue_(commands.zoe_pill_label(True))
+                except Exception:
+                    label.setStringValue_("Zoe")
+        field = getattr(self, "mini_field", None)
+        if field is not None:
+            field.setPlaceholderString_("Zoe mode" if on else PLACEHOLDER)
+        item = getattr(self, "zoe_item", None)
+        if item is not None:
+            try:
+                import commands
+                plan = commands.menu_toggle_plan(on)
+            except Exception:
+                plan = {"title": "Zoe Mode", "action": "enter", "checked": False}
+            title = plan.get("title") or "Zoe Mode"
+            if plan.get("action") == "confirm_exit" and not title.endswith("\u2026"):
+                title = title + "\u2026"
+            item.setTitle_(title)
+            item.setState_(1 if plan.get("checked") else 0)
+        return on
+
+    @objc.python_method
+    def _sync_zoe_ui(self):
+        label = getattr(self, "zoe_label", None)
+        before = False if label is None else (not bool(label.isHidden()))
+        on = self._apply_zoe_badge()
+        if on == before or not hasattr(self, "mini_field"):
+            return
+        panel = getattr(self, "mini_panel", None)
+        if panel is None:
+            return
+        size = panel.frame().size
+        self._layout_mini_bar(float(size.width), float(size.height))
+
+    def zoeModeMenu_(self, _sender):
+        self._toggle_zoe_mode()
+
+    @objc.python_method
+    def _toggle_zoe_mode(self):
+        """Enter immediately. Leave only after the confirmation dialog."""
+        import commands
+        plan = commands.menu_toggle_plan()
+        if plan.get("action") == "enter":
+            if getattr(self, "worker_started", False):
+                self._queue_bar_phrase("zoe mode")
+            else:
+                line = commands.enter_zoe_mode()
+                self._show_zoe_line(line)
+            self._sync_zoe_ui()
+            return
+        if plan.get("action") != "confirm_exit":
+            return
+        if not self._zoe_exit_dialog(plan):
+            self._show_zoe_line(commands.ZOE_STAY_LINE)
+            return
+        line = commands.leave_zoe_mode()
+        self._show_zoe_line(line)
+        self._sync_zoe_ui()
+
+    @objc.python_method
+    def _zoe_exit_dialog(self, plan):
+        """Default button keeps Zoe mode. Only the second button turns it off."""
+        alert = NSAlert.alloc().init()
+        alert.setMessageText_(plan.get("title") or "Turn Off Zoe Mode")
+        alert.setInformativeText_(plan.get("message") or "")
+        alert.addButtonWithTitle_(plan.get("cancel") or "Keep Zoe Mode")
+        alert.addButtonWithTitle_(plan.get("confirm") or "Turn Off Zoe Mode")
+        try:
+            alert.buttons()[1].setKeyEquivalent_("")
+        except Exception:
+            pass
+        return int(alert.runModal()) == 1001
+
+    @objc.python_method
+    def _show_zoe_line(self, line):
+        try:
+            import commands
+            shown = commands.zoe_plain(line)
+        except Exception:
+            shown = str(line or "")
+        if getattr(self, "mini_field", None) is not None and getattr(self, "mini_panel", None) is not None:
+            try:
+                if self.mini_panel.isVisible():
+                    self._show_bar_reply(shown)
+                    return
+            except Exception:
+                pass
+        detail = getattr(self, "detail", None)
+        if detail is not None:
+            detail.setStringValue_(shown)
+
     def tick_(self, _timer):
         siri = sys.modules.get("siri")
         timers = siri.timer_snapshot()[:3] if hasattr(siri, "timer_snapshot") else []  # siri may still be loading
@@ -2579,6 +2705,7 @@ class AppDelegate(NSObject):
             self._refresh_trailing_symbol()
         self._sync_recording_ui()
         self._sync_choice_dismiss()
+        self._sync_zoe_ui()
 
     @objc.python_method
     def _sync_choice_dismiss(self):
