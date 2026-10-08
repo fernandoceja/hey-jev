@@ -41,6 +41,7 @@ COMMAND_PROMPT = (
     "What's due today. Payday check. Any reminders today. "
     "What apps are open. Check my messages from My Love. Take a note. What's due this week. "
     "Start focus mode for 25 minutes. Log IHSS hours. Check my case status. What's Zoe got tomorrow. "
+    "Zoe mode. Kid mode on. Exit zoe mode. Tell me a joke. Fun fact. "
     "Run shortcut Leaving for work. Set a timer for five minutes. "
     "Play. Pause. Next track. What's playing. Play the song on YouTube. "
     "Turn the volume up. Set the volume to 40. Mute. Lock the screen. What's my battery. "
@@ -425,6 +426,9 @@ ACTIONS = {
     "ihss_remind": lambda _arg, _text: commands.remind_timesheet(),
     "zoe_academy": lambda _arg, _text: commands.open_princess_academy(),
     "zoe_timer": lambda _arg, text: _start_zoe_timer(text),
+    "zoe_mode_on": lambda _arg, _text: commands.enter_zoe_mode(),
+    "zoe_mode_off": lambda _arg, _text: commands.ask_leave_zoe_mode(),
+    "zoe_joke": lambda _arg, _text: commands.tell_zoe_joke(),
     "system_lock": _quiet(lambda _arg, _text: osa('tell application "System Events" to keystroke "q" using {control down, command down}')),
     "system_sleep": _quiet(lambda _arg, _text: sh("pmset", "sleepnow")),
     "info_time": lambda _arg, _text: commands.speak_time(),
@@ -949,6 +953,27 @@ def _finish_confirmed(notify):
     emit(notify, "Ready", line)
 
 
+def _run_zoe_allowed(action, text, notify, reply_sink):
+    """Run one kid-safe action. Anything off the allowlist is refused and not called."""
+    if not commands.zoe_allows(action) or action not in ACTIONS:
+        _deliver(commands.zoe_friendly(commands.KID_REFUSAL), notify, reply_sink)
+        return None
+    print(f"  zoe: {action} (no api, no llm)")
+    try:
+        emit(notify, "Doing it", text)
+        result = ACTIONS[action](None, text)
+    except Exception as exc:
+        print(f"  action failed: {action} {exc}")
+        _deliver(commands.zoe_friendly("I couldn't do that. Let's try something else."), notify, reply_sink)
+        return None
+    if isinstance(result, commands.LocalSpeech):
+        _deliver(commands.zoe_friendly(commands.KID_REFUSAL), notify, reply_sink)
+        return None
+    line = _speak_result(action, result, action, {})
+    _deliver(commands.zoe_friendly(line, action), notify, reply_sink)
+    return None
+
+
 def handle(text, stt_ms=None, notify=None, reply_sink=None, quiet=False):
     global misses
     print(f"\n> heard: {text!r}" + (f"  (stt {stt_ms}ms)" if stt_ms is not None else ""))
@@ -959,6 +984,18 @@ def handle(text, stt_ms=None, notify=None, reply_sink=None, quiet=False):
     if not text.strip():
         emit(notify, "Ready", "Didn't catch anything")
         return
+    # Zoe mode, including its exit phrase, is decided before an adult yes/no.
+    # A child saying "yes" must not confirm quit-all or leave the mode.
+    if commands.zoe_claims(text):
+        commands.clear_confirmation()
+        guard = commands.zoe_guard(text)
+        misses = 0
+        if guard is not None:
+            if guard.get("kind") == "run":
+                return _run_zoe_allowed(guard.get("action"), text, notify, reply_sink)
+            line = guard.get("line") or commands.KID_REFUSAL
+            _deliver(line, notify, reply_sink)
+            return
     # A pending yes/no is decided here, before Jev or any other request.
     pending = commands.confirmation_status(text)
     if pending == "yes":

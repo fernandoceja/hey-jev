@@ -227,3 +227,45 @@ class TestBridgeValidation(unittest.TestCase):
         self.assertIsNone(commands.bridge_allowed("check my messages from My Love"))
         self.assertIsNone(commands.bridge_allowed("move $600 to Zoe"))
         self.assertIsNone(commands.bridge_allowed("confirm the transfer"))
+
+    def test_zoe_mode_cannot_be_entered_or_left_from_the_phone(self):
+        """Zoe mode keys are not on BRIDGE_ALLOW. A signed file never reaches run_text."""
+        phrases = (
+            ("zoe mode", "zoemode1", "zoe_mode_on"),
+            ("kid mode", "kidmode1", "zoe_mode_on"),
+            ("kid mode on", "kidon001", "zoe_mode_on"),
+            ("turn on zoe mode", "turnonz1", "zoe_mode_on"),
+            ("turn on kid mode", "turnonk1", "zoe_mode_on"),
+            ("start zoe mode", "startzo1", "zoe_mode_on"),
+            ("enter zoe mode", "enterzo1", "zoe_mode_on"),
+            ("zoe mode on", "zoemode2", "zoe_mode_on"),
+            ("exit zoe mode", "exitzom1", "zoe_mode_off"),
+            ("leave zoe mode", "leavezo1", "zoe_mode_off"),
+            ("turn off zoe mode", "offfzoe1", "zoe_mode_off"),
+            ("turn off kid mode", "offkidm1", "zoe_mode_off"),
+            ("kid mode off", "kidoff01", "zoe_mode_off"),
+            ("stop zoe mode", "stopzoe1", "zoe_mode_off"),
+            ("end zoe mode", "endzoe01", "zoe_mode_off"),
+            ("leave kid mode", "leavekd1", "zoe_mode_off"),
+            ("stop kid mode", "stopkid1", "zoe_mode_off"),
+            ("joke", "jokephr1", "zoe_joke"),
+            ("tell a joke", "tellajk1", "zoe_joke"),
+            ("tell me a joke", "telljok1", "zoe_joke"),
+            ("tell zoe a joke", "zoejoke1", "zoe_joke"),
+            ("fun fact", "funfact1", "zoe_joke"),
+            ("a fun fact", "afunfact", "zoe_joke"),
+            ("tell me a fun fact", "funfact2", "zoe_joke"),
+        )
+        self.assertIsInstance(commands.BRIDGE_ALLOW, frozenset)
+        for key in ("zoe_mode_on", "zoe_mode_off", "zoe_joke"):
+            self.assertNotIn(key, commands.BRIDGE_ALLOW, key)
+        self.assertNotIn("info_messages", commands.BRIDGE_ALLOW)
+        for phrase, nonce, key in phrases:
+            self.assertEqual(commands.route_before_api(phrase), key, phrase)
+            self.assertIsNone(commands.bridge_allowed(phrase), phrase)
+            calls, path = self._process(phrase, nonce, name=nonce + ".json")
+            self.assertEqual(calls, [], phrase)
+            self.assertFalse(os.path.exists(path))
+            reply = self._reply(nonce)
+            self.assertFalse(reply["ok"], phrase)
+            self.assertIn("can't do that from your phone", reply["reply"].lower())

@@ -645,12 +645,14 @@ def capture_follow_up_items():
     return _capture_follow_rows()
 
 
-def plus_menu(can_attach=None, recording=False):
+def plus_menu(can_attach=None, recording=False, zoe_mode=False):
     """Items for the + button. Only commands the app already runs.
 
     `can_attach` defaults to attachments_supported(). Attach File is included
     only when that is true. Screenshot does not pretend to send the picture.
     No item sends money or reads My Love. Mail and Messages stay unsent.
+    Zoe Mode is checked while kid-safe mode is on. Turning it off is a
+    separate confirmation in the window, not a phrase this menu types.
     """
     if can_attach is None:
         can_attach = attachments_supported()
@@ -691,7 +693,17 @@ def plus_menu(can_attach=None, recording=False):
             ),
         },
     )
+    zoe_item = _menu_action(
+        "zoe_mode",
+        "Turn Off Zoe Mode\u2026" if zoe_mode else "Zoe Mode",
+        "zoe_mode",
+        "heart.fill",
+    )
+    if zoe_mode:
+        zoe_item["checked"] = True
     items = [
+        zoe_item,
+        {"kind": "separator"},
         {"id": "shots", "title": "Screenshot", "kind": "submenu", "symbol": "camera.viewfinder", "items": shots},
         record,
         _menu_action("captures_open", "Open Captures Folder", "captures_open", "folder"),
