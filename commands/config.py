@@ -185,6 +185,9 @@ APP_NICKNAMES = {
     "vscode": "Visual Studio Code",
     "vs code": "Visual Studio Code",
     "cap cut": "CapCut",
+    # Messages is the iMessage app. close, quit, hide, and focus use this same map.
+    "imessage": "Messages",
+    "i message": "Messages",
 }
 # Spoken phrase -> page opened in Google Chrome. editable=True means swap in your real URL.
 # These are public login pages. Jev only hands the URL to `open`. It does not fetch them.
@@ -266,7 +269,11 @@ QUIT_ALL_ONLY_RE = re.compile(
     re.I,
 )
 _OPEN_VERBS = r"open|launch|start|bring up|switch to"
+# force quit and kill are accepted as words, then run as a polite terminate().
+# There is no force-quit path.
 _QUIT_VERBS = r"force quit|quit|close|kill"
+_HIDE_VERBS = r"hide"
+_FOCUS_VERBS = r"focus(?:\s+on)?"
 JOINER_RE = re.compile(r"\b(?:and|then)\b", re.I)
 
 # Whole-utterance commands. Checked before the looser patterns below.

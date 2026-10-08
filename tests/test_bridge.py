@@ -85,6 +85,26 @@ class TestBridgeValidation(unittest.TestCase):
             self.assertFalse(reply["ok"])
             self.assertIn("too old", reply["reply"].lower())
 
+    def test_open_and_close_stay_off_the_phone(self):
+        """Typing and app open/close are Mac commands. A signed file still does not run."""
+        phrases = (
+            ("close imessage", "closeim1", "app_quit"),
+            ("close iMessage.", "closeim2", "app_quit"),
+            ("quit messages", "quitmsg1", "app_quit"),
+            ("open imessage", "openimsg", "app_open"),
+            ("hide messages", "hidemsg1", "app_hide"),
+        )
+        for phrase, nonce, key in phrases:
+            self.assertEqual(commands.route_before_api(phrase), key, phrase)
+            self.assertIsNone(commands.bridge_allowed(phrase), phrase)
+            calls, path = self._process(phrase, nonce, name=nonce + ".json")
+            self.assertEqual(calls, [], phrase)
+            self.assertFalse(os.path.exists(path))
+            self.assertIn("phone", self._reply(nonce)["reply"].lower())
+        for key in ("app_open", "app_quit", "app_hide", "app_focus"):
+            self.assertNotIn(key, commands.BRIDGE_ALLOW)
+        self.assertNotIn("info_messages", commands.BRIDGE_ALLOW)
+
     def test_disallowed_command_is_rejected(self):
         phrases = (
             ("empty the trash", "nonce1234"),

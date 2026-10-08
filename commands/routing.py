@@ -1,8 +1,8 @@
 """Choose a local action from the transcript before any API call."""
 import re
-from .config import JOINER_RE, LOCAL_PATTERNS, STRICT_PATTERNS, _BARE_RUN_RE, _IHSS_CMD_RE, _NOTE_CMD_RE, _OPEN_VERBS, _PLEASE
+from .config import JOINER_RE, LOCAL_PATTERNS, STRICT_PATTERNS, _BARE_RUN_RE, _FOCUS_VERBS, _HIDE_VERBS, _IHSS_CMD_RE, _NOTE_CMD_RE, _OPEN_VERBS, _PLEASE, _QUIT_VERBS
 from .textutil import _clean
-from .confirm import is_private_message_request
+from .confirm import is_private_message_request, is_quit_all
 from .apps import known_app_name, parse_app_name, resolve_app, resolve_folder, resolve_site
 from .shortcuts import jev_shortcut_catalog, parse_shortcut_name, resolve_shortcut
 
@@ -40,6 +40,9 @@ def route_before_api(text):
     opened = route_open_phrase(raw)
     if opened:
         return opened
+    named = route_named_app(raw)
+    if named:
+        return named
     if parse_shortcut_name(raw):
         return "shortcut_run"
     if bare_run_matches_folder(raw):
@@ -71,6 +74,33 @@ def route_open_phrase(raw):
         return "site_open"
     if known_app_name(spoken) or resolve_app(spoken):
         return "app_open"
+    return None
+
+
+def route_named_app(raw):
+    """app_quit, app_hide, or app_focus when the name resolves the way open does.
+
+    Quit-all is left unmatched so the spoken yes/no stays in charge. close and
+    quit name one app. The quit action is a polite terminate(), never a force quit.
+    """
+    if is_quit_all(raw):
+        return None
+    if re.search(r"\bfocus\s+mode\b", raw, re.I) or re.match(rf"^{_PLEASE}start\s+focus\b", raw, re.I):
+        return None
+    routes = (
+        (_QUIT_VERBS, "quit", "app_quit"),
+        (_HIDE_VERBS, "hide", "app_hide"),
+        (_FOCUS_VERBS, "focus", "app_focus"),
+    )
+    for verbs, kind, action in routes:
+        if not re.match(rf"^{_PLEASE}(?:{verbs})\b", raw, re.I):
+            continue
+        spoken = parse_app_name(raw, kind)
+        if not spoken or len(spoken.split()) > 6:
+            return None
+        if known_app_name(spoken) or resolve_app(spoken):
+            return action
+        return None
     return None
 
 

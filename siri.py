@@ -334,9 +334,9 @@ def _quiet(fn):
 ACTIONS = {
     "app_open": lambda arg, text: commands.open_any_app(arg, text, APPS),
     "app_quit": lambda arg, text: commands.quit_any_app(arg, text, APPS),
-    "app_hide": _quiet(lambda arg, _text: osa(f'tell application "System Events" to set visible of {app_process(arg)} to false')),
+    "app_hide": lambda arg, text: commands.hide_any_app(arg, text, APPS),
     "app_minimise": _quiet(lambda arg, _text: osa(f'tell application "System Events" to set value of attribute "AXMinimized" of every window of {app_process(arg)} to true')),
-    "app_focus": _quiet(lambda arg, _text: osa(f'tell application "{APPS[arg]}" to activate')),
+    "app_focus": lambda arg, text: commands.focus_any_app(arg, text, APPS),
     "apps_quit_all": lambda _arg, text: commands.quit_all_apps(),
     "volume_up": lambda _arg, text: commands.change_mac_volume("up", text),
     "volume_down": lambda _arg, text: commands.change_mac_volume("down", text),

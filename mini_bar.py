@@ -4,6 +4,9 @@ No AppKit. The window asks this before it orders the pill on or off, and before
 a Return press is handed to the assistant. A typed line is queued as a normal
 turn, the same path as something she heard. Size and position are plain
 numbers the window stores. Nothing here opens a socket.
+
+The pill stays nonactivating until the field is clicked or Control-Option-J
+focuses it. Return and Esc hand the keyboard back to the app that was in front.
 """
 
 BAR_W = 420.0
@@ -248,6 +251,153 @@ def background_action(click_count, x, y, controls=None, size=None):
     if count >= 2:
         return "reset"
     return "drag"
+
+
+# A nonactivating panel accepts typing only when it is allowed to become key,
+# and when a click asks for that instead of waiting for AppKit to decide.
+PILL_BECOMES_KEY_ONLY_IF_NEEDED = False
+# NSApplicationActivateIgnoringOtherApps. Hands the keyboard back to one app.
+ACTIVATE_IGNORING_OTHERS = 2
+
+
+def pill_can_become_key():
+    """The floating pill must be able to take the keyboard."""
+    return True
+
+
+def pill_can_become_main():
+    """False, so focusing the field does not raise the main window."""
+    return False
+
+
+def keyable_panel(base):
+    """NSPanel subclass. Borderless nonactivating panels refuse key status otherwise."""
+
+    class KeyablePanel(base):
+        def canBecomeKeyWindow(self):
+            return pill_can_become_key()
+
+        def canBecomeMainWindow(self):
+            return pill_can_become_main()
+
+    return KeyablePanel
+
+
+def activate_for_typing(ns_app):
+    """Make Hey Jev active so the field can show a caret.
+
+    macOS 14 and later use NSApplication.activate. Older systems use
+    activateIgnoringOtherApps:YES. Either one is only for the moment of typing.
+    """
+    newer = getattr(ns_app, "activate", None)
+    if callable(newer):
+        try:
+            newer()
+            return "activate"
+        except (TypeError, AttributeError):
+            pass
+        except Exception:
+            pass
+    older = getattr(ns_app, "activateIgnoringOtherApps_", None)
+    if callable(older):
+        older(True)
+        return "activateIgnoringOtherApps"
+    return "none"
+
+
+def restore_front_app(ns_app, previous):
+    """Give the keyboard back to the app that was in front, or do nothing."""
+    if previous is None:
+        return "none"
+    yielder = getattr(ns_app, "yieldActivationToApplication_", None)
+    if callable(yielder):
+        try:
+            yielder(previous)
+            return "yield"
+        except (TypeError, AttributeError):
+            pass
+        except Exception:
+            pass
+    activate = getattr(previous, "activateWithOptions_", None)
+    if callable(activate):
+        activate(ACTIVATE_IGNORING_OTHERS)
+        return "activateWithOptions"
+    return "none"
+
+
+def is_our_app(app, pid):
+    """True for this process, the Hey Jev bundle, or a window titled Hey Jev."""
+    if app is None:
+        return False
+    try:
+        if int(app.processIdentifier()) == int(pid):
+            return True
+    except (TypeError, ValueError, AttributeError):
+        pass
+    try:
+        bundle = app.bundleIdentifier()
+    except Exception:
+        bundle = ""
+    if str(bundle or "") == "com.heyjev.app":
+        return True
+    try:
+        name = str(app.localizedName() or "").lower()
+    except Exception:
+        name = ""
+    return "hey jev" in name
+
+
+def caret_range(text):
+    """A caret at the end of the field. An empty field is the start."""
+    return (len(str(text or "")), 0)
+
+
+def undo_main_reveal(was_visible, was_miniaturized, now_visible, now_miniaturized):
+    """Put the main window back if activation brought it on screen.
+
+    'miniaturize' when it had been in the Dock. 'orderOut' when it had been
+    closed. None when it was already on screen, or still hidden.
+    """
+    if was_miniaturized and not now_miniaturized:
+        return "miniaturize"
+    if not was_visible and now_visible:
+        return "orderOut"
+    return None
+
+
+class PillKeyFocus:
+    """Remember who was in front, take the key window, then hand it back.
+
+    A second focus while Hey Jev is already front keeps the original app.
+    """
+
+    def __init__(self):
+        self.previous = None
+
+    def focus_field(self, panel, field, ns_app, front_app, own_app):
+        if front_app is not None and not own_app:
+            self.previous = front_app
+        panel.makeKeyAndOrderFront_(None)
+        activate_for_typing(ns_app)
+        panel.makeFirstResponder_(field)
+        text = field.stringValue() if hasattr(field, "stringValue") else ""
+        return caret_range(text)
+
+    def release(self, ns_app, panel=None):
+        previous = self.previous
+        self.previous = None
+        if panel is not None:
+            try:
+                panel.makeFirstResponder_(None)
+            except Exception:
+                pass
+        return restore_front_app(ns_app, previous)
+
+
+def normalize_typed(text):
+    """Collapse spaces and drop trailing punctuation. Case stays as typed."""
+    cleaned = " ".join(str(text or "").split())
+    return cleaned.strip(".,!?;:").strip()
 
 
 # NSWindowCollectionBehaviorCanJoinAllSpaces | FullScreenAuxiliary | Stationary.
@@ -663,16 +813,20 @@ def submission(text, shown_reply=""):
     Empty input is ignored. The line currently showing as a reply is cleared,
     not run again. A real command is queued for the same turn as a voice
     command, including TypeSafe or the LLM when nothing local matches, and
-    must not bring the main window back.
+    must not bring the main window back. Extra spaces and trailing punctuation
+    are removed. Case is left as typed; routing does not care about it.
     """
-    cleaned = " ".join(str(text or "").split())
-    if not cleaned:
+    shown = " ".join(str(text or "").split())
+    if not shown:
         return None
-    if shown_reply and cleaned == " ".join(str(shown_reply).split()):
+    if shown_reply and shown == " ".join(str(shown_reply).split()):
         return {"kind": "clear", "reveal_main": False}
+    command = normalize_typed(shown)
+    if not command:
+        return None
     return {
         "kind": "run",
-        "control": ("text", cleaned),
+        "control": ("text", command),
         "reveal_main": False,
     }
 

@@ -4,7 +4,7 @@ import glob
 import os
 import re
 import time
-from .config import APP_DIRS, APP_FUZZY_CUTOFF, APP_INDEX_TTL, APP_NICKNAMES, FINDER_PATH, FOLDER_PATHS, FUZZY_CUTOFF, KNOWN_APPS, PROTECTED_IDS, PROTECTED_NAMES, SITE_CONFIG, _OPEN_VERBS, _QUIT_VERBS
+from .config import APP_DIRS, APP_FUZZY_CUTOFF, APP_INDEX_TTL, APP_NICKNAMES, FINDER_PATH, FOLDER_PATHS, FUZZY_CUTOFF, KNOWN_APPS, PROTECTED_IDS, PROTECTED_NAMES, SITE_CONFIG, _FOCUS_VERBS, _HIDE_VERBS, _OPEN_VERBS, _QUIT_VERBS
 from .textutil import _clean, _norm
 from .shell import _run
 from .confirm import is_quit_all
@@ -29,6 +29,16 @@ def site_index():
         for phrase in entry["phrases"]:
             found[_norm(phrase)] = entry
     return found
+
+
+# NSApplicationActivateIgnoringOtherApps. One app comes forward. Nothing is killed.
+_ACTIVATE_IGNORING = 2
+
+
+def _tidy_spoken(spoken):
+    """Drop extra spaces and trailing punctuation. Case is left for _norm."""
+    text = " ".join(_clean(spoken or "").split())
+    return text.strip(".,!?;:").strip()
 
 
 def _drop_my(spoken):
@@ -63,7 +73,12 @@ def _lookup_app(spoken):
 
 
 def known_app_name(spoken):
-    """Prefer the full phrase, so 'my phone' is iPhone Mirroring and not the Phone app."""
+    """Prefer the full phrase, so 'my phone' is iPhone Mirroring and not the Phone app.
+
+    imessage, iMessage, and messages all resolve to Messages. The same map is
+    what open, close, quit, hide, and focus consult.
+    """
+    spoken = _tidy_spoken(spoken)
     hit = _lookup_app(spoken)
     if hit:
         return hit
@@ -157,14 +172,19 @@ def parse_app_name(text, kind=None):
     """
     if is_quit_all(text):
         return None
-    verbs = {"open": _OPEN_VERBS, "quit": _QUIT_VERBS}.get(kind, _OPEN_VERBS + "|" + _QUIT_VERBS)
+    verbs = {
+        "open": _OPEN_VERBS,
+        "quit": _QUIT_VERBS,
+        "hide": _HIDE_VERBS,
+        "focus": _FOCUS_VERBS,
+    }.get(kind, "|".join((_OPEN_VERBS, _QUIT_VERBS, _HIDE_VERBS, _FOCUS_VERBS)))
     match = re.search(
-        rf"\b(?:{verbs})\s+(?:up\s+)?(?:the\s+)?(.+?)(?=\s+(?:and|then)\b|[,.!?]|$)",
+        rf"\b(?:{verbs})\s+(?:up\s+)?(?:the\s+)?(.+?)(?=\s+(?:and|then)\b|[,.!?;:]|$)",
         _clean(text).strip(), re.I,
     )
     if not match:
         return None
-    name = match.group(1).strip(" .,!?")
+    name = match.group(1).strip(" .,!?;:")
     name = re.sub(r"^(?:up|the|an|a)\s+", "", name, flags=re.I)
     name = re.sub(r"\s+(?:app|application|please|for me)$", "", name, flags=re.I).strip(" .,!?")
     if not name or re.fullmatch(r"all|everything|every app|all apps|all of them", name, re.I):
@@ -263,6 +283,17 @@ def launch_app(target):
         time.sleep(0.2)
 
 
+def _spoken_target(text, kind, arg, favourites):
+    """(spoken, display name) using the open-app nicknames, or (None, None)."""
+    spoken = parse_app_name(text, kind)
+    if not spoken and arg in favourites:
+        spoken = favourites[arg]
+    spoken = _tidy_spoken(spoken)
+    if not spoken:
+        return None, None
+    return spoken, (known_app_name(spoken) or spoken)
+
+
 def open_any_app(arg, text, favourites):
     """Launch a spoken app with `open -a`. favourites is used only when the transcript has no name."""
     spoken = parse_app_name(text, "open")
@@ -289,13 +320,19 @@ def open_any_app(arg, text, favourites):
     return {"app": display.replace("{", "").replace("}", "")}
 
 
+def _one_app_name(name):
+    return str(name or "").replace("{", "").replace("}", "")
+
+
 def quit_any_app(arg, text, favourites):
-    """Polite quit via NSRunningApplication.terminate(). No per-app Automation prompt."""
+    """Quit one app with NSRunningApplication.terminate().
+
+    The spoken name uses the same nicknames as open. terminate() lets the app
+    ask to save. One app only. Quit-all still asks for a spoken yes.
+    """
     if is_quit_all(text):
         return "Say quit all on its own, then yes to confirm."
-    spoken = parse_app_name(text, "quit")
-    if not spoken and arg in favourites:
-        spoken = favourites[arg]
+    spoken, display = _spoken_target(text, "quit", arg, favourites)
     if not spoken:
         return "Which app should I quit?"
     try:
@@ -303,13 +340,64 @@ def quit_any_app(arg, text, favourites):
     except Exception:
         return "I couldn't check which apps are running."
     if app is None:
-        return f"{spoken} isn't running."
-    name = str(app.localizedName() or spoken)
+        return f"{display} isn't running."
+    name = str(app.localizedName() or display)
     if is_protected(app):
         return f"I won't quit {name}."
     if not app.terminate():
         return f"I couldn't quit {name}."
-    return {"app": name.replace("{", "").replace("}", "")}
+    return {"app": _one_app_name(name)}
+
+
+def hide_any_app(arg, text, favourites):
+    """Hide one running app. Same nicknames as open. Finder and Hey Jev stay put."""
+    spoken, display = _spoken_target(text, "hide", arg, favourites)
+    if not spoken:
+        return "Which app should I hide?"
+    try:
+        app = _running_match(spoken)
+    except Exception:
+        return "I couldn't check which apps are running."
+    if app is None:
+        return f"{display} isn't running."
+    name = str(app.localizedName() or display)
+    if is_protected(app):
+        return f"I won't hide {name}."
+    try:
+        ok = bool(app.hide())
+    except Exception:
+        ok = False
+    if not ok:
+        return f"I couldn't hide {name}."
+    return {"app": _one_app_name(name)}
+
+
+def focus_any_app(arg, text, favourites):
+    """Bring one app forward. Same nicknames as open.
+
+    A running app is activated. One that is not running is launched with
+    `open -a`, the same call open uses. Nothing is force-quit.
+    """
+    spoken, display = _spoken_target(text, "focus", arg, favourites)
+    if not spoken:
+        return "Which app should I switch to?"
+    app = None
+    try:
+        app = _running_match(spoken)
+    except Exception:
+        app = None
+    if app is not None:
+        name = str(app.localizedName() or display)
+        try:
+            if app.activateWithOptions_(_ACTIVATE_IGNORING):
+                return {"app": _one_app_name(name)}
+        except Exception:
+            pass
+    try:
+        _run(("open", "-a", display))
+    except Exception:
+        return f"I couldn't switch to {display}."
+    return {"app": _one_app_name(display)}
 
 
 def quit_all_apps():

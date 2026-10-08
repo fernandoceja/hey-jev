@@ -135,11 +135,19 @@ from mini_bar import (
     trailing_symbol,
     type_focus_hotkey,
     TypedHistory,
+    PillKeyFocus,
+    caret_range,
+    keyable_panel,
+    PILL_BECOMES_KEY_ONLY_IF_NEEDED,
+    undo_main_reveal,
+    is_our_app,
 )
 from secrets_store import KEY_NAMES, OPTIONAL, get_secret, missing_secrets, save_secret
 from commands.model import CLAUDE_MODEL, MODEL_PREF
 from updates import check_upstream, safe_browser_url
 
+
+KeyablePanel = keyable_panel(NSPanel)
 
 NORMAL, FLOATING = 0, 3  # NSNormalWindowLevel, NSFloatingWindowLevel
 BAR_LEVEL = 25  # NSStatusWindowLevel, above the main window even when that one floats
@@ -520,6 +528,23 @@ class HoldMicButton(PillButton):
         finally:
             if target is not None:
                 target.miniMicUp_(self)
+
+
+class PillTextField(NSTextField):
+    """The first click focuses the pill and shows a caret.
+
+    acceptsFirstMouse so that click is not swallowed just to activate the app.
+    """
+
+    def acceptsFirstMouse_(self, _event):
+        return True
+
+    def mouseDown_(self, event):
+        window = self.window()
+        delegate = window.delegate() if window is not None else None
+        if delegate is not None and hasattr(delegate, "pillFieldClicked_"):
+            delegate.pillFieldClicked_(self)
+        objc.super(PillTextField, self).mouseDown_(event)
 
 
 class ClickAwayView(NSView):
@@ -1479,10 +1504,16 @@ class AppDelegate(NSObject):
 
     @objc.python_method
     def _build_mini_bar(self):
-        """Always-on-top pill. Nonactivating, so typing in it does not raise the main window."""
+        """Always-on-top pill. Nonactivating until the field is clicked.
+
+        Showing it does not steal the keyboard or raise the main window. A click
+        in the field, or Control-Option-J, makes this panel key. It never becomes
+        the main window. Return and Esc give the keyboard back.
+        """
+        self.pill_keys = PillKeyFocus()
         size = remembered_size(NSUserDefaults.standardUserDefaults().stringForKey_(SIZE_KEY))
         style = NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel
-        self.mini_panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
+        self.mini_panel = KeyablePanel.alloc().initWithContentRect_styleMask_backing_defer_(
             NSMakeRect(0, 0, size[0], size[1]), style, NSBackingStoreBuffered, False
         )
         self.mini_panel.setLevel_(BAR_LEVEL)
@@ -1491,7 +1522,7 @@ class AppDelegate(NSObject):
         self.mini_panel.setHasShadow_(True)
         self.mini_panel.setFloatingPanel_(True)
         self.mini_panel.setHidesOnDeactivate_(False)
-        self.mini_panel.setBecomesKeyOnlyIfNeeded_(True)
+        self.mini_panel.setBecomesKeyOnlyIfNeeded_(PILL_BECOMES_KEY_ONLY_IF_NEEDED)
         self.mini_panel.setMovableByWindowBackground_(True)
         # Every Space, including over full-screen apps. The numeric mask matches
         # these AppKit flags; Stationary stops the pill hopping between Spaces.
@@ -1520,7 +1551,7 @@ class AppDelegate(NSObject):
         self.mini_plus.setImageScaling_(NSImageScaleProportionallyUpOrDown)
         self._set_button_symbol(self.mini_plus, "plus", "More")
         root.addSubview_(self.mini_plus)
-        self.mini_field = NSTextField.alloc().initWithFrame_(NSMakeRect(0, 0, 10, 10))
+        self.mini_field = PillTextField.alloc().initWithFrame_(NSMakeRect(0, 0, 10, 10))
         self.mini_field.setCell_(CenteredFieldCell.alloc().initTextCell_(""))
         self.mini_field.setBezeled_(True)
         self.mini_field.setBezelStyle_(1)
@@ -1704,14 +1735,13 @@ class AppDelegate(NSObject):
             return
         self.bar.reply = ""
         self.mini_field.setStringValue_("")
-        if plan["kind"] != "run":
-            self._refresh_trailing_symbol()
-            return
-        if not self.worker_started:
-            self._show_bar_reply("Add your API keys in the main window first.")
-            return
-        self.controls.put(plan["control"])
+        if plan["kind"] == "run":
+            if not self.worker_started:
+                self._show_bar_reply("Add your API keys in the main window first.")
+            else:
+                self.controls.put(plan["control"])
         self._refresh_trailing_symbol()
+        self._restore_front_app()
 
     def miniMicDown_(self, _sender):
         if self._mini_mic_held:
@@ -1728,6 +1758,7 @@ class AppDelegate(NSObject):
         self._refresh_trailing_symbol()
 
     def miniDismiss_(self, _sender):
+        self._restore_front_app()
         self.bar.dismiss()
         self._apply_bar_visibility()
 
@@ -2358,11 +2389,72 @@ class AppDelegate(NSObject):
             return
         threading.Thread(target=self._run_capture_kind, args=("captures_open",), daemon=True).start()
 
+    def pillFieldClicked_(self, _sender):
+        self._focus_pill_field()
+
+    @objc.python_method
+    def _focus_pill_field(self):
+        """Click or Control-Option-J. Caret in the field, main window stays put."""
+        panel = getattr(self, "mini_panel", None)
+        field = getattr(self, "mini_field", None)
+        if panel is None or field is None:
+            return
+        main = self.panel
+        was_visible = bool(main.isVisible())
+        was_mini = bool(main.isMiniaturized())
+        front, own = self._front_application()
+        if not hasattr(self, "pill_keys"):
+            self.pill_keys = PillKeyFocus()
+        caret = self.pill_keys.focus_field(panel, field, NSApp, front, own)
+        self._place_pill_caret(field, caret)
+        fix = undo_main_reveal(was_visible, was_mini, bool(main.isVisible()), bool(main.isMiniaturized()))
+        if fix == "miniaturize":
+            main.miniaturize_(None)
+        elif fix == "orderOut":
+            main.orderOut_(None)
+        if self.bar.should_show() and not panel.isVisible():
+            panel.orderFrontRegardless()
+
+    @objc.python_method
+    def _place_pill_caret(self, field, caret):
+        editor = None
+        try:
+            editor = field.currentEditor()
+        except Exception:
+            editor = None
+        if editor is None:
+            try:
+                editor = self.mini_panel.fieldEditor_forObject_(True, field)
+            except Exception:
+                editor = None
+        if editor is None:
+            return
+        try:
+            editor.setSelectedRange_(caret if caret is not None else caret_range(field.stringValue()))
+        except Exception:
+            pass
+
+    @objc.python_method
+    def _front_application(self):
+        try:
+            app = NSWorkspace.sharedWorkspace().frontmostApplication()
+        except Exception:
+            return None, False
+        if app is None:
+            return None, False
+        return app, is_our_app(app, os.getpid())
+
+    @objc.python_method
+    def _restore_front_app(self):
+        keys = getattr(self, "pill_keys", None)
+        if keys is None:
+            return
+        keys.release(NSApp, getattr(self, "mini_panel", None))
+
     def focusTypeField_(self, _sender):
         panel = getattr(self, "mini_panel", None)
         if self.bar.should_show() and panel is not None and panel.isVisible():
-            panel.makeKeyAndOrderFront_(None)
-            panel.makeFirstResponder_(self.mini_field)
+            self._focus_pill_field()
             return
         self.showMain_(None)
         self._select_tab("home")
