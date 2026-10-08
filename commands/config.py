@@ -60,6 +60,19 @@ SWEEP_ACCOUNT_LABEL = "Zoe …4157"
 SWEEP_SPOKEN_PATH = os.path.expanduser(
     "~/Library/Application Support/Hey Jev/sweep-spoken.txt"
 )
+# Morning brief voice memo. Local files only, played with afplay. No network.
+# BRIEF_MEMO_DIR overrides the folder. BRIEF_MEMO_TIME is HH:MM local time.
+# BRIEF_MEMO_ENABLED=0 turns the automatic play off. "play my brief" still works.
+# Retries are extra looks after the first one, spread across the window.
+BRIEF_MEMO_DIR = os.path.expanduser("~/Documents/Daily Brief")
+BRIEF_MEMO_TIME = "07:10"
+BRIEF_MEMO_ENABLED = True
+BRIEF_MEMO_RETRIES = 2
+BRIEF_MEMO_WINDOW_MINUTES = 20
+BRIEF_MEMO_POLL_SECONDS = 30
+BRIEF_MEMO_STATE_PATH = os.path.expanduser(
+    "~/Library/Application Support/Hey Jev/brief-memo.json"
+)
 PRINCESS_SHORTCUT = "Zoe's Princess Academy"
 # Used when that shortcut is not in the Jev folder.
 PRINCESS_ACADEMY_URL = "https://fernandoceja.github.io/Zoe-s-Princess-Academy/"
@@ -316,6 +329,9 @@ STRICT_PATTERNS = (
     (re.compile(rf"^{_PLEASE}help{_TAIL}", re.I), "info_help"),
     (re.compile(rf"^{_PLEASE}what(?:'s| is) today{_TAIL}", re.I), "info_today"),
     (re.compile(rf"^{_PLEASE}brief me{_TAIL}", re.I), "info_brief"),
+    (re.compile(
+        rf"^{_PLEASE}play\s+(?:my|the|today'?s)\s+(?:morning\s+)?brief{_TAIL}",
+        re.I), "brief_play"),
     (re.compile(rf"^{_PLEASE}(?:what(?:'s| is) the weather(?:\s+like)?|how(?:'s| is) the weather|weather){_TAIL}", re.I), "info_weather"),
     (re.compile(rf"^{_PLEASE}what(?:'s| is| does| has)\s+zoe\b.*\btomorrow\b{_TAIL}", re.I), "info_zoe"),
     (re.compile(rf"^{_PLEASE}open\s+(?:zoe'?s\s+)?princess\s+academy{_TAIL}", re.I), "zoe_academy"),
@@ -473,6 +489,9 @@ STRICT_PATTERNS = (
         rf"^{_PLEASE}(?:stop\s+(?:the\s+)?(?:screen\s+)?recording){_TAIL}",
         re.I), "record_stop"),
     (re.compile(
+        rf"^{_PLEASE}stop(?:\s+my\s+brief|\s+(?:the\s+)?(?:brief|memo|playback))?{_TAIL}",
+        re.I), "brief_stop"),
+    (re.compile(
         rf"^{_PLEASE}(?:start\s+(?:a\s+)?(?:screen\s+)?recording|record\s+(?:my\s+)?screen)"
         rf"(?:\s+with\s+(?:the\s+)?(?:mic|audio|microphone))?{_TAIL}",
         re.I), "record_start"),
@@ -570,6 +589,7 @@ HELP_TEXT = (
     "I can take a screenshot, record the screen, and open Notes, Mail, or Messages with the file. "
     "I can open the captures folder, and I can look at a screenshot when you ask. "
     "I can open ChatGPT, Claude, Gemini, Siri, or Google with a capture or your last question. "
+    "I can play your morning brief memo. Stop stops that playback. "
     "I won't send a message or move money."
 )
 SCHOOL_RE = re.compile(r"(?:#|\b)(?:umgc|school|class)\b", re.I)

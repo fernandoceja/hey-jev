@@ -441,6 +441,8 @@ ACTIONS = {
     "info_weather": lambda _arg, _text: commands.speak_weather(),
     "info_today": lambda _arg, _text: commands.speak_today(),
     "info_brief": lambda _arg, _text: commands.speak_brief(),
+    "brief_play": lambda _arg, _text: commands.request_brief(),
+    "brief_stop": lambda _arg, _text: commands.stop_brief(),
     "info_due": lambda _arg, _text: commands.speak_due(),
     "info_zoe": lambda _arg, _text: commands.speak_zoe_tomorrow(),
     "info_messages": lambda _arg, text: commands.speak_my_love_messages(),
@@ -1010,6 +1012,7 @@ def handle(text, stt_ms=None, notify=None, reply_sink=None, quiet=False):
     elif kind == "actions":
         payload = commands.isolate_confirmations(payload)
     armed = False
+    brief_paths = []
     if kind == "clarify" and quiet:
         print("  (unclear follow up, staying quiet)")
         emit(notify, "Ready", "Didn't catch that")
@@ -1058,6 +1061,11 @@ def handle(text, stt_ms=None, notify=None, reply_sink=None, quiet=False):
                         result = ACTIONS[action](arg, text)
                         if isinstance(result, commands.LocalSpeech):
                             private_lines.append(result.text)
+                        elif isinstance(result, commands.BriefPlayback):
+                            if result.line:
+                                dynamic.append(result.line)
+                            if result.path:
+                                brief_paths.append(result.path)
                         elif isinstance(result, str):
                             dynamic.append(result)
                         elif isinstance(result, dict):
@@ -1088,6 +1096,11 @@ def handle(text, stt_ms=None, notify=None, reply_sink=None, quiet=False):
             else:
                 line = default_line()
     say(line, notify)
+    for memo_path in brief_paths:
+        try:
+            commands.play_memo_file(memo_path)
+        except Exception as exc:
+            print("  brief: {0}".format(type(exc).__name__))
     emit(notify, "Ready", line)
     if armed:
         # The 10 seconds start after the prompt, so speaking it doesn't eat the window.
@@ -1171,6 +1184,15 @@ def _run_local(payload, text, notify, reply_sink):
         return
     if isinstance(result, commands.LocalSpeech):
         _deliver(result.text, notify, reply_sink, private=True)
+        return
+    if isinstance(result, commands.BriefPlayback):
+        if result.line:
+            _deliver(result.line, notify, reply_sink)
+        if result.path:
+            try:
+                commands.play_memo_file(result.path)
+            except Exception as exc:
+                print("  brief: {0}".format(type(exc).__name__))
         return
     _deliver(_speak_result(action, result, reply_key, fmt), notify, reply_sink)
 
@@ -1488,6 +1510,18 @@ def run_voice_assistant(notify=None, controls=None, mode="ptt", mic=""):
         return spoken[-1] if spoken else ""
 
     commands.start_bridge_thread(bridge_turn)
+
+    def brief_speaker(line):
+        """The not-ready line stays on the Mac. say, not Fish, so 7:10 needs no network."""
+        with busy:
+            rec.paused = True
+            try:
+                say_local(line, notify)
+            finally:
+                time.sleep(0.3)
+                rec.paused = False
+
+    commands.start_brief_memo_thread(brief_speaker)
 
     def _leave_quiet():
         try:
