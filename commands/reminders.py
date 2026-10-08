@@ -5,7 +5,8 @@ fallback when that package is not installed, and the task is an argv item,
 never pasted into the script. Nothing here opens a socket or calls the network.
 The command is Mac-only and is not on the iPhone bridge allowlist.
 """
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+import os
 import re
 import threading
 
@@ -73,9 +74,10 @@ _APPLESCRIPT = """on run argv
     set dueYear to item 5 of argv
     set dueMonth to item 6 of argv
     set dueDay to item 7 of argv
-    set dueHour to item 8 of argv
-    set dueMinute to item 9 of argv
-    tell application "Reminders"
+            set dueHour to item 8 of argv
+            set dueMinute to item 9 of argv
+            set dueSecond to item 10 of argv
+            tell application "Reminders"
         if listName is "" then
             set targetList to default list
         else
@@ -90,7 +92,7 @@ _APPLESCRIPT = """on run argv
             set day of dueDate to (dueDay as integer)
             set hours of dueDate to (dueHour as integer)
             set minutes of dueDate to (dueMinute as integer)
-            set seconds of dueDate to 0
+            set seconds of dueDate to (dueSecond as integer)
             if isAllDay is "yes" then
                 set allday due date of newItem to dueDate
             else
@@ -201,6 +203,52 @@ def _at(day, hour, minute, tz):
     return datetime(day.year, day.month, day.day, hour, minute, tzinfo=tz)
 
 
+def _iana_local_zone():
+    """The machine's IANA zone.
+
+    datetime.now().astimezone() is a fixed offset (PDT, PST). That offset does
+    not know a daylight-saving gap, so a relative reminder has to land back in
+    the real local zone. macOS keeps that zone behind /etc/localtime.
+    """
+    try:
+        from zoneinfo import ZoneInfo
+    except ImportError:
+        return None
+    names = []
+    env = os.environ.get("TZ")
+    if env:
+        names.append(env)
+    try:
+        path = os.path.realpath("/etc/localtime")
+    except OSError:
+        path = ""
+    marker = "zoneinfo/"
+    if marker in path:
+        names.append(path.split(marker, 1)[1])
+    for name in names:
+        try:
+            return ZoneInfo(name)
+        except Exception:
+            continue
+    return None
+
+
+def _add_absolute(now, seconds):
+    """Add seconds on the UTC timeline, then convert back to local time.
+
+    Adding a timedelta to an aware datetime moves the wall clock. Across the
+    fall-back hour, 1:50 AM PDT plus 20 minutes becomes 2:10 AM PST, which is
+    80 real minutes later. Relative reminders are a duration, so the add is
+    done in UTC. A fixed-offset clock is upgraded to the IANA local zone first,
+    which is what EventKit will interpret the components as.
+    """
+    zone = now.tzinfo
+    if not getattr(zone, "key", None):
+        zone = _iana_local_zone() or zone
+    utc = now.astimezone(timezone.utc) + timedelta(seconds=seconds)
+    return utc.astimezone(zone)
+
+
 def _day_spoken(when, day):
     text = re.sub(r"\s+", " ", when.strip().lower())
     text = re.sub(r"^on\s+", "", text)
@@ -284,7 +332,7 @@ def _peel_due(body, now):
         if amount and unit:
             seconds = int(round(amount * unit))
             if seconds > 0:
-                due = now + timedelta(seconds=seconds)
+                due = _add_absolute(now, seconds)
                 return (
                     relative.group("task"),
                     due,
@@ -419,8 +467,10 @@ def _components(Foundation, parsed):
     if not parsed["all_day"]:
         comps.setHour_(due.hour)
         comps.setMinute_(due.minute)
+        # Clock times are minute precision (second 0). A relative reminder keeps
+        # the second from the absolute add, so "in 10 seconds" at :45 is not saved as :00.
         if hasattr(comps, "setSecond_"):
-            comps.setSecond_(0)
+            comps.setSecond_(due.second)
     name = _tz_name(due)
     if name and hasattr(Foundation, "NSTimeZone"):
         zone = Foundation.NSTimeZone.timeZoneWithName_(name)
@@ -469,20 +519,30 @@ def _applescript_outcome(exc, list_name):
     return "fail"
 
 
-def _save_applescript(parsed, list_name, runner):
+def _due_args(parsed):
+    """AppleScript argv for the due date. The last item is the second.
+
+    Relative reminders keep due.second. An all-day reminder and a clock time
+    with no seconds pass 0. The script always reads item 10, including when
+    there is no due date.
+    """
     due = parsed["due"]
     if due is None:
-        parts = ["no", "no", "0", "0", "0", "0", "0"]
-    else:
-        parts = [
-            "yes",
-            "yes" if parsed["all_day"] else "no",
-            str(due.year),
-            str(due.month),
-            str(due.day),
-            "0" if parsed["all_day"] else str(due.hour),
-            "0" if parsed["all_day"] else str(due.minute),
-        ]
+        return ["no", "no", "0", "0", "0", "0", "0", "0"]
+    return [
+        "yes",
+        "yes" if parsed["all_day"] else "no",
+        str(due.year),
+        str(due.month),
+        str(due.day),
+        "0" if parsed["all_day"] else str(due.hour),
+        "0" if parsed["all_day"] else str(due.minute),
+        "0" if parsed["all_day"] else str(due.second),
+    ]
+
+
+def _save_applescript(parsed, list_name, runner):
+    parts = _due_args(parsed)
     args = ["osascript", "-e", _APPLESCRIPT, parsed["task"], list_name or "", *parts]
     try:
         runner(args)

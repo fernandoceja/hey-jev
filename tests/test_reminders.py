@@ -293,6 +293,7 @@ class TestEventKit(unittest.TestCase):
         self.assertEqual(reminder.due.parts["day"], 7)
         self.assertEqual(reminder.due.parts["hour"], 17)
         self.assertEqual(reminder.due.parts["minute"], 0)
+        self.assertEqual(reminder.due.parts["second"], 0)
         self.assertIn("tz", reminder.due.parts)
         self.assertFalse(kit.store.requested)
 
@@ -353,6 +354,7 @@ class TestEventKit(unittest.TestCase):
         self.assertEqual((parts["year"], parts["month"], parts["day"]), (2026, 10, 9))
         self.assertNotIn("hour", parts)
         self.assertNotIn("minute", parts)
+        self.assertNotIn("second", parts)
 
     def test_a_missing_list_names_the_list(self):
         kit = self._kit()
@@ -387,6 +389,7 @@ class TestAppleScript(unittest.TestCase):
         self.assertIn('buy milk" }', calls[0][3])
         self.assertEqual(calls[0][4], "")
         self.assertEqual(calls[0][5], "no")
+        self.assertEqual(calls[0][12], "0")
 
     def test_a_due_time_is_argv_too(self):
         calls = []
@@ -402,6 +405,7 @@ class TestAppleScript(unittest.TestCase):
         args = calls[0]
         self.assertEqual(args[3], "take out the trash")
         self.assertEqual(args[5:12], ["yes", "no", "2026", "10", "8", "9", "0"])
+        self.assertEqual(args[12], "0")
         self.assertNotIn("take out the trash", args[2])
 
     def test_import_failure_falls_back_to_the_runner_used_by_the_module(self):
@@ -417,6 +421,7 @@ class TestAppleScript(unittest.TestCase):
         self.assertEqual(spoken, "Okay, I'll remind you to buy milk.")
         self.assertEqual(calls[0][0], "osascript")
         self.assertEqual(calls[0][5], "no")
+        self.assertEqual(calls[0][12], "0")
 
     def test_automation_denied_is_not_the_eventkit_message(self):
         def runner(_args):
@@ -435,6 +440,126 @@ class TestAppleScript(unittest.TestCase):
 
         add_reminder("remind me to water the plants on Friday", now=NOW, runner=runner)
         self.assertEqual(calls[0][5:12], ["yes", "yes", "2026", "10", "9", "0", "0"])
+        self.assertEqual(calls[0][12], "0")
+        self.assertNotIn("set seconds of dueDate to 0", _APPLESCRIPT)
+        self.assertIn("dueSecond", _APPLESCRIPT)
+
+
+class TestRelativeDue(unittest.TestCase):
+    """Seconds stay on relative reminders, and the add is absolute time."""
+
+    def test_nonzero_seconds_are_kept_on_both_backends(self):
+        moment = NOW.replace(second=45)
+        phrase = "remind me to stretch in 10 seconds"
+        parsed = parse_reminder_request(phrase, now=moment)
+        self.assertEqual(parsed["due"], moment + timedelta(seconds=10))
+        self.assertEqual(parsed["due"].second, 55)
+        self.assertEqual(parsed["spoken_when"], "in 10 seconds")
+        self.assertEqual(commands.route_before_api(phrase), "remind_add")
+        self.assertIsNone(commands.bridge_allowed(phrase))
+        self.assertNotIn("remind_add", commands.BRIDGE_ALLOW)
+
+        later = "remind me to check the mail in 20 minutes"
+        parsed_later = parse_reminder_request(later, now=moment)
+        self.assertEqual(parsed_later["due"], moment + timedelta(minutes=20))
+        self.assertEqual(parsed_later["due"].second, 45)
+        self.assertEqual(parsed_later["spoken_when"], "in 20 minutes")
+
+        kit = Kit(
+            4,
+            [Calendar("Reminders")],
+            Calendar("Reminders"),
+        )
+        # The Kit's default calendar object has to be the same instance the store returns.
+        kit.store.default = kit.store.calendars[0]
+        spoken = add_reminder(phrase, now=moment, eventkit=kit, foundation=Foundation)
+        self.assertEqual(spoken, "Okay, I'll remind you to stretch in 10 seconds.")
+        parts = kit.store.saved[0][0].due.parts
+        self.assertEqual(parts["hour"], 15)
+        self.assertEqual(parts["minute"], 0)
+        self.assertEqual(parts["second"], 55)
+
+        calls = []
+
+        def runner(args):
+            calls.append(list(args))
+            return ""
+
+        add_reminder(later, now=moment, runner=runner)
+        self.assertEqual(calls[0][5:13], ["yes", "no", "2026", "10", "7", "15", "20", "45"])
+
+    def test_a_clock_time_stays_on_the_minute(self):
+        calls = []
+
+        def runner(args):
+            calls.append(list(args))
+            return ""
+
+        add_reminder("remind me to call the dentist at 5 pm", now=NOW.replace(second=45), runner=runner)
+        self.assertEqual(calls[0][10:13], ["17", "0", "0"])
+
+    def test_fall_back_adds_twenty_real_minutes(self):
+        from zoneinfo import ZoneInfo
+        zone = ZoneInfo("America/Los_Angeles")
+        # 1:50:45 AM PDT, the first 1:50 on the morning the clock falls back.
+        moment = datetime(2026, 11, 1, 1, 50, 45, tzinfo=zone)
+        self.assertEqual(moment.tzname(), "PDT")
+        self.assertEqual(moment.utcoffset(), timedelta(hours=-7))
+        parsed = parse_reminder_request("remind me to check the mail in 20 minutes", now=moment)
+        due = parsed["due"]
+        self.assertEqual((due.year, due.month, due.day, due.hour, due.minute, due.second), (2026, 11, 1, 1, 10, 45))
+        self.assertEqual(due.tzname(), "PST")
+        self.assertEqual(due.utcoffset(), timedelta(hours=-8))
+        self.assertEqual(due.astimezone(timezone.utc) - moment.astimezone(timezone.utc), timedelta(minutes=20))
+        self.assertEqual(parsed["spoken_when"], "in 20 minutes")
+
+        kit = Kit(4, [Calendar("Reminders")], Calendar("Reminders"))
+        kit.store.default = kit.store.calendars[0]
+        add_reminder(
+            "remind me to check the mail in 20 minutes",
+            now=moment,
+            eventkit=kit,
+            foundation=Foundation,
+        )
+        parts = kit.store.saved[0][0].due.parts
+        self.assertEqual((parts["hour"], parts["minute"], parts["second"]), (1, 10, 45))
+        self.assertEqual(parts["day"], 1)
+        self.assertEqual(parts["tz"], "America/Los_Angeles")
+
+        calls = []
+
+        def runner(args):
+            calls.append(list(args))
+            return ""
+
+        add_reminder("remind me to check the mail in 20 minutes", now=moment, runner=runner)
+        self.assertEqual(calls[0][7:13], ["2026", "11", "1", "1", "10", "45"])
+
+    def test_spring_forward_adds_two_real_hours(self):
+        from zoneinfo import ZoneInfo
+        zone = ZoneInfo("America/Los_Angeles")
+        moment = datetime(2026, 3, 8, 1, 30, 10, tzinfo=zone)
+        self.assertEqual(moment.tzname(), "PST")
+        parsed = parse_reminder_request("remind me to stretch in 2 hours", now=moment)
+        due = parsed["due"]
+        self.assertEqual((due.hour, due.minute, due.second), (4, 30, 10))
+        self.assertEqual(due.tzname(), "PDT")
+        self.assertEqual(due.utcoffset(), timedelta(hours=-7))
+        self.assertEqual(due.astimezone(timezone.utc) - moment.astimezone(timezone.utc), timedelta(hours=2))
+        self.assertEqual(parsed["spoken_when"], "in 2 hours")
+
+    def test_a_fixed_offset_clock_uses_local_daylight_rules(self):
+        """datetime.now().astimezone() is a fixed offset. The gap still has to count."""
+        from zoneinfo import ZoneInfo
+        fixed = datetime(2026, 11, 1, 1, 50, 45, tzinfo=timezone(timedelta(hours=-7), name="PDT"))
+        zone = ZoneInfo("America/Los_Angeles")
+        with mock.patch("commands.reminders._iana_local_zone", return_value=zone):
+            parsed = parse_reminder_request("remind me to check the mail in 20 minutes", now=fixed)
+        due = parsed["due"]
+        self.assertEqual((due.hour, due.minute, due.second), (1, 10, 45))
+        self.assertEqual(due.utcoffset(), timedelta(hours=-8))
+        self.assertEqual(getattr(due.tzinfo, "key", None), "America/Los_Angeles")
+        self.assertEqual(due.astimezone(timezone.utc) - fixed.astimezone(timezone.utc), timedelta(minutes=20))
 
 
 if __name__ == "__main__":

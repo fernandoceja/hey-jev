@@ -152,3 +152,166 @@ class TestCloseAliases(unittest.TestCase):
         self.assertIn('commands.focus_any_app', source)
         self.assertIn('commands.quit_any_app', source)
         self.assertNotIn("forceTerminate", source)
+
+
+INSTALLED = {
+    "tv": "/Applications/TV.app",
+    "chatgpt": "/Applications/ChatGPT.app",
+    "chatgptclassic": "/Applications/ChatGPT Classic.app",
+    "youtubetv": "/Applications/YouTube TV.app",
+    "superduper": "/Applications/SuperDuper.app",
+}
+
+
+def _installed(force=False):
+    return INSTALLED
+
+
+class TestChatGPTAndTV(unittest.TestCase):
+    def test_chatgpt_spellings_resolve_and_classic_does_not(self):
+        for spoken in ("chat gpt", "chat g p t", "chatgpt", "chat GPT", "ChatGPT", "ChatGPT."):
+            self.assertEqual(commands.known_app_name(spoken), "ChatGPT", spoken)
+            self.assertEqual(commands.normalize_app_phrase(spoken), "ChatGPT", spoken)
+        self.assertEqual(commands.known_app_name("ChatGPT Classic"), "ChatGPT Classic")
+        self.assertEqual(commands.known_app_name("chat gpt classic"), "ChatGPT Classic")
+        self.assertNotEqual(commands.normalize_app_phrase("ChatGPT Classic"), "ChatGPT")
+
+    def test_open_and_quit_chatgpt_spellings_are_the_same_app(self):
+        calls = []
+
+        def fake_run(args, **kwargs):
+            calls.append(list(args))
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        phrases = (
+            ("open chat gpt", "app_open"),
+            ("open chat g p t", "app_open"),
+            ("open chatgpt", "app_open"),
+            ("launch chat GPT", "app_open"),
+        )
+        with mock.patch.object(commands.subprocess, "run", fake_run):
+            for phrase, key in phrases:
+                self.assertEqual(commands.route_before_api(phrase), key, phrase)
+                self.assertIsNone(commands.bridge_allowed(phrase), phrase)
+                self.assertNotIn(key, commands.BRIDGE_ALLOW)
+                opened = commands.open_any_app(None, phrase, {})
+                self.assertEqual(opened, {"app": "ChatGPT"}, phrase)
+        self.assertTrue(calls)
+        self.assertTrue(all(call == ["open", "-a", "ChatGPT"] for call in calls), calls)
+
+        gpt = _App("ChatGPT")
+        classic = _App("ChatGPT Classic")
+        with mock.patch.object(commands.apps, "running_regular_apps", return_value=[classic, gpt]):
+            for phrase in ("quit chat gpt", "close chat g p t", "quit chatgpt"):
+                gpt.terminated = False
+                classic.terminated = False
+                self.assertEqual(commands.route_before_api(phrase), "app_quit", phrase)
+                self.assertIsNone(commands.bridge_allowed(phrase), phrase)
+                result = commands.quit_any_app(None, phrase, {})
+                self.assertEqual(result, {"app": "ChatGPT"}, phrase)
+                self.assertTrue(gpt.terminated, phrase)
+                self.assertFalse(classic.terminated, phrase)
+
+    def test_apple_tv_and_the_tv_app_are_tv_and_youtube_tv_is_not(self):
+        for spoken in ("Apple TV", "apple tv", "the TV app", "TV app", "the tv application"):
+            self.assertEqual(commands.known_app_name(spoken), "TV", spoken)
+        self.assertEqual(commands.known_app_name("YouTube TV"), "YouTube TV")
+        self.assertEqual(commands.known_app_name("youtube tv"), "YouTube TV")
+        self.assertEqual(commands.known_app_name("the YouTube TV app"), "YouTube TV")
+
+        calls = []
+
+        def fake_run(args, **kwargs):
+            calls.append(list(args))
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        opens = {
+            "open Apple TV": "TV",
+            "open the TV app": "TV",
+            "open TV app": "TV",
+            "open YouTube TV": "YouTube TV",
+            "open the YouTube TV app": "YouTube TV",
+        }
+        with mock.patch.object(commands.apps, "app_index", _installed), \
+                mock.patch.object(commands.subprocess, "run", fake_run):
+            for phrase, display in opens.items():
+                self.assertEqual(commands.route_before_api(phrase), "app_open", phrase)
+                self.assertIsNone(commands.bridge_allowed(phrase), phrase)
+                self.assertEqual(commands.open_any_app(None, phrase, {}), {"app": display}, phrase)
+        self.assertEqual(
+            calls,
+            [["open", "-a", "TV"], ["open", "-a", "TV"], ["open", "-a", "TV"],
+             ["open", "-a", "YouTube TV"], ["open", "-a", "YouTube TV"]],
+        )
+
+        tv = _App("TV", "com.apple.TV")
+        youtube = _App("YouTube TV", "com.google.youtube.tv")
+        quits = {
+            "close Apple TV.": tv,
+            "quit the TV app": tv,
+            "close TV app": tv,
+            "close YouTube TV": youtube,
+            "quit YouTube TV": youtube,
+        }
+        with mock.patch.object(commands.apps, "running_regular_apps", return_value=[youtube, tv]):
+            for phrase, target in quits.items():
+                tv.terminated = False
+                youtube.terminated = False
+                self.assertEqual(commands.route_before_api(phrase), "app_quit", phrase)
+                self.assertIsNone(commands.bridge_allowed(phrase), phrase)
+                self.assertNotIn("app_quit", commands.BRIDGE_ALLOW)
+                result = commands.quit_any_app(None, phrase, {})
+                self.assertEqual(result, {"app": target.name}, phrase)
+                self.assertTrue(target.terminated, phrase)
+                self.assertFalse((youtube if target is tv else tv).terminated, phrase)
+
+    def test_a_short_fuzzy_match_does_not_open_or_quit_tv(self):
+        calls = []
+
+        def fake_run(args, **kwargs):
+            calls.append(list(args))
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        tv = _App("TV", "com.apple.TV")
+        youtube = _App("YouTube TV")
+        with mock.patch.object(commands.apps, "app_index", _installed), \
+                mock.patch.object(commands.subprocess, "run", fake_run), \
+                mock.patch.object(commands.apps, "running_regular_apps", return_value=[tv, youtube]):
+            self.assertTrue(commands.unclear_app_guess("to TV"))
+            self.assertEqual(commands.route_before_api("Open to TV."), "app_open")
+            self.assertEqual(commands.open_any_app(None, "Open to TV.", {}), commands.UNCLEAR_APP)
+            self.assertEqual(commands.route_before_api("close to TV"), "app_quit")
+            self.assertEqual(commands.quit_any_app(None, "close to TV", {}), commands.UNCLEAR_APP)
+            self.assertFalse(tv.terminated)
+            self.assertFalse(youtube.terminated)
+        self.assertEqual(calls, [])
+
+    def test_a_clear_long_fuzzy_match_still_opens(self):
+        calls = []
+
+        def fake_run(args, **kwargs):
+            calls.append(list(args))
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        self.assertIsNone(commands.known_app_name("superdupr"))
+        with mock.patch.object(commands.apps, "app_index", _installed), \
+                mock.patch.object(commands.subprocess, "run", fake_run):
+            self.assertFalse(commands.unclear_app_guess("superdupr"))
+            self.assertEqual(commands.route_before_api("open superdupr"), "app_open")
+            self.assertEqual(commands.open_any_app(None, "open superdupr", {}), {"app": "SuperDuper"})
+        self.assertEqual(calls, [["open", "-a", "SuperDuper"]])
+
+    def test_a_name_that_matches_nothing_is_not_installed(self):
+        calls = []
+
+        def fake_run(args, **kwargs):
+            calls.append(list(args))
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        with mock.patch.object(commands.apps, "app_index", _installed), \
+                mock.patch.object(commands.subprocess, "run", fake_run):
+            self.assertFalse(commands.unclear_app_guess("zzzqqqnotanapp"))
+            self.assertIsNone(commands.route_before_api("open zzzqqqnotanapp"))
+            spoken = commands.open_any_app(None, "open zzzqqqnotanapp", {})
+        self.assertIn("isn't installed", spoken)
+        self.assertEqual(calls, [])
