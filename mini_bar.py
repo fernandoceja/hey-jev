@@ -690,7 +690,99 @@ def capture_follow_up_items():
     return _capture_follow_rows()
 
 
-def plus_menu(can_attach=None, recording=False, zoe_mode=False):
+def option_held(flags, option_mask):
+    """True when the Option bit is set. A bad flag value is not a paste."""
+    try:
+        return bool(int(flags) & int(option_mask))
+    except (TypeError, ValueError):
+        return False
+
+
+def clipboard_item_index(item_id):
+    """1-based index from a menu id such as clipboard_item_2. Else None.
+
+    The id is the only thing a click keeps. The preview stays in the title and
+    is not turned into a command.
+    """
+    text = str(item_id or "")
+    prefix = "clipboard_item_"
+    if not text.startswith(prefix):
+        return None
+    try:
+        index = int(text[len(prefix):])
+    except ValueError:
+        return None
+    if index < 1:
+        return None
+    return index
+
+
+_CLIPBOARD_PHRASES = {
+    "clipboard_show": "clipboard history",
+    "clipboard_clear": "clear clipboard history",
+    "clipboard_pause": "pause clipboard history",
+    "clipboard_resume": "resume clipboard history",
+}
+
+
+def clipboard_menu_phrase(item_id):
+    """The local command for a clipboard menu row, or None.
+
+    History rows have no phrase. Their text is never queued as something Jev
+    heard, so it cannot reach an API or the bridge outbox.
+    """
+    return _CLIPBOARD_PHRASES.get(str(item_id or ""))
+
+
+def _clipboard_title(index, preview):
+    flat = " ".join(str(preview or "").split())
+    if len(flat) > 48:
+        flat = flat[:47].rstrip() + "\u2026"
+    return "{0}. {1}".format(int(index), flat)
+
+
+def clipboard_menu(entries=None, paused=False):
+    """Clipboard History submenu for the pill and the menu bar.
+
+    `entries` is (index, preview), newest first. A click copies that item.
+    Option-click pastes. The preview is the title only.
+    """
+    rows = []
+    shown = list(entries or ())
+    if shown:
+        for index, preview in shown:
+            number = int(index)
+            rows.append({
+                "id": "clipboard_item_{0}".format(number),
+                "title": _clipboard_title(number, preview),
+                "kind": "clipboard_item",
+                "phrase": "",
+                "symbol": "doc.on.clipboard",
+                "key": "",
+                "index": number,
+            })
+    else:
+        rows.append(_menu_action(
+            "clipboard_empty", "Nothing copied yet", "clipboard_empty", "doc.on.clipboard"))
+    rows.append({"kind": "separator"})
+    rows.append(_menu_text("clipboard_show", "Read History", "clipboard history", "text.quote"))
+    rows.append(_menu_text("clipboard_clear", "Clear History", "clear clipboard history", "trash"))
+    if paused:
+        rows.append(_menu_text(
+            "clipboard_resume", "Resume History", "resume clipboard history", "play.fill"))
+    else:
+        rows.append(_menu_text(
+            "clipboard_pause", "Pause History", "pause clipboard history", "pause.fill"))
+    return {
+        "id": "clipboard",
+        "title": "Clipboard History",
+        "kind": "submenu",
+        "symbol": "doc.on.clipboard",
+        "items": tuple(rows),
+    }
+
+
+def plus_menu(can_attach=None, recording=False, clipboard_entries=None, clipboard_paused=False, zoe_mode=False):
     """Items for the + button. Only commands the app already runs.
 
     `can_attach` defaults to attachments_supported(). Attach File is included
@@ -750,6 +842,7 @@ def plus_menu(can_attach=None, recording=False, zoe_mode=False):
     if zoe_mode:
         zoe_item["checked"] = True
     items = [
+        clipboard_menu(clipboard_entries, clipboard_paused),
         zoe_item,
         {"kind": "separator"},
         {"id": "shots", "title": "Screenshot", "kind": "submenu", "symbol": "camera.viewfinder", "items": shots},

@@ -99,6 +99,12 @@ BLOCKED_PHRASES = (
     ("video", "compress the recording", "video_compress"),
     ("video", "extract the audio from the recording", "video_audio"),
     ("video", "choose a video", "video_choose"),
+    ("clipboard", "clipboard history", "clipboard_history"),
+    ("clipboard", "copy item 2", "clipboard_copy"),
+    ("clipboard", "paste item 2", "clipboard_paste"),
+    ("clipboard", "clear clipboard history", "clipboard_clear"),
+    ("clipboard", "pause clipboard history", "clipboard_pause"),
+    ("clipboard", "resume clipboard history", "clipboard_resume"),
 )
 
 
@@ -147,6 +153,12 @@ class TestZoeMode(unittest.TestCase):
         self.assertEqual(commands.route_before_api("compress the recording"), "video_compress")
         self.assertEqual(commands.route_before_api("extract the audio from the recording"), "video_audio")
         self.assertEqual(commands.route_before_api("choose a video"), "video_choose")
+        self.assertEqual(commands.route_before_api("clipboard history"), "clipboard_history")
+        self.assertEqual(commands.route_before_api("copy item 2"), "clipboard_copy")
+        self.assertEqual(commands.route_before_api("paste item 2"), "clipboard_paste")
+        self.assertEqual(commands.route_before_api("clear clipboard history"), "clipboard_clear")
+        self.assertEqual(commands.route_before_api("pause clipboard history"), "clipboard_pause")
+        self.assertEqual(commands.route_before_api("resume clipboard history"), "clipboard_resume")
         self.assertEqual(commands.route_before_api("blue pill"), "matrix_on")
         self.assertEqual(commands.route_before_api("red pill"), "matrix_off")
         self.assertEqual(commands.route_before_api("what time is it"), "info_time")
@@ -174,6 +186,12 @@ class TestZoeMode(unittest.TestCase):
         self.assertIsNone(commands.zoe_guard("play my brief"))
         self.assertIsNone(commands.zoe_guard("stop"))
         self.assertIsNone(commands.zoe_guard("convert the recording to mp4"))
+        self.assertIsNone(commands.zoe_guard("clipboard history"))
+        self.assertIsNone(commands.zoe_guard("copy item 2"))
+        self.assertIsNone(commands.zoe_guard("paste item 2"))
+        self.assertIsNone(commands.zoe_guard("clear clipboard history"))
+        self.assertIsNone(commands.zoe_guard("pause clipboard history"))
+        self.assertIsNone(commands.zoe_guard("resume clipboard history"))
         entered = commands.zoe_guard("zoe mode")
         self.assertEqual(entered["kind"], "speak")
         self.assertIn("Zoe mode is on", entered["line"])
@@ -321,7 +339,10 @@ class TestZoeMode(unittest.TestCase):
         self.assertIn("Keep Zoe Mode", ui)
         self.assertIn("Turn Off Zoe Mode", ui)
         self.assertIn("zoe_label", ui)
-        self.assertIn("plus_menu(recording=recording, zoe_mode=zoe_on)", ui)
+        self.assertIn(
+            "plus_menu(recording=recording, zoe_mode=zoe_on, clipboard_entries=entries, clipboard_paused=paused)",
+            ui,
+        )
         siri = open(os.path.join(ROOT, "siri.py"), encoding="utf-8").read()
         start = siri.index("def handle(")
         end = siri.index("\ndef ", start + 10)
@@ -352,6 +373,29 @@ class TestZoeMode(unittest.TestCase):
         self.assertIn(second, commands.JOKES)
         self.assertNotEqual(first, second)
         self.assertTrue(first.startswith("[cheerful] "))
+
+    def test_clipboard_history_is_refused_while_zoe_mode_is_on(self):
+        """Clipboard commands stay adult-only, the same way reminders and video do."""
+        self.assertFalse(commands.zoe_mode_active())
+        self.assertIsNone(commands.zoe_guard("clipboard history"))
+        commands.enter_zoe_mode()
+        phrases = (
+            ("clipboard history", "clipboard_history"),
+            ("show me my clipboard history", "clipboard_history"),
+            ("copy item 2", "clipboard_copy"),
+            ("paste item 2", "clipboard_paste"),
+            ("clear clipboard history", "clipboard_clear"),
+            ("pause clipboard history", "clipboard_pause"),
+            ("resume clipboard history", "clipboard_resume"),
+        )
+        for phrase, key in phrases:
+            self.assertEqual(commands.route_before_api(phrase), key, phrase)
+            self.assertIn(key, commands.ZOE_BLOCKED["clipboard"], key)
+            self.assertNotIn(key, commands.ZOE_ALLOW, key)
+            self.assertNotIn(key, commands.BRIDGE_ALLOW, key)
+            self.assertFalse(commands.zoe_allows(key), key)
+            self._refuse(phrase)
+        self.assertTrue(commands.zoe_mode_active())
 
     def test_a_phone_allowlisted_command_cannot_bypass_the_mode(self):
         commands.enter_zoe_mode()

@@ -101,6 +101,14 @@ ZOE_BLOCKED = {
         "video_audio",
         "video_choose",
     ),
+    "clipboard": (
+        "clipboard_history",
+        "clipboard_copy",
+        "clipboard_paste",
+        "clipboard_clear",
+        "clipboard_pause",
+        "clipboard_resume",
+    ),
     "shell": (),
     "system": (
         "volume_up",

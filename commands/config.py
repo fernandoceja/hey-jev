@@ -100,6 +100,16 @@ MESSAGES_DB = os.path.expanduser("~/Library/Messages/chat.db")
 JEV_DOCS = os.path.expanduser("~/Documents/Jev")
 # Screenshots and screen recordings. Set JEV_CAPTURES_DIR to use another folder.
 CAPTURES_DIR = os.path.expanduser("~/Pictures/Jev Captures")
+# Recent plain-text copies. In memory unless something calls save_clipboard.
+# That file is local, mode 0600, and is never an iCloud path.
+CLIPBOARD_HISTORY_LIMIT = 25
+CLIPBOARD_ITEM_MAX = 2000
+CLIPBOARD_PREVIEW_LEN = 48
+CLIPBOARD_SPOKEN_COUNT = 5
+CLIPBOARD_POLL_SECONDS = 1
+CLIPBOARD_HISTORY_PATH = os.path.expanduser(
+    "~/Library/Application Support/Hey Jev/clipboard-history.json"
+)
 NOTES_PATH = os.path.join(JEV_DOCS, "notes.md")
 DUE_PATH = os.path.join(JEV_DOCS, "due.md")
 IHSS_PATH = os.path.join(JEV_DOCS, "ihss_hours.csv")
@@ -592,6 +602,26 @@ STRICT_PATTERNS = (
     (re.compile(
         rf"^{_PLEASE}(?:(?:take\s+)?(?:the\s+|a\s+)?red\s+pill|(?:exit|stop|leave|quit|close|end)\s+(?:the\s+)?matrix){_TAIL}",
         re.I), "matrix_off"),
+    # Clipboard history is Mac-only. These keys are not in BRIDGE_ALLOW.
+    (re.compile(
+        rf"^{_PLEASE}(?:show\s+(?:me\s+)?)?(?:my\s+)?clipboard\s+history{_TAIL}"
+        rf"|^{_PLEASE}what(?:'s| is)\s+(?:on\s+)?(?:my\s+)?clipboard\s+history{_TAIL}",
+        re.I), "clipboard_history"),
+    (re.compile(
+        rf"^{_PLEASE}copy\s+(?:clipboard\s+)?item\s+(?:number\s+)?\d+{_TAIL}",
+        re.I), "clipboard_copy"),
+    (re.compile(
+        rf"^{_PLEASE}paste\s+(?:clipboard\s+)?item\s+(?:number\s+)?\d+{_TAIL}",
+        re.I), "clipboard_paste"),
+    (re.compile(
+        rf"^{_PLEASE}(?:clear|forget)\s+(?:my\s+)?clipboard\s+history{_TAIL}",
+        re.I), "clipboard_clear"),
+    (re.compile(
+        rf"^{_PLEASE}pause\s+(?:the\s+)?clipboard(?:\s+history)?{_TAIL}",
+        re.I), "clipboard_pause"),
+    (re.compile(
+        rf"^{_PLEASE}resume\s+(?:the\s+)?clipboard(?:\s+history)?{_TAIL}",
+        re.I), "clipboard_resume"),
 )
 _NOTE_CMD_RE = re.compile(rf"^{_PLEASE}take\s+a\s+note\b\s*[:\-]?\s*(.*)$", re.I | re.S)
 _IHSS_CMD_RE = re.compile(
@@ -625,6 +655,7 @@ HELP_TEXT = (
     "I can convert, trim, or compress a recording, and extract its audio, on this Mac. "
     "I can open the captures folder, and I can look at a screenshot when you ask. "
     "I can open ChatGPT, Claude, Gemini, Siri, or Google with a capture or your last question. "
+    "I can read your clipboard history, copy or paste an item, and clear it. That stays on this Mac. "
     "I can play your morning brief memo. Stop stops that playback. "
     "I won't send a message or move money."
 )
