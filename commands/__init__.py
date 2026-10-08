@@ -251,6 +251,7 @@ from .travel import (
 
 from .leave import (
     describe_leave,
+    speak_eta_to_work,
     speak_leave_time,
 )
 

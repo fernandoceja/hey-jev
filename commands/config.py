@@ -401,6 +401,17 @@ STRICT_PATTERNS = (
         rf"|^{_PLEASE}what\s+time\s+should\s+i\s+leave(?:\s+for\s+(?:work|brea))?{_TAIL}"
         rf"|^{_PLEASE}when\s+do\s+i\s+(?:need\s+to\s+)?leave\s+for\s+(?:work|brea){_TAIL}",
         re.I), "info_leave"),
+    # Mac-only. Not in BRIDGE_ALLOW. "when should I leave" stays info_leave.
+    (re.compile(
+        rf"^{_PLEASE}(?:hey\s+jev\b\s*,?\s+)?{_PLEASE}(?:"
+        r"what(?:'s| is)\s+my\s+eta\s+to\s+work"
+        r"|(?:my\s+)?eta\s+to\s+work"
+        r"|how\s+long\s+to\s+get\s+to\s+work"
+        r"|how\s+long\s+will\s+it\s+take(?:\s+me)?\s+to\s+get\s+to\s+work"
+        r"|how\s+long\s+is\s+my\s+drive\s+to\s+work"
+        r"|how\s+far\s+am\s+i\s+from\s+work"
+        rf"){_TAIL}",
+        re.I), "info_eta_work"),
     (re.compile(
         rf"^{_PLEASE}(?:turn\s+on|enable)\s+leave\s+reminders{_TAIL}"
         rf"|^{_PLEASE}leave\s+reminders\s+on{_TAIL}",
@@ -653,7 +664,8 @@ HELP_TEXT = (
     "I can play Apple Music or a YouTube search. I can read your calendar, shifts, school, "
     "and bills, log IHSS hours, remind you on payday, and add an Apple Reminder when you say remind me to. "
     "I can save a shift for one day, "
-    "and say when to leave for Brea. I can nudge you when it's time to leave, "
+    "and say when to leave for Brea, and how long the drive is right now. "
+    "I can nudge you when it's time to leave, "
     "and you can turn leave reminders on or off. I can run shortcuts that are in the Jev folder. "
     "I can also help with Zoe. Say Zoe mode for a kid-safe mode. Leaving it takes a second step. "
     "Say blue pill for the Matrix and red pill to leave it. "

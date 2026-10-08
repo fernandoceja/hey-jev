@@ -8,8 +8,12 @@ request fails, the caller uses the typical drive in config and says so.
 import threading
 
 
-def _mapkit_travel_seconds(origin, destination, arrive_at):
-    """Seconds, or None. Raises ImportError when the MapKit frameworks are absent."""
+def _mapkit_travel_seconds(origin, destination, arrive_at, depart=False):
+    """Seconds, or None. Raises ImportError when the MapKit frameworks are absent.
+
+    `depart` asks for a trip that leaves at `arrive_at`. Otherwise the request
+    is the drive that arrives then, which is what the leave-time answer uses.
+    """
     import CoreLocation
     import Foundation
     import MapKit
@@ -47,9 +51,13 @@ def _mapkit_travel_seconds(origin, destination, arrive_at):
     request.setSource_(source)
     request.setDestination_(dest_item)
     request.setTransportType_(MapKit.MKDirectionsTransportTypeAutomobile)
-    # Arrival time, not departure, so the ETA is the drive that gets there then.
-    request.setArrivalDate_(
-        Foundation.NSDate.dateWithTimeIntervalSince1970_(arrive_at.timestamp()))
+    moment = Foundation.NSDate.dateWithTimeIntervalSince1970_(arrive_at.timestamp())
+    if depart:
+        # Leave now (or at the given moment). Traffic is for that departure.
+        request.setDepartureDate_(moment)
+    else:
+        # Arrival time, not departure, so the ETA is the drive that gets there then.
+        request.setArrivalDate_(moment)
     directions = MapKit.MKDirections.alloc().initWithRequest_(request)
     done, box = threading.Event(), {}
 
@@ -70,12 +78,14 @@ def _mapkit_travel_seconds(origin, destination, arrive_at):
     return seconds
 
 
-def expected_travel_seconds(origin, destination, arrive_at):
+def expected_travel_seconds(origin, destination, arrive_at, depart=False):
     """MapKit ETA in seconds, or None when it is unavailable or fails.
 
-    `arrive_at` is the shift start. Traffic is for arriving then.
+    `arrive_at` is the shift start when `depart` is false. Traffic is for
+    arriving then. The current ETA passes now with `depart=True`, so the
+    drive is the one that leaves at that moment.
     """
     try:
-        return _mapkit_travel_seconds(origin, destination, arrive_at)
+        return _mapkit_travel_seconds(origin, destination, arrive_at, depart=depart)
     except Exception:
         return None
