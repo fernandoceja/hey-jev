@@ -311,6 +311,10 @@ JOINER_RE = re.compile(r"\b(?:and|then)\b", re.I)
 # Whole-utterance commands. Checked before the looser patterns below.
 _PLEASE = r"(?:please\s+)?"
 _TAIL = r"(?:\s+please)?[.!?]*$"
+# "the last recording", "this video", "the recording".
+_VIDEO_WHEN = r"(?:(?:the|this)\s+)?(?:last\s+)?(?:recording|video)"
+# 0:05, 1:02:03, 1:02:03.5, or whole seconds.
+_VIDEO_CLOCK = r"(?:(?:\d{1,2}:){1,2}\d{2}(?:\.\d+)?|\d+(?:\.\d+)?)"
 # "my shift Monday is 9:30 to 6:30 at Brea" and "clear my shift Monday".
 _SHIFT_WHEN = (
     r"(?:today|tomorrow|(?:this|next)\s+"
@@ -496,6 +500,24 @@ STRICT_PATTERNS = (
         rf"(?:\s+with\s+(?:the\s+)?(?:mic|audio|microphone))?{_TAIL}",
         re.I), "record_start"),
     (re.compile(
+        rf"^{_PLEASE}(?:convert\s+{_VIDEO_WHEN}\s+to\s+(?:an?\s+)?mp4|make\s+{_VIDEO_WHEN}\s+an\s+mp4){_TAIL}",
+        re.I), "video_mp4"),
+    (re.compile(
+        rf"^{_PLEASE}trim\s+(?:{_VIDEO_WHEN}|it)\s+from\s+{_VIDEO_CLOCK}\s+to\s+{_VIDEO_CLOCK}{_TAIL}",
+        re.I), "video_trim"),
+    (re.compile(
+        rf"^{_PLEASE}compress\s+{_VIDEO_WHEN}{_TAIL}"
+        rf"|^{_PLEASE}make\s+{_VIDEO_WHEN}\s+smaller{_TAIL}",
+        re.I), "video_compress"),
+    (re.compile(
+        rf"^{_PLEASE}extract\s+(?:the\s+)?audio\s+from\s+{_VIDEO_WHEN}{_TAIL}"
+        rf"|^{_PLEASE}save\s+the\s+audio\s+from\s+{_VIDEO_WHEN}{_TAIL}",
+        re.I), "video_audio"),
+    (re.compile(
+        rf"^{_PLEASE}(?:choose|pick)\s+a\s+video(?:\s+file)?{_TAIL}"
+        rf"|^{_PLEASE}open\s+a\s+video\s+file{_TAIL}",
+        re.I), "video_choose"),
+    (re.compile(
         rf"^{_PLEASE}save\s+(?:it|this|that|the\s+(?:screenshot|recording|capture|picture|video))\s+to\s+notes{_TAIL}",
         re.I), "capture_note"),
     (re.compile(
@@ -587,6 +609,7 @@ HELP_TEXT = (
     "and you can turn leave reminders on or off. I can run shortcuts that are in the Jev folder. "
     "I can also help with Zoe. Say blue pill for the Matrix and red pill to leave it. "
     "I can take a screenshot, record the screen, and open Notes, Mail, or Messages with the file. "
+    "I can convert, trim, or compress a recording, and extract its audio, on this Mac. "
     "I can open the captures folder, and I can look at a screenshot when you ask. "
     "I can open ChatGPT, Claude, Gemini, Siri, or Google with a capture or your last question. "
     "I can play your morning brief memo. Stop stops that playback. "

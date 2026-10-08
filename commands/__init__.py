@@ -370,6 +370,26 @@ from .captures import (
     take_screenshot as capture_screenshot,
 )
 
+from .video import (
+    AVCONVERT_PRESETS,
+    FFMPEG_CANDIDATES,
+    MISSING_FFMPEG,
+    VIDEO_ROUTE_KEYS,
+    avconvert_command,
+    choose_video,
+    ffmpeg_command,
+    find_avconvert,
+    format_clock,
+    is_video_extension,
+    locate_tool,
+    notification_command,
+    output_path,
+    parse_clock,
+    spawn_background,
+    trim_bounds,
+    video_from_text,
+)
+
 from .media import (
     play_on_youtube,
     parse_volume_level,

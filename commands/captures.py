@@ -44,14 +44,19 @@ class CaptureBook:
         self.last = None
         self.recording = None
         self.question = ""
+        # The last movie, kept when a later screenshot replaces `last`.
+        self.video = None
 
     def remember(self, path, kind):
         self.last = {"path": path, "kind": kind}
+        if kind == "recording":
+            self.video = path
 
     def reset(self):
         self.last = None
         self.recording = None
         self.question = ""
+        self.video = None
 
 
 BOOK = CaptureBook()
