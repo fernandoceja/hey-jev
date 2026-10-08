@@ -464,6 +464,8 @@ _MENU_ROUTES = {
     "brief": "info_brief",
     "next_shift": "info_next_shift",
     "leave": "info_leave",
+    "leave_reminders_on": "leave_reminders_on",
+    "leave_reminders_off": "leave_reminders_off",
     "payday": "info_payday_check",
     "blue_pill": "matrix_on",
     "red_pill": "matrix_off",
@@ -558,7 +560,8 @@ class TestGlass(unittest.TestCase):
                 key = commands.route_before_api(phrase)
                 self.assertEqual(key, _MENU_ROUTES[item["id"]], phrase)
                 self.assertNotEqual(key, "info_messages")
-                if key in ("matrix_on", "matrix_off", "notify_off", "volume_set", "volume_mute", "brightness_set"):
+                if key in ("matrix_on", "matrix_off", "notify_off", "volume_set", "volume_mute", "brightness_set",
+                           "leave_reminders_on", "leave_reminders_off"):
                     self.assertNotIn(key, commands.BRIDGE_ALLOW)
                 routed[item["id"]] = key
             else:
