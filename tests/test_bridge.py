@@ -558,3 +558,37 @@ class TestBridgeValidation(unittest.TestCase):
             self.assertFalse(reply["ok"], phrase)
             self.assertIn("can't do that from your phone", reply["reply"])
             self.assertNotIn("hunter2", reply["reply"])
+
+    def test_dramatic_voice_is_refused(self):
+        """The voice toggle is Mac-only. A signed phone file does not run it."""
+        phrases = (
+            ("use dramatic voice", "voicedram", "voice_dramatic"),
+            ("use the dramatic voice", "voicedra2", "voice_dramatic"),
+            ("please use dramatic voice", "voicedra3", "voice_dramatic"),
+            ("hey jev, use dramatic voice", "voicedra4", "voice_dramatic"),
+            ("use dramatic voice please", "voicedra5", "voice_dramatic"),
+            ("use normal voice", "voicenorm", "voice_normal"),
+            ("use the normal voice", "voicenor2", "voice_normal"),
+            ("hey jev, use normal voice", "voicenor3", "voice_normal"),
+            ("which voice are you using", "voicewhic", "voice_which"),
+            ("what voice are you using", "voicewhi2", "voice_which"),
+            ("hey jev, which voice are you using?", "voicewhi3", "voice_which"),
+        )
+        self.assertIsInstance(commands.BRIDGE_ALLOW, frozenset)
+        self.assertEqual(len(commands.BRIDGE_ALLOW), 30)
+        root = os.path.dirname(os.path.dirname(__file__))
+        bridge_source = open(os.path.join(root, "commands", "bridge.py"), encoding="utf-8").read()
+        secrets_source = open(os.path.join(root, "secrets_store.py"), encoding="utf-8").read()
+        for needle in ("voice_dramatic", "voice_normal", "voice_which", "drama-3-preview"):
+            self.assertNotIn(needle, bridge_source)
+            self.assertNotIn(needle, secrets_source)
+        for phrase, nonce, key in phrases:
+            self.assertEqual(commands.route_before_api(phrase), key, phrase)
+            self.assertIsNone(commands.bridge_allowed(phrase), phrase)
+            self.assertNotIn(key, commands.BRIDGE_ALLOW, phrase)
+            calls, path = self._process(phrase, nonce, name=nonce + ".json")
+            self.assertEqual(calls, [], phrase)
+            self.assertFalse(os.path.exists(path), phrase)
+            reply = self._reply(nonce)
+            self.assertFalse(reply["ok"], phrase)
+            self.assertIn("can't do that from your phone", reply["reply"])
