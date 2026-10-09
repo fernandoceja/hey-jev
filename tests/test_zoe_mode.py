@@ -113,6 +113,8 @@ BLOCKED_PHRASES = (
     ("passwords", "what's my password for Chase", "password_lookup"),
     ("passwords", "login for Amazon", "password_lookup"),
     ("passwords", "show my logins for Hulu", "password_lookup"),
+    ("dictation", "use scribe for dictation", "dictation_scribe"),
+    ("dictation", "use openai for dictation", "dictation_openai"),
 )
 
 

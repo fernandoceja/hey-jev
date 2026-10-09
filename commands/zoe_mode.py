@@ -115,6 +115,7 @@ ZOE_BLOCKED = {
         "clipboard_resume",
     ),
     "passwords": ("password_lookup",),
+    "dictation": ("dictation_scribe", "dictation_openai"),
     "shell": (),
     "system": (
         "volume_up",

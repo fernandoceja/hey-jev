@@ -50,6 +50,7 @@ COMMAND_PROMPT = (
     "My shift Monday is 9:30 to 6:30 at Brea. Clear my shift Monday. When should I leave for work. "
     "What's my ETA to work. "
     "Turn on leave reminders. Turn off leave reminders. "
+    "Use scribe for dictation. Use OpenAI for dictation. "
     "Use dramatic voice. Use normal voice. Which voice are you using. "
     "Open settings. Open business email. Run shortcut Leaving for work. What can you do."
 )
@@ -471,6 +472,8 @@ ACTIONS = {
     "clipboard_pause": lambda _arg, _text: commands.pause_clipboard_history(),
     "clipboard_resume": lambda _arg, _text: commands.resume_clipboard_history(),
     "password_lookup": lambda _arg, text: commands.lookup_password(text),
+    "dictation_scribe": lambda _arg, _text: commands.set_dictation_engine("scribe"),
+    "dictation_openai": lambda _arg, _text: commands.set_dictation_engine("openai"),
     "voice_dramatic": lambda _arg, _text: commands.use_dramatic_voice(),
     "voice_normal": lambda _arg, _text: commands.use_normal_voice(),
     "voice_which": lambda _arg, _text: commands.which_voice(),
@@ -1404,7 +1407,21 @@ def run_voice_assistant(notify=None, controls=None, mode="ptt", mic=""):
     rec = Recorder(mic)
     busy = threading.Lock()
     armed_until = [0.0]
-    dictation = Dictation(NAMES, lambda: (OA_KEY, OR_KEY), SAMPLE_RATE)
+
+    def dictation_whisper(audio):
+        # Last resort for one dictation chunk. Wake, commands, and the stop
+        # phrase do not call this. They keep the transcribe() path below.
+        segs, _info = model.transcribe(audio, **commands.whisper_transcribe_kwargs(None))
+        parts = []
+        for seg in segs:
+            if getattr(seg, "no_speech_prob", 0.0) > commands.NO_SPEECH_MAX:
+                continue
+            bit = str(getattr(seg, "text", "") or "").strip()
+            if bit:
+                parts.append(bit)
+        return " ".join(parts).strip()
+
+    dictation = Dictation(NAMES, lambda: (OA_KEY, OR_KEY), SAMPLE_RATE, local_transcribe=dictation_whisper)
     late_timers = []  # timers that went off mid-dictation, announced once it stops
 
     def transcribe(audio, prompt, drop_noise=False):

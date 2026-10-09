@@ -526,6 +526,40 @@ class TestBridgeValidation(unittest.TestCase):
             self.assertFalse(reply["ok"], phrase)
             self.assertIn("can't do that from your phone", reply["reply"])
 
+    def test_dictation_engine_is_refused(self):
+        """Switching the dictation engine is Mac-only. A signed file does not run it."""
+        phrases = (
+            ("use scribe for dictation", "scribe001", "dictation_scribe"),
+            ("use openai for dictation", "openai001", "dictation_openai"),
+            ("Use Scribe for dictation.", "scribe002", "dictation_scribe"),
+            ("please use scribe for dictation", "scribe003", "dictation_scribe"),
+            ("use openai for dictation please", "openai002", "dictation_openai"),
+            ("hey jev, use scribe for dictation", "scribe004", "dictation_scribe"),
+            ("hey jev, please use openai for dictation", "openai003", "dictation_openai"),
+            ("use open ai for dictation", "openai004", "dictation_openai"),
+        )
+        root = os.path.dirname(os.path.dirname(__file__))
+        bridge_source = open(os.path.join(root, "commands", "bridge.py"), encoding="utf-8").read()
+        secrets_source = open(os.path.join(root, "secrets_store.py"), encoding="utf-8").read()
+        self.assertEqual(len(commands.BRIDGE_ALLOW), 30)
+        self.assertIsInstance(commands.BRIDGE_ALLOW, frozenset)
+        self.assertNotIn("dictation_scribe", commands.BRIDGE_ALLOW)
+        self.assertNotIn("dictation_openai", commands.BRIDGE_ALLOW)
+        self.assertNotIn("dictation_scribe", bridge_source)
+        self.assertNotIn("dictation_openai", bridge_source)
+        self.assertNotIn("scribe", secrets_source)
+        self.assertNotIn("dictation_scribe", secrets_source)
+        for phrase, nonce, key in phrases:
+            self.assertEqual(commands.route_before_api(phrase), key, phrase)
+            self.assertIsNone(commands.bridge_allowed(phrase), phrase)
+            self.assertNotIn(key, commands.BRIDGE_ALLOW, phrase)
+            calls, path = self._process(phrase, nonce, name=nonce + ".json")
+            self.assertEqual(calls, [], phrase)
+            self.assertFalse(os.path.exists(path), phrase)
+            reply = self._reply(nonce)
+            self.assertFalse(reply["ok"], phrase)
+            self.assertIn("can't do that from your phone", reply["reply"].lower())
+
     def test_password_lookup_is_refused(self):
         """Opening Passwords is Mac-only. A signed phone file does not run it."""
         phrases = (

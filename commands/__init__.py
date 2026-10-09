@@ -573,6 +573,20 @@ from .stt import (
     whisper_transcribe_kwargs,
 )
 
+from .dictation_engine import (
+    DICTATION_ENGINE_KEYS,
+    FALLBACK_FAILED,
+    FALLBACK_OPENAI,
+    FALLBACK_WHISPER,
+    OPENAI_MODEL,
+    OPENROUTER_TRANSCRIPTIONS_URL,
+    SCRIBE_MODEL,
+    SCRIBE_USD_PER_SECOND,
+    dictation_engine,
+    set_dictation_engine,
+    set_dictation_engine_path,
+)
+
 from .brief_memo import (
     BriefPlayback,
     EMPTY_FOLDER_LINE,
