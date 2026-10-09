@@ -593,6 +593,47 @@ class TestBridgeValidation(unittest.TestCase):
             self.assertIn("can't do that from your phone", reply["reply"])
             self.assertNotIn("hunter2", reply["reply"])
 
+    def test_videos_folder_is_refused(self):
+        """Opening the Videos folder is Mac-only. A signed phone file does not run it."""
+        phrases = (
+            ("open videos", "vidopen01"),
+            ("open my videos", "vidopen02"),
+            ("open videos folder", "vidopen03"),
+            ("show my videos", "vidopen04"),
+            ("please open videos", "vidopen05"),
+            ("open videos please", "vidopen06"),
+            ("Open Videos.", "vidopen07"),
+            ("hey jev, open my videos", "vidopen08"),
+            ("show my videos!", "vidopen09"),
+            ("open the videos folder", "vidopen10"),
+            ("open my videos folder", "vidopen11"),
+            ("hey jev, please show my videos", "vidopen12"),
+        )
+        root = os.path.dirname(os.path.dirname(__file__))
+        bridge_source = open(os.path.join(root, "commands", "bridge.py"), encoding="utf-8").read()
+        secrets_source = open(os.path.join(root, "secrets_store.py"), encoding="utf-8").read()
+        self.assertEqual(len(commands.BRIDGE_ALLOW), 30)
+        self.assertIsInstance(commands.BRIDGE_ALLOW, frozenset)
+        self.assertNotIn("videos_open", commands.BRIDGE_ALLOW)
+        self.assertNotIn("videos_open", bridge_source)
+        self.assertNotIn("VIDEOS_FOLDER", bridge_source)
+        self.assertNotIn("videos_open", secrets_source)
+        self.assertNotIn("VIDEOS_FOLDER", secrets_source)
+        self.assertEqual(commands.route_before_api("open Apple TV"), "app_open")
+        self.assertEqual(commands.route_before_api("open the TV app"), "app_open")
+        self.assertEqual(commands.route_before_api("open a video file"), "video_choose")
+        self.assertEqual(commands.route_before_api("convert the recording to mp4"), "video_mp4")
+        for phrase, nonce in phrases:
+            self.assertEqual(commands.route_before_api(phrase), "videos_open", phrase)
+            self.assertIsNone(commands.bridge_allowed(phrase), phrase)
+            self.assertNotIn("videos_open", commands.BRIDGE_ALLOW, phrase)
+            calls, path = self._process(phrase, nonce, name=nonce + ".json")
+            self.assertEqual(calls, [], phrase)
+            self.assertFalse(os.path.exists(path), phrase)
+            reply = self._reply(nonce)
+            self.assertFalse(reply["ok"], phrase)
+            self.assertIn("can't do that from your phone", reply["reply"])
+
     def test_dramatic_voice_is_refused(self):
         """The voice toggle is Mac-only. A signed phone file does not run it."""
         phrases = (

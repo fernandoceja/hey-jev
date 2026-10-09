@@ -108,6 +108,11 @@ MY_LOVE_HANDLES = ("+15623616724", "cgarcilazo6724@icloud.com")
 MESSAGES_DB = os.path.expanduser("~/Library/Messages/chat.db")
 
 JEV_DOCS = os.path.expanduser("~/Documents/Jev")
+# Fernando's Videos folder. `open` receives this as one argument, so the spaces
+# stay in the path. expanduser runs again when the folder is opened, which
+# turns a leading ~ into the home directory without a shell. The folder is
+# not created when it is missing.
+VIDEOS_FOLDER = os.path.expanduser("/Users/fernandoceja/Documents/Fernando Ceja/Videos")
 # Screenshots and screen recordings. Set JEV_CAPTURES_DIR to use another folder.
 CAPTURES_DIR = os.path.expanduser("~/Pictures/Jev Captures")
 # Recent plain-text copies. In memory unless something calls save_clipboard.
@@ -577,6 +582,15 @@ STRICT_PATTERNS = (
         rf"^{_PLEASE}(?:choose|pick)\s+a\s+video(?:\s+file)?{_TAIL}"
         rf"|^{_PLEASE}open\s+a\s+video\s+file{_TAIL}",
         re.I), "video_choose"),
+    # Videos folder. Mac-only. Not in BRIDGE_ALLOW. Zoe mode may open it.
+    # Matched here, before "open <app>", so "videos" is the folder in
+    # VIDEOS_FOLDER and never a fuzzy app guess. "open a video file" is the
+    # pattern above. "open Apple TV" does not match.
+    (re.compile(
+        rf"^{_PLEASE}(?:hey\s+jev\b\s*,?\s+)?{_PLEASE}"
+        rf"(?:open\s+(?:(?:my|the)\s+)?videos(?:\s+folder)?"
+        rf"|show\s+(?:me\s+)?my\s+videos){_TAIL}",
+        re.I), "videos_open"),
     (re.compile(
         rf"^{_PLEASE}save\s+(?:it|this|that|the\s+(?:screenshot|recording|capture|picture|video))\s+to\s+notes{_TAIL}",
         re.I), "capture_note"),
@@ -705,6 +719,7 @@ HELP_TEXT = (
     "I can take a screenshot, record the screen, and open Notes, Mail, or Messages with the file. "
     "I can convert, trim, or compress a recording, and extract its audio, on this Mac. "
     "I can open the captures folder, and I can look at a screenshot when you ask. "
+    "I can open your Videos folder. "
     "I can open ChatGPT, Claude, Gemini, Siri, or Google with a capture or your last question. "
     "I can read your clipboard history, copy or paste an item, and clear it. That stays on this Mac. "
     "I can open Passwords and search for a site. I never read or say the password. "

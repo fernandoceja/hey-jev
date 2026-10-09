@@ -56,6 +56,8 @@ ALLOWED = (
     ("use dramatic voice", "voice_dramatic"),
     ("use normal voice", "voice_normal"),
     ("which voice are you using", "voice_which"),
+    ("open videos", "videos_open"),
+    ("show my videos", "videos_open"),
 )
 # One spoken line for each blocked category, plus the action key it already routes to.
 BLOCKED_PHRASES = (
@@ -232,6 +234,7 @@ class TestZoeMode(unittest.TestCase):
             "info_time", "info_date", "info_weather", "zoe_timer",
             "zoe_academy", "media_play", "media_pause", "info_zoe",
             "voice_dramatic", "voice_normal", "voice_which",
+            "videos_open",
         })
         joke = commands.zoe_guard("tell me a joke")
         self.assertEqual(joke["kind"], "speak")
