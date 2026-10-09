@@ -55,9 +55,11 @@ BILL_HORIZON_DAYS = 45
 # Apple pay is every other Friday. This date is one payday. Override it in money.md.
 DEFAULT_APPLE_PAY_ANCHOR = "2026-09-25"
 # Spoken sweep reminder only. Jev never looks up a balance and never moves this money.
-# One place for the amount and the account label the payday line says out loud.
-SWEEP_AMOUNT = 600
+# Apple payday: this much of each paycheck, into the account label, for rent.
+# The rest of that check stays cash on hand. IHSS is a different spoken line.
+SWEEP_AMOUNT = 1200
 SWEEP_ACCOUNT_LABEL = "Zoe …4157"
+IHSS_PAYDAY_REMINDER = "IHSS payday — put it toward the Capital One and Spark cards."
 # The launch reminder writes the date here so the same day is not spoken again.
 SWEEP_SPOKEN_PATH = os.path.expanduser(
     "~/Library/Application Support/Hey Jev/sweep-spoken.txt"

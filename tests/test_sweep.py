@@ -10,10 +10,10 @@ from commands import brief as brief_mod
 from commands import money as money_mod
 
 ANCHOR = date(2026, 9, 25)
-MOVE = "move $600 to Zoe \u20264157."
+MOVE = "move $1,200 to Zoe \u20264157."
 APPLE = "Apple payday today \u2014 " + MOVE
-IHSS = "IHSS payday today \u2014 " + MOVE
-BOTH = "Apple and IHSS payday today \u2014 " + MOVE
+IHSS = "IHSS payday \u2014 put it toward the Capital One and Spark cards."
+BOTH = APPLE + " " + IHSS
 SHEET = "Time to submit your timesheet."
 
 
@@ -28,12 +28,13 @@ class TestSweepDates(unittest.TestCase):
 
     def test_amount_anchor_and_account_live_in_config(self):
         self.assertEqual(commands.DEFAULT_APPLE_PAY_ANCHOR, "2026-09-25")
-        self.assertEqual(commands.SWEEP_AMOUNT, 600)
+        self.assertEqual(commands.SWEEP_AMOUNT, 1200)
         self.assertEqual(commands.SWEEP_ACCOUNT_LABEL, "Zoe \u20264157")
+        self.assertEqual(commands.IHSS_PAYDAY_REMINDER, IHSS)
         self.assertIn("\u2026", commands.SWEEP_ACCOUNT_LABEL)
         schedule = commands.load_pay_schedule(self.money)
         self.assertEqual(schedule["anchor"], ANCHOR)
-        self.assertEqual(schedule["amount"], 600)
+        self.assertEqual(schedule["amount"], 1200)
         self.assertEqual(schedule["account"], commands.SWEEP_ACCOUNT_LABEL)
         self.assertTrue(schedule["default"])
 
@@ -56,6 +57,10 @@ class TestSweepDates(unittest.TestCase):
         self.assertIsNone(self.line(date(2026, 10, 10)))
 
     def test_ihss_fifteenth_and_last_day_including_february_and_leap_years(self):
+        self.assertNotIn("$", IHSS)
+        self.assertNotIn("Zoe", IHSS)
+        self.assertNotIn("4157", IHSS)
+        self.assertNotIn("1200", IHSS)
         self.assertEqual(self.line(date(2026, 10, 15)), IHSS)
         self.assertEqual(self.line(date(2026, 4, 15)), IHSS)
         # 31-day and 30-day months. The last day is also a timesheet day.
@@ -181,6 +186,8 @@ class TestSweepDates(unittest.TestCase):
         self.assertEqual(commands.route_before_api(love), "info_messages")
         self.assertIsNone(commands.bridge_allowed(love))
         self.assertIsNone(commands.route_before_api("move $600 to Zoe"))
+        self.assertIsNone(commands.route_before_api("move $1,200 to Zoe"))
+        self.assertIsNone(commands.bridge_allowed("move $1,200 to Zoe"))
         self.assertIsNone(commands.bridge_allowed("confirm the transfer"))
         self.assertEqual(commands.route_before_api("how long until payday"), "info_payday")
         self.assertEqual(commands.route_before_api("what's due"), "info_due")

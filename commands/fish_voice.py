@@ -14,6 +14,14 @@ If the ``model`` header is omitted or unrecognized, Fish serves ``s2.1-pro``
 (the paid model). A failed Drama 3 call therefore retries with the header
 set to ``s2.1-pro-free``, which is the model this app already uses. Cue
 text is removed from that retry so a tag cannot be spoken as words.
+
+A 401, 402, or 403 is different. Drama 3 stays off for the rest of this
+process, the voice-mode file is left as it was, and one line is logged.
+Playback says this once, before the reply, and later lines skip Drama 3:
+
+    Dramatic voice isn't available on your Fish Audio plan right now, so I'm using my normal voice.
+
+Timeouts and 5xx responses still fall back one call at a time.
 """
 import hashlib
 import os
@@ -29,6 +37,13 @@ FISH_TTS_URL = "https://api.fish.audio/v1/tts"
 FISH_MODEL = "s2.1-pro-free"
 DRAMA_MODEL = "drama-3-preview"
 FISH_TTS_TIMEOUT = 60
+# Fish plan and auth failures. After the first one, Drama 3 is not tried again
+# until the process starts over. The saved voice setting is not changed.
+DRAMA_PLAN_STATUSES = (401, 402, 403)
+DRAMA_PLAN_NOTICE = (
+    "Dramatic voice isn't available on your Fish Audio plan right now, "
+    "so I'm using my normal voice."
+)
 # Light default direction. The Drama 3 page uses this phrasing.
 DEFAULT_CUE = "[warm and relaxed]"
 
@@ -51,6 +66,9 @@ _LOOSE_TAG = re.compile(
 
 _lock = threading.Lock()
 _path_override = None
+# In-memory only. A relaunch tries Drama 3 again if the file still says dramatic.
+_drama_session_blocked = False
+_drama_notice_pending = False
 
 
 class Speech(object):
@@ -70,6 +88,68 @@ def set_voice_mode_path(path):
     global _path_override
     with _lock:
         _path_override = path
+
+
+def reset_drama_session():
+    """Forget a plan block. Tests use this. A real session ends when the app quits."""
+    global _drama_session_blocked, _drama_notice_pending
+    with _lock:
+        _drama_session_blocked = False
+        _drama_notice_pending = False
+
+
+def _drama_blocked():
+    with _lock:
+        return _drama_session_blocked
+
+
+def _mark_drama_blocked():
+    """Remember the plan block. True only for the call that hits it first."""
+    global _drama_session_blocked, _drama_notice_pending
+    with _lock:
+        first = not _drama_session_blocked
+        _drama_session_blocked = True
+        if first:
+            _drama_notice_pending = True
+        return first
+
+
+def _claim_drama_notice():
+    """The sentence Jev says once, or "" after it has been claimed."""
+    global _drama_notice_pending
+    with _lock:
+        if not _drama_notice_pending:
+            return ""
+        _drama_notice_pending = False
+        return DRAMA_PLAN_NOTICE
+
+
+def _restore_drama_notice(notice):
+    """Put the sentence back when the normal model never got to speak it."""
+    global _drama_notice_pending
+    if notice != DRAMA_PLAN_NOTICE:
+        return
+    with _lock:
+        _drama_notice_pending = True
+
+
+def _http_status(exc):
+    response = getattr(exc, "response", None)
+    code = getattr(response, "status_code", None)
+    if not isinstance(code, int):
+        code = getattr(exc, "status_code", None)
+    if isinstance(code, int):
+        return code
+    return None
+
+
+def _drama_plan_denied(exc):
+    return _http_status(exc) in DRAMA_PLAN_STATUSES
+
+
+def claim_drama_plan_notice():
+    """The sentence to say once after a plan block, or "" if it was already taken."""
+    return _claim_drama_notice()
 
 
 def _path():
@@ -240,12 +320,65 @@ def _speak_saved(path, model, text, ms, cached, fell_back):
     return Speech(path, ms, cached, model, text, fell_back)
 
 
+def _speak_normal(text, post, api_key, voice_id, cache_dir, timeout, log, log_failure=True):
+    """One normal-model call, with cues removed.
+
+    A Speech means audio is ready. A string means the normal model failed
+    (the failure reason). None means there was nothing left to speak.
+    The plan sentence is not part of this audio. Playback says it once.
+    """
+    spoken = strip_fish_cues(text)
+    if not spoken:
+        return None
+    started = time.time()
+    outcome = _fallback(spoken, post, api_key, voice_id, cache_dir, timeout, started)
+    if isinstance(outcome, Speech):
+        return outcome
+    if log_failure:
+        log("  fish: {0} failed ({1})".format(FISH_MODEL, outcome))
+        return None
+    return outcome
+
+
+def _block_drama(text, exc, post, api_key, voice_id, cache_dir, timeout, log):
+    """Plan or auth failure: log once, then the normal model.
+
+    The voice-mode file is not written. Playback says the plan sentence once.
+    Later calls skip Drama 3 entirely.
+    """
+    reason = fish_failure_reason(exc)
+    first = _mark_drama_blocked()
+    outcome = _speak_normal(
+        text, post, api_key, voice_id, cache_dir, timeout, log, log_failure=False,
+    )
+    if isinstance(outcome, Speech):
+        if first:
+            log("  fish: {0} failed ({1}), using {2} for the rest of this session".format(
+                DRAMA_MODEL, reason, FISH_MODEL))
+        return outcome
+    if first:
+        extra = ""
+        if outcome:
+            extra = "; {0} also failed ({1})".format(FISH_MODEL, outcome)
+        log("  fish: {0} failed ({1}), using {2} for the rest of this session{3}".format(
+            DRAMA_MODEL, reason, FISH_MODEL, extra))
+        return None
+    if outcome:
+        log("  fish: {0} failed ({1})".format(FISH_MODEL, outcome))
+    return None
+
+
 def synthesize_speech(text, post, api_key, voice_id, dramatic, cache_dir, timeout=FISH_TTS_TIMEOUT, log=print):
     """Return a Speech, or None when Fish could not produce audio.
 
     Drama 3 errors and timeouts retry on ``s2.1-pro-free`` with cues removed.
-    This function does not raise for those failures.
+    A 401, 402, or 403 disables Drama 3 for the rest of this process instead
+    of retrying it on the next line. This function does not raise for those
+    failures, and it does not change the saved voice setting.
     """
+    if dramatic and _drama_blocked():
+        return _speak_normal(text, post, api_key, voice_id, cache_dir, timeout, log)
+
     primary = speech_request(text, dramatic)
     primary_path = cache_path(cache_dir, voice_id, primary["model"], primary["text"])
     hit = _read_cached(primary_path)
@@ -259,6 +392,8 @@ def synthesize_speech(text, post, api_key, voice_id, dramatic, cache_dir, timeou
         if not dramatic:
             log("  fish: {0} failed ({1})".format(FISH_MODEL, fish_failure_reason(exc)))
             return None
+        if _drama_plan_denied(exc):
+            return _block_drama(text, exc, post, api_key, voice_id, cache_dir, timeout, log)
         reason = fish_failure_reason(exc)
         spoken = strip_fish_cues(text)
         if not spoken:
@@ -278,6 +413,33 @@ def synthesize_speech(text, post, api_key, voice_id, dramatic, cache_dir, timeou
         return None
     ms = int((time.time() - started) * 1000)
     return _speak_saved(primary_path, primary["model"], primary["text"], ms, False, False)
+
+
+def play_fish_reply(text, fetch, play):
+    """Speak one reply. ``fetch(line)`` returns ``(path, ms)``. ``play(path)`` plays a wav.
+
+    The reply is fetched first, because that is the call that can discover a
+    plan block. The plan sentence is then fetched and played once, before the
+    reply wav, so a cache warmup that never plays audio cannot swallow it.
+    A missing notice wav is put back for the next reply that does play.
+    """
+    path, ms = fetch(text)
+    notice = _claim_drama_notice()
+    extra = 0
+    if notice:
+        try:
+            notice_path, extra = fetch(notice)
+        except Exception:
+            _restore_drama_notice(notice)
+            raise
+        if notice_path:
+            play(notice_path)
+        else:
+            _restore_drama_notice(notice)
+            extra = 0
+    if path:
+        play(path)
+    return (ms or 0) + (extra or 0)
 
 
 def _fallback(spoken, post, api_key, voice_id, cache_dir, timeout, started):

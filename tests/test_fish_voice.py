@@ -8,11 +8,13 @@ import commands
 from commands.fish_voice import (
     DEFAULT_CUE,
     DRAMA_MODEL,
+    DRAMA_PLAN_NOTICE,
     FISH_MODEL,
     FISH_TTS_TIMEOUT,
     FISH_TTS_URL,
     cache_path,
     cache_token,
+    reset_drama_session,
     strip_fish_cues,
     with_default_cue,
 )
@@ -149,6 +151,9 @@ class TestRouting(unittest.TestCase):
         self.assertIn("voice_id=VOICE_ID", fetch)
         self.assertIn("dramatic_voice_enabled", fetch)
         self.assertIn("post=requests.post", fetch)
+        speak = source.split("def speak(text):", 1)[1].split("\ndef all_scripted_lines", 1)[0]
+        self.assertIn("play_fish_reply", speak)
+        self.assertIn("afplay", speak)
         self.assertNotIn("reference_id", fetch)
         self.assertNotIn('"model"', fetch)
         bridge = open(os.path.join(ROOT, "commands", "bridge.py"), encoding="utf-8").read()
@@ -204,8 +209,10 @@ class TestCues(unittest.TestCase):
 
 class TestSynthesize(unittest.TestCase):
     def setUp(self):
+        reset_drama_session()
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
+        self.addCleanup(reset_drama_session)
         self.logs = []
 
     def _speak(self, text, steps, dramatic):
@@ -360,3 +367,227 @@ class TestSynthesize(unittest.TestCase):
         self.assertEqual(len(self.logs), 1)
         self.assertIn("s2.1-pro-free", self.logs[0])
         self.assertNotIn("drama-3-preview", self.logs[0])
+
+    def test_a_plan_denial_disables_drama_for_the_rest_of_the_session(self):
+        notice = "Dramatic voice isn't available on your Fish Audio plan right now, so I'm using my normal voice."
+        self.assertEqual(DRAMA_PLAN_NOTICE, notice)
+        for status in (402, 401, 403):
+            reset_drama_session()
+            self.logs = []
+            folder = tempfile.TemporaryDirectory()
+            self.addCleanup(folder.cleanup)
+            voice = os.path.join(folder.name, "voice-mode.txt")
+            commands.set_voice_mode_path(voice)
+            self.addCleanup(commands.set_voice_mode_path, None)
+            self.assertEqual(commands.use_dramatic_voice(), "Dramatic voice is on.")
+            client = _Client([_Response(status=status), _Response(content=b"fallback-wav")])
+            result = commands.synthesize_speech(
+                "[cheerful] First line.",
+                post=client,
+                api_key=API_KEY,
+                voice_id=VOICE_ID,
+                dramatic=True,
+                cache_dir=os.path.join(folder.name, "cache"),
+                log=self.logs.append,
+            )
+            self.assertIsNotNone(result, status)
+            self.assertTrue(result.fell_back, status)
+            self.assertEqual(result.model, FISH_MODEL, status)
+            self.assertEqual(len(client.calls), 2, status)
+            self.assertEqual(client.calls[0]["headers"]["model"], DRAMA_MODEL, status)
+            self.assertEqual(client.calls[1]["headers"]["model"], FISH_MODEL, status)
+            self.assertEqual(client.calls[1]["json"]["text"], "First line.", status)
+            self.assertNotIn("[", client.calls[1]["json"]["text"])
+            self.assertNotIn("cheerful", client.calls[1]["json"]["text"])
+            self.assertNotIn(notice, client.calls[1]["json"]["text"])
+            self.assertEqual(commands.claim_drama_plan_notice(), notice)
+            self.assertEqual(commands.claim_drama_plan_notice(), "")
+            self.assertEqual(len(self.logs), 1, self.logs)
+            self.assertIn("for the rest of this session", self.logs[0])
+            self.assertIn(str(status), self.logs[0])
+            self.assertIn(DRAMA_MODEL, self.logs[0])
+            self.assertIn(FISH_MODEL, self.logs[0])
+            self.assertNotIn(API_KEY, self.logs[0])
+            self.assertNotIn(notice, self.logs[0])
+            self.assertEqual(open(voice, encoding="utf-8").read(), "dramatic\n")
+            self.assertTrue(commands.dramatic_voice_enabled())
+            self.assertEqual(commands.which_voice(), "I'm using the dramatic voice.")
+
+            client2 = _Client([_Response(content=b"second-wav")])
+            result2 = commands.synthesize_speech(
+                "[sighing] Second line.",
+                post=client2,
+                api_key=API_KEY,
+                voice_id=VOICE_ID,
+                dramatic=True,
+                cache_dir=os.path.join(folder.name, "cache"),
+                log=self.logs.append,
+            )
+            self.assertEqual(len(client2.calls), 1, status)
+            self.assertEqual(client2.calls[0]["headers"]["model"], FISH_MODEL, status)
+            self.assertEqual(client2.calls[0]["json"]["text"], "Second line.", status)
+            self.assertNotIn(notice, client2.calls[0]["json"]["text"])
+            self.assertNotIn("[", client2.calls[0]["json"]["text"])
+            self.assertTrue(result2.fell_back, status)
+            self.assertEqual(result2.model, FISH_MODEL, status)
+            self.assertEqual(open(result2.path, "rb").read(), b"second-wav")
+            self.assertEqual(len(self.logs), 1, self.logs)
+            self.assertEqual(open(voice, encoding="utf-8").read(), "dramatic\n")
+
+    def test_timeouts_and_server_errors_still_try_drama_on_the_next_line(self):
+        for exc in (TimeoutError("timed out"), _Response(status=503), _Response(status=500)):
+            reset_drama_session()
+            self.logs = []
+            folder = tempfile.TemporaryDirectory()
+            self.addCleanup(folder.cleanup)
+            client = _Client([exc, _Response(content=b"fallback-wav")])
+            result = commands.synthesize_speech(
+                "[cheerful] Hello.",
+                post=client,
+                api_key=API_KEY,
+                voice_id=VOICE_ID,
+                dramatic=True,
+                cache_dir=folder.name,
+                log=self.logs.append,
+            )
+            self.assertIsNotNone(result, type(exc).__name__)
+            self.assertEqual(len(client.calls), 2, type(exc).__name__)
+            self.assertEqual(client.calls[0]["headers"]["model"], DRAMA_MODEL)
+            self.assertEqual(client.calls[1]["headers"]["model"], FISH_MODEL)
+            self.assertEqual(client.calls[1]["json"]["text"], "Hello.")
+            self.assertNotIn(DRAMA_PLAN_NOTICE, client.calls[1]["json"]["text"])
+            self.assertEqual(len(self.logs), 1, self.logs)
+            self.assertNotIn("for the rest of this session", self.logs[0])
+            client2 = _Client([_Response(content=b"drama-wav")])
+            result2 = commands.synthesize_speech(
+                "Next line.",
+                post=client2,
+                api_key=API_KEY,
+                voice_id=VOICE_ID,
+                dramatic=True,
+                cache_dir=folder.name,
+                log=self.logs.append,
+            )
+            self.assertEqual(len(client2.calls), 1, type(exc).__name__)
+            self.assertEqual(client2.calls[0]["headers"]["model"], DRAMA_MODEL)
+            self.assertFalse(result2.fell_back)
+            self.assertEqual(result2.model, DRAMA_MODEL)
+
+    def _fetch(self, client, cache_dir):
+        def fetch(line):
+            result = commands.synthesize_speech(
+                line,
+                post=client,
+                api_key=API_KEY,
+                voice_id=VOICE_ID,
+                dramatic=True,
+                cache_dir=cache_dir,
+                log=self.logs.append,
+            )
+            if result is None:
+                return None, 0
+            return result.path, result.ms
+        return fetch
+
+    def test_playback_says_the_plan_notice_once_before_the_reply(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        client = _Client([
+            _Response(status=402),
+            _Response(content=b"reply-wav"),
+            _Response(content=b"notice-wav"),
+        ])
+        played = []
+        commands.play_fish_reply(
+            "[cheerful] Hello.",
+            self._fetch(client, folder.name),
+            played.append,
+        )
+        self.assertEqual(len(client.calls), 3)
+        self.assertEqual(client.calls[0]["headers"]["model"], DRAMA_MODEL)
+        self.assertEqual(client.calls[1]["headers"]["model"], FISH_MODEL)
+        self.assertEqual(client.calls[1]["json"]["text"], "Hello.")
+        self.assertEqual(client.calls[2]["headers"]["model"], FISH_MODEL)
+        self.assertEqual(client.calls[2]["json"]["text"], DRAMA_PLAN_NOTICE)
+        self.assertEqual([open(path, "rb").read() for path in played], [b"notice-wav", b"reply-wav"])
+        self.assertEqual(len(self.logs), 1, self.logs)
+        self.assertIn("402", self.logs[0])
+        self.assertIn("for the rest of this session", self.logs[0])
+        self.assertNotIn(DRAMA_PLAN_NOTICE, self.logs[0])
+        self.assertNotIn(API_KEY, self.logs[0])
+
+        client2 = _Client([_Response(content=b"second-wav")])
+        played2 = []
+        commands.play_fish_reply("Next line.", self._fetch(client2, folder.name), played2.append)
+        self.assertEqual(len(client2.calls), 1)
+        self.assertEqual(client2.calls[0]["headers"]["model"], FISH_MODEL)
+        self.assertEqual(client2.calls[0]["json"]["text"], "Next line.")
+        self.assertEqual([open(path, "rb").read() for path in played2], [b"second-wav"])
+        self.assertEqual(len(self.logs), 1, self.logs)
+
+    def test_a_failed_reply_still_says_the_plan_notice_once(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        client = _Client([
+            _Response(status=402),
+            _Response(status=500),
+            _Response(content=b"notice-wav"),
+        ])
+        played = []
+        commands.play_fish_reply(
+            "[cheerful] Hello.",
+            self._fetch(client, folder.name),
+            played.append,
+        )
+        self.assertEqual(len(client.calls), 3)
+        self.assertEqual(client.calls[0]["headers"]["model"], DRAMA_MODEL)
+        self.assertEqual(client.calls[1]["headers"]["model"], FISH_MODEL)
+        self.assertEqual(client.calls[1]["json"]["text"], "Hello.")
+        self.assertEqual(client.calls[2]["json"]["text"], DRAMA_PLAN_NOTICE)
+        self.assertEqual([open(path, "rb").read() for path in played], [b"notice-wav"])
+        self.assertEqual(len(self.logs), 1, self.logs)
+        self.assertIn("also failed", self.logs[0])
+        self.assertIn("for the rest of this session", self.logs[0])
+        self.assertNotIn(API_KEY, self.logs[0])
+
+        client2 = _Client([_Response(content=b"still-wav")])
+        played2 = []
+        commands.play_fish_reply("Still here.", self._fetch(client2, folder.name), played2.append)
+        self.assertEqual(len(client2.calls), 1)
+        self.assertEqual(client2.calls[0]["headers"]["model"], FISH_MODEL)
+        self.assertEqual(client2.calls[0]["json"]["text"], "Still here.")
+        self.assertEqual([open(path, "rb").read() for path in played2], [b"still-wav"])
+        self.assertEqual(len(self.logs), 1, self.logs)
+
+    def test_a_missed_notice_is_said_on_the_next_reply(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        client = _Client([
+            _Response(status=402),
+            _Response(content=b"reply-wav"),
+            _Response(status=500),
+            _Response(content=b"next-wav"),
+            _Response(content=b"notice-wav"),
+        ])
+        played = []
+        commands.play_fish_reply("[cheerful] Hello.", self._fetch(client, folder.name), played.append)
+        self.assertEqual([open(path, "rb").read() for path in played], [b"reply-wav"])
+        played2 = []
+        commands.play_fish_reply("Next line.", self._fetch(client, folder.name), played2.append)
+        self.assertEqual(
+            [open(path, "rb").read() for path in played2],
+            [b"notice-wav", b"next-wav"],
+        )
+        self.assertEqual(client.calls[-1]["json"]["text"], DRAMA_PLAN_NOTICE)
+        self.assertEqual(client.calls[-1]["headers"]["model"], FISH_MODEL)
+
+    def test_a_normal_voice_402_does_not_disable_drama(self):
+        result, client = self._speak("Hello.", [_Response(status=402)], False)
+        self.assertIsNone(result)
+        self.assertEqual(len(client.calls), 1)
+        self.assertEqual(client.calls[0]["headers"]["model"], FISH_MODEL)
+        result2, client2 = self._speak("Hello there.", [_Response(content=b"drama-wav")], True)
+        self.assertEqual(len(client2.calls), 1)
+        self.assertEqual(client2.calls[0]["headers"]["model"], DRAMA_MODEL)
+        self.assertFalse(result2.fell_back)
+        self.assertEqual(result2.model, DRAMA_MODEL)
