@@ -66,6 +66,10 @@ SWEEP_SPOKEN_PATH = os.path.expanduser(
 ZOE_MODE_PATH = os.path.expanduser(
     "~/Library/Application Support/Hey Jev/zoe-mode.txt"
 )
+# "dramatic" means Fish Drama 3. A missing file means the normal voice. No secrets.
+VOICE_MODE_PATH = os.path.expanduser(
+    "~/Library/Application Support/Hey Jev/voice-mode.txt"
+)
 # Morning brief voice memo. Local files only, played with afplay. No network.
 # BRIEF_MEMO_DIR overrides the folder. BRIEF_MEMO_TIME is HH:MM local time.
 # BRIEF_MEMO_ENABLED=0 turns the automatic play off. "play my brief" still works.
@@ -349,6 +353,17 @@ _PLAY = (
     rf"(?:\s+spotify|\s+(?:the\s+)?(?:music|song)|\s+apple\s+music|\s+on\s+apple\s+music)?{_TAIL}"
 )
 STRICT_PATTERNS = (
+    # Dramatic voice. Mac-only. These keys are not in BRIDGE_ALLOW.
+    # Zoe mode may still run them. The Fish key and voice id do not change.
+    (re.compile(
+        rf"^{_PLEASE}(?:hey\s+jev\b\s*,?\s+)?{_PLEASE}use\s+(?:the\s+|a\s+)?dramatic\s+voice{_TAIL}",
+        re.I), "voice_dramatic"),
+    (re.compile(
+        rf"^{_PLEASE}(?:hey\s+jev\b\s*,?\s+)?{_PLEASE}use\s+(?:the\s+|a\s+)?normal\s+voice{_TAIL}",
+        re.I), "voice_normal"),
+    (re.compile(
+        rf"^{_PLEASE}(?:hey\s+jev\b\s*,?\s+)?{_PLEASE}(?:which|what)\s+voice\s+are\s+you\s+using(?:\s+(?:right\s+)?now)?{_TAIL}",
+        re.I), "voice_which"),
     (re.compile(rf"^{_PLEASE}what can you do{_TAIL}", re.I), "info_help"),
     (re.compile(rf"^{_PLEASE}what do you do{_TAIL}", re.I), "info_help"),
     (re.compile(rf"^{_PLEASE}what are your commands{_TAIL}", re.I), "info_help"),
@@ -683,6 +698,7 @@ HELP_TEXT = (
     "I can read your clipboard history, copy or paste an item, and clear it. That stays on this Mac. "
     "I can open Passwords and search for a site. I never read or say the password. "
     "I can play your morning brief memo. Stop stops that playback. "
+    "Say use dramatic voice or use normal voice. Ask which voice I am using. "
     "I won't send a message or move money."
 )
 SCHOOL_RE = re.compile(r"(?:#|\b)(?:umgc|school|class)\b", re.I)
