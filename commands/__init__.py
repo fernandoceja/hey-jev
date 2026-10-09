@@ -45,6 +45,7 @@ from .config import (
     SWEEP_ACCOUNT_LABEL,
     SWEEP_SPOKEN_PATH,
     ZOE_MODE_PATH,
+    VOICE_MODE_PATH,
     BRIEF_MEMO_DIR,
     BRIEF_MEMO_TIME,
     BRIEF_MEMO_ENABLED,
@@ -490,6 +491,24 @@ from .routing import (
     route_open_phrase,
     route_named_app,
     bare_run_matches_folder,
+)
+
+from .fish_voice import (
+    DEFAULT_CUE,
+    DRAMA_MODEL,
+    FISH_MODEL,
+    FISH_TTS_TIMEOUT,
+    FISH_TTS_URL,
+    Speech,
+    cache_token,
+    dramatic_voice_enabled,
+    set_voice_mode_path,
+    speech_request,
+    strip_fish_cues,
+    synthesize_speech,
+    use_dramatic_voice,
+    use_normal_voice,
+    which_voice,
 )
 
 from .zoe_mode import (

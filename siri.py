@@ -3,7 +3,7 @@
 Messages from My Love are the exception: they are spoken with the macOS say command
 and are never sent to Fish, TypeSafe, or an LLM.
 """
-import os, re, sys, json, time, queue, random, argparse, subprocess, tempfile, threading, hashlib, collections
+import os, re, sys, json, time, queue, random, argparse, subprocess, tempfile, threading, collections
 from datetime import datetime
 import numpy as np, requests, sounddevice as sd, soundfile as sf
 from dotenv import load_dotenv
@@ -51,6 +51,7 @@ COMMAND_PROMPT = (
     "What's my ETA to work. "
     "Turn on leave reminders. Turn off leave reminders. "
     "Use scribe for dictation. Use OpenAI for dictation. "
+    "Use dramatic voice. Use normal voice. Which voice are you using. "
     "Open settings. Open business email. Run shortcut Leaving for work. What can you do."
 )
 # No prompt in wake mode: on noise Whisper echoes the prompt back, which looked like a real "Hey Jev"
@@ -473,6 +474,9 @@ ACTIONS = {
     "password_lookup": lambda _arg, text: commands.lookup_password(text),
     "dictation_scribe": lambda _arg, _text: commands.set_dictation_engine("scribe"),
     "dictation_openai": lambda _arg, _text: commands.set_dictation_engine("openai"),
+    "voice_dramatic": lambda _arg, _text: commands.use_dramatic_voice(),
+    "voice_normal": lambda _arg, _text: commands.use_normal_voice(),
+    "voice_which": lambda _arg, _text: commands.which_voice(),
     "shortcut_run": lambda _arg, text: commands.run_named_shortcut(text),
 }
 
@@ -898,21 +902,34 @@ CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cache", "t
 
 
 def fetch_tts(text):
-    """Return a wav path for this line, generating it once and caching on disk. Returns (path, ms, cached)."""
+    """Return a wav path for this line, generating it once and caching on disk.
+
+    Returns (path, ms, cached). path is None when Fish produced no audio.
+    The key is still FISH_AUDIO_API_KEY from the Keychain. Dramatic voice
+    selects drama-3-preview inside synthesize_speech and falls back there.
+    """
     os.makedirs(CACHE_DIR, exist_ok=True)
-    path = os.path.join(CACHE_DIR, hashlib.sha1(f"{VOICE_ID}|{text}".encode()).hexdigest() + ".wav")
-    if os.path.exists(path):
-        return path, 0, True
-    t = time.time()
-    r = requests.post("https://api.fish.audio/v1/tts", headers={"Authorization": f"Bearer {FISH_KEY}", "model": "s2.1-pro-free"},
-                      json={"text": text, "reference_id": VOICE_ID, "format": "wav"}, timeout=60)
-    r.raise_for_status()
-    open(path, "wb").write(r.content)
-    return path, int((time.time() - t) * 1000), False
+    result = commands.synthesize_speech(
+        text,
+        post=requests.post,
+        api_key=FISH_KEY,
+        voice_id=VOICE_ID,
+        dramatic=commands.dramatic_voice_enabled(),
+        cache_dir=CACHE_DIR,
+    )
+    if result is None:
+        return None, 0, False
+    return result.path, result.ms, result.cached
 
 
 def speak(text):
-    path, ms, cached = fetch_tts(text)
+    try:
+        path, ms, _cached = fetch_tts(text)
+    except Exception as exc:
+        print("  fish failed: {0}".format(type(exc).__name__))
+        return 0
+    if not path:
+        return 0
     subprocess.run(["afplay", path])
     return ms
 
@@ -938,8 +955,9 @@ def warm_cache():
     made = 0
     for line in all_scripted_lines():
         try:
-            _, _, cached = fetch_tts(line)
-            made += 0 if cached else 1
+            path, _, cached = fetch_tts(line)
+            if path and not cached:
+                made += 1
         except Exception as e:
             print(f"  cache miss for {line!r}: {e}")
     if made:

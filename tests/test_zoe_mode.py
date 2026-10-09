@@ -53,6 +53,9 @@ ALLOWED = (
     ("play", "media_play"),
     ("pause", "media_pause"),
     ("what's Zoe got tomorrow", "info_zoe"),
+    ("use dramatic voice", "voice_dramatic"),
+    ("use normal voice", "voice_normal"),
+    ("which voice are you using", "voice_which"),
 )
 # One spoken line for each blocked category, plus the action key it already routes to.
 BLOCKED_PHRASES = (
@@ -174,13 +177,19 @@ class TestZoeMode(unittest.TestCase):
         self.assertIsNone(commands.route_before_api("tell me a joke about the rent"))
 
     def test_new_keys_stay_off_the_bridge_allowlist(self):
-        for key in ("zoe_mode_on", "zoe_mode_off", "zoe_joke"):
+        for key in (
+            "zoe_mode_on", "zoe_mode_off", "zoe_joke",
+            "voice_dramatic", "voice_normal", "voice_which",
+        ):
             self.assertNotIn(key, commands.BRIDGE_ALLOW, key)
             self.assertIn(key, commands.ZOE_ALLOW, key)
         self.assertEqual(len(commands.BRIDGE_ALLOW), 30)
         self.assertIsNone(commands.bridge_allowed("zoe mode"))
         self.assertIsNone(commands.bridge_allowed("exit zoe mode"))
         self.assertIsNone(commands.bridge_allowed("tell me a joke"))
+        self.assertIsNone(commands.bridge_allowed("use dramatic voice"))
+        self.assertIsNone(commands.bridge_allowed("use normal voice"))
+        self.assertIsNone(commands.bridge_allowed("which voice are you using"))
 
     def test_adult_commands_are_unchanged_while_the_mode_is_off(self):
         self.assertFalse(commands.zoe_mode_active())
@@ -201,6 +210,9 @@ class TestZoeMode(unittest.TestCase):
         self.assertIsNone(commands.zoe_guard("resume clipboard history"))
         self.assertIsNone(commands.zoe_guard("password for Netflix"))
         self.assertIsNone(commands.zoe_guard("what's my password for Chase"))
+        self.assertIsNone(commands.zoe_guard("use dramatic voice"))
+        self.assertIsNone(commands.zoe_guard("use normal voice"))
+        self.assertIsNone(commands.zoe_guard("which voice are you using"))
         entered = commands.zoe_guard("zoe mode")
         self.assertEqual(entered["kind"], "speak")
         self.assertIn("Zoe mode is on", entered["line"])
@@ -219,6 +231,7 @@ class TestZoeMode(unittest.TestCase):
         self.assertEqual(seen, {
             "info_time", "info_date", "info_weather", "zoe_timer",
             "zoe_academy", "media_play", "media_pause", "info_zoe",
+            "voice_dramatic", "voice_normal", "voice_which",
         })
         joke = commands.zoe_guard("tell me a joke")
         self.assertEqual(joke["kind"], "speak")

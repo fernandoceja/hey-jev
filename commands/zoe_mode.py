@@ -11,6 +11,7 @@ While the mode is on, only a small allowlist runs. Everything else, including
 free-form questions, gets one gentle refusal. Jokes and fun facts are a local
 list. There is no web search and no tool use. Replies use the existing Fish
 [cheerful] tag and short sentences. There is no second voice id in this app.
+The dramatic-voice toggle uses that same voice id, so a child may switch it.
 
 The iPhone bridge cannot enter or leave this mode. Those action keys are not
 on BRIDGE_ALLOW. A phone command that is on that list still has to pass this
@@ -53,6 +54,10 @@ ZOE_ALLOW = frozenset({
     "info_zoe",
     "zoe_mode_on",
     "zoe_mode_off",
+    # Same voice id either way. Still absent from BRIDGE_ALLOW.
+    "voice_dramatic",
+    "voice_normal",
+    "voice_which",
 })
 
 # Existing action keys Zoe mode refuses, grouped the way the spec lists them.
