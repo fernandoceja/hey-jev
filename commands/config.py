@@ -2,6 +2,8 @@
 import os
 import re
 
+from .passwords import DICTATED_RE, LOOKUP_RE
+
 FUZZY_CUTOFF = 0.6
 # App names are close together (News/Notes, YouTube/YouTube TV), so typos
 # have to be nearer than shortcut names before a fuzzy open is trusted.
@@ -619,6 +621,11 @@ STRICT_PATTERNS = (
     (re.compile(
         rf"^{_PLEASE}(?:(?:take\s+)?(?:the\s+|a\s+)?red\s+pill|(?:exit|stop|leave|quit|close|end)\s+(?:the\s+)?matrix){_TAIL}",
         re.I), "matrix_off"),
+    # Password lookup is Mac-only. Not in BRIDGE_ALLOW. Also matched before the
+    # joiner check, so a dictated password never reaches an API. The handler
+    # types the site name only.
+    (LOOKUP_RE, "password_lookup"),
+    (DICTATED_RE, "password_lookup"),
     # Clipboard history is Mac-only. These keys are not in BRIDGE_ALLOW.
     (re.compile(
         rf"^{_PLEASE}(?:show\s+(?:me\s+)?)?(?:my\s+)?clipboard\s+history{_TAIL}"
@@ -674,6 +681,7 @@ HELP_TEXT = (
     "I can open the captures folder, and I can look at a screenshot when you ask. "
     "I can open ChatGPT, Claude, Gemini, Siri, or Google with a capture or your last question. "
     "I can read your clipboard history, copy or paste an item, and clear it. That stays on this Mac. "
+    "I can open Passwords and search for a site. I never read or say the password. "
     "I can play your morning brief memo. Stop stops that playback. "
     "I won't send a message or move money."
 )

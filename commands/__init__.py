@@ -4,7 +4,9 @@ Names are parsed from the transcript here, the same way timers parse a duration.
 decide() in siri.py calls route_before_api() before any TypeSafe or LLM call.
 
 Nothing in this module listens on a socket. The iPhone bridge only polls an
-iCloud Drive folder. The morning brief memo is a local file played with afplay
+iCloud Drive folder. Password lookup only opens the Passwords app and writes
+a site name into its search field. It is not on the bridge allowlist.
+The morning brief memo is a local file played with afplay
 and is not on the bridge allowlist. App launches, site URLs, and shortcut runs
 go through argument lists, never a shell string. A shortcut runs only when the Jev folder
 can be verified; `shortcuts list --folder-name` alone is not proof, because a
@@ -423,6 +425,18 @@ from .access import (
 from .matrix import (
     start_matrix,
     stop_matrix,
+)
+
+from .passwords import (
+    DICTATED_RE,
+    LOOKUP_RE,
+    PASSWORD_KEYS,
+    PASSWORD_LOOKUP,
+    PASSWORDS_BUNDLE,
+    SEARCH_SCRIPT,
+    is_password_lookup,
+    lookup_password,
+    parse_password_query,
 )
 
 from .clipboard_history import (

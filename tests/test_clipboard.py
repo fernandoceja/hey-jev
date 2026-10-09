@@ -159,6 +159,54 @@ class TestFiltering(unittest.TestCase):
             "stored",
         )
 
+    def test_concealed_and_transient_password_copies_are_not_stored(self):
+        """A concealed or transient pasteboard item is dropped, even when it looks like a login."""
+        secret = "username ada@example.com password correct-horse"
+        for name in (
+            "org.nspasteboard.ConcealedType",
+            "org.nspasteboard.TransientType",
+        ):
+            history = ClipboardHistory()
+            status = history.observe(Snapshot(
+                1,
+                secret,
+                types=("public.utf8-plain-text", name),
+                frontmost="TextEdit",
+            ))
+            self.assertEqual(status, "concealed", name)
+            self.assertEqual(history.texts(), [], name)
+            self.assertNotIn(secret, " ".join(history.texts()))
+
+    def test_copies_while_passwords_or_keychain_access_is_frontmost_are_skipped(self):
+        """Apple Passwords and Keychain Access are skipped even with no concealed type."""
+        secret = "ada@example.com correct-horse"
+        cases = (
+            {"frontmost": "Passwords", "bundle_id": None},
+            {"frontmost": "Passwords", "bundle_id": "com.apple.Passwords"},
+            {"frontmost": "Keychain Access", "bundle_id": None},
+            {"frontmost": "Keychain Access", "bundle_id": "com.apple.keychainaccess"},
+            {"frontmost": "Something", "bundle_id": "com.apple.Passwords"},
+        )
+        for number, case in enumerate(cases, start=1):
+            history = ClipboardHistory()
+            status = history.observe(Snapshot(
+                number,
+                secret,
+                types=("public.utf8-plain-text",),
+                frontmost=case["frontmost"],
+                bundle_id=case["bundle_id"],
+            ))
+            self.assertEqual(status, "manager", case)
+            self.assertEqual(history.texts(), [], case)
+            self.assertNotIn("correct-horse", " ".join(history.texts()))
+        history = ClipboardHistory()
+        self.assertEqual(
+            history.observe(Snapshot(
+                1, "grocery list", types=("public.utf8-plain-text",), frontmost="Notes")),
+            "stored",
+        )
+        self.assertEqual(history.texts(), ["grocery list"])
+
 
 class TestHistory(unittest.TestCase):
     def test_change_count_dedupe_cap_and_length(self):

@@ -4,6 +4,7 @@ from .config import JOINER_RE, LOCAL_PATTERNS, STRICT_PATTERNS, _BARE_RUN_RE, _F
 from .textutil import _clean
 from .confirm import is_private_message_request, is_quit_all
 from .apps import known_app_name, parse_app_name, resolve_app, resolve_folder, resolve_site, unclear_app_guess
+from .passwords import is_password_lookup
 from .shortcuts import jev_shortcut_catalog, parse_shortcut_name, resolve_shortcut
 
 def route_before_api(text):
@@ -23,6 +24,10 @@ def route_before_api(text):
         return "ihss_log"
     if is_private_message_request(raw):
         return "info_messages"
+    # Before the joiner check. "password for Netflix is ..." must not be sent
+    # to an API, even when the sentence also says "and".
+    if is_password_lookup(raw):
+        return "password_lookup"
     if JOINER_RE.search(raw):
         return None
     for pattern, key in STRICT_PATTERNS:

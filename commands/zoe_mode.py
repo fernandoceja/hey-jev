@@ -109,6 +109,7 @@ ZOE_BLOCKED = {
         "clipboard_pause",
         "clipboard_resume",
     ),
+    "passwords": ("password_lookup",),
     "shell": (),
     "system": (
         "volume_up",

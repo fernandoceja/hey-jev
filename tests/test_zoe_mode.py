@@ -106,6 +106,10 @@ BLOCKED_PHRASES = (
     ("clipboard", "clear clipboard history", "clipboard_clear"),
     ("clipboard", "pause clipboard history", "clipboard_pause"),
     ("clipboard", "resume clipboard history", "clipboard_resume"),
+    ("passwords", "password for Netflix", "password_lookup"),
+    ("passwords", "what's my password for Chase", "password_lookup"),
+    ("passwords", "login for Amazon", "password_lookup"),
+    ("passwords", "show my logins for Hulu", "password_lookup"),
 )
 
 
@@ -193,6 +197,8 @@ class TestZoeMode(unittest.TestCase):
         self.assertIsNone(commands.zoe_guard("clear clipboard history"))
         self.assertIsNone(commands.zoe_guard("pause clipboard history"))
         self.assertIsNone(commands.zoe_guard("resume clipboard history"))
+        self.assertIsNone(commands.zoe_guard("password for Netflix"))
+        self.assertIsNone(commands.zoe_guard("what's my password for Chase"))
         entered = commands.zoe_guard("zoe mode")
         self.assertEqual(entered["kind"], "speak")
         self.assertIn("Zoe mode is on", entered["line"])
@@ -406,6 +412,10 @@ class TestZoeMode(unittest.TestCase):
         self._refuse("payday check")
         self._refuse("check my messages from My Love")
         self._refuse("brief me")
+        self._refuse("password for Netflix")
+        self._refuse("what's my password for Chase")
+        self._refuse("login for Amazon")
+        self._refuse("show my logins for Hulu")
         guard = commands.zoe_guard("what time is it")
         self.assertEqual(guard["action"], "info_time")
         self.assertIsNone(commands.bridge_allowed("exit zoe mode"))

@@ -525,3 +525,36 @@ class TestBridgeValidation(unittest.TestCase):
             reply = self._reply(nonce)
             self.assertFalse(reply["ok"], phrase)
             self.assertIn("can't do that from your phone", reply["reply"])
+
+    def test_password_lookup_is_refused(self):
+        """Opening Passwords is Mac-only. A signed phone file does not run it."""
+        phrases = (
+            ("password for Netflix", "pwnetflix"),
+            ("what's my password for Chase", "pwchase01"),
+            ("what is my password for Chase", "pwchase02"),
+            ("login for Amazon", "pwamazon1"),
+            ("show my logins for Hulu", "pwhulu001"),
+            ("please password for Netflix", "pwplease1"),
+            ("hey jev, password for Netflix", "pwheyjev1"),
+            ("password for Netflix is hunter2", "pwsecret1"),
+            ("my password is hunter2", "pwsecret2"),
+        )
+        self.assertNotIn("password_lookup", commands.BRIDGE_ALLOW)
+        self.assertIsInstance(commands.BRIDGE_ALLOW, frozenset)
+        self.assertEqual(len(commands.BRIDGE_ALLOW), 30)
+        root = os.path.dirname(os.path.dirname(__file__))
+        bridge_source = open(os.path.join(root, "commands", "bridge.py"), encoding="utf-8").read()
+        secrets_source = open(os.path.join(root, "secrets_store.py"), encoding="utf-8").read()
+        self.assertNotIn("password_lookup", bridge_source)
+        self.assertNotIn("password_lookup", secrets_source)
+        for phrase, nonce in phrases:
+            self.assertEqual(commands.route_before_api(phrase), "password_lookup", phrase)
+            self.assertIsNone(commands.bridge_allowed(phrase), phrase)
+            self.assertNotIn("password_lookup", commands.BRIDGE_ALLOW, phrase)
+            calls, path = self._process(phrase, nonce, name=nonce + ".json")
+            self.assertEqual(calls, [], phrase)
+            self.assertFalse(os.path.exists(path), phrase)
+            reply = self._reply(nonce)
+            self.assertFalse(reply["ok"], phrase)
+            self.assertIn("can't do that from your phone", reply["reply"])
+            self.assertNotIn("hunter2", reply["reply"])
