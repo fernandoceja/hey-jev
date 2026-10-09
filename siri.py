@@ -52,6 +52,7 @@ COMMAND_PROMPT = (
     "Turn on leave reminders. Turn off leave reminders. "
     "Use scribe for dictation. Use OpenAI for dictation. "
     "Use dramatic voice. Use normal voice. Which voice are you using. "
+    "Open videos. Open my videos. Show my videos. "
     "Open settings. Open business email. Run shortcut Leaving for work. What can you do."
 )
 # No prompt in wake mode: on noise Whisper echoes the prompt back, which looked like a real "Hey Jev"
@@ -417,6 +418,7 @@ ACTIONS = {
     "empty_trash": lambda _arg, _text: commands.empty_trash(),
     "show_desktop": lambda _arg, _text: commands.show_desktop(),
     "folder_open": lambda _arg, text: commands.open_folder_from_text(text),
+    "videos_open": lambda _arg, _text: commands.open_videos_folder(),
     "site_open": lambda _arg, text: commands.open_site_from_text(text),
     "continue_chatgpt": lambda _arg, _text: commands.continue_chatgpt(),
     "info_help": lambda _arg, _text: commands.speak_help(),

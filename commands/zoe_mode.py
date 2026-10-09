@@ -58,6 +58,8 @@ ZOE_ALLOW = frozenset({
     "voice_dramatic",
     "voice_normal",
     "voice_which",
+    # The Videos folder on this Mac. Still absent from BRIDGE_ALLOW.
+    "videos_open",
 })
 
 # Existing action keys Zoe mode refuses, grouped the way the spec lists them.
@@ -176,7 +178,7 @@ KID_REFUSAL = (
 )
 ZOE_ON_LINE = (
     "[cheerful] Zoe mode is on. We can check the time, the weather, a joke, "
-    "music, a timer, and Princess Academy."
+    "music, a timer, Princess Academy, and your videos."
 )
 ZOE_ALREADY_ON = "[cheerful] Zoe mode is already on. I'm right here."
 ZOE_ALREADY_OFF = "Zoe mode is already off."

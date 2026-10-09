@@ -3,10 +3,14 @@ import ctypes
 import os
 import re
 import shutil
+from . import config
 from .config import BRIGHTNESS_DOWN_CODE, BRIGHTNESS_UP_CODE, HELP_TEXT, SHOPIFY_ORDERS_URL, SHOW_DESKTOP_CODE
 from .textutil import _clean, parse_level_change
 from .shell import _run
 from .apps import parse_app_name, resolve_folder, resolve_site
+
+OPENING_VIDEOS = "Opening your Videos folder."
+MISSING_VIDEOS = "Your Videos folder isn't there."
 
 # Private DisplayServices SPI. CoreDisplay_Display_SetUserBrightness does not
 # work on Apple silicon; this is the call the Homebrew brightness tool uses
@@ -61,6 +65,54 @@ def open_folder_from_text(text):
     except Exception:
         return f"I couldn't open {label}."
     return f"Opening your {label} folder."
+
+
+def videos_folder_path(path=None):
+    """Absolute Videos path. expanduser does not invoke a shell.
+
+    A leading ~ becomes the home directory. A path that is still a tilde, or
+    that is not absolute, is refused so `open` never sees a shell fragment.
+    """
+    raw = config.VIDEOS_FOLDER if path is None else path
+    if not isinstance(raw, str):
+        return ""
+    text = raw.strip()
+    if not text or "\x00" in text or "\n" in text or "\r" in text:
+        return ""
+    expanded = os.path.expanduser(text)
+    if not expanded or expanded.startswith("~"):
+        return ""
+    target = os.path.abspath(expanded)
+    if not target.startswith("/"):
+        return ""
+    return target
+
+
+def _finder_open_args(target):
+    """["open", path]. A single string would be a shell command, so it is refused."""
+    if not isinstance(target, str) or not target.startswith("/"):
+        raise TypeError("open takes an argument list")
+    return ["open", target]
+
+
+def open_videos_folder(path=None):
+    """Reveal the Videos folder in Finder. Does not create it.
+
+    The command is an argument list: ["open", path]. Spaces in the path stay
+    inside that one argument. A shell string is never built.
+    """
+    target = videos_folder_path(path)
+    try:
+        found = bool(target) and os.path.isdir(target)
+    except OSError:
+        found = False
+    if not found:
+        return MISSING_VIDEOS
+    try:
+        _run(_finder_open_args(target))
+    except Exception:
+        return "I couldn't open your Videos folder."
+    return OPENING_VIDEOS
 
 
 def _load_display_service():
