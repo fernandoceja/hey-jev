@@ -15,6 +15,7 @@ from .config import (
     MONEY_PATH,
     SCHOOL_HORIZON_DAYS,
     SCHOOL_RE,
+    IHSS_PAYDAY_REMINDER,
     SWEEP_ACCOUNT_LABEL,
     SWEEP_AMOUNT,
     SWEEP_SPOKEN_PATH,
@@ -282,8 +283,11 @@ def speak_payday(today=None, path=None):
 
 
 def _plain_amount(amount):
+    """Digits for the spoken Apple line. 1200 is said as $1,200."""
     if isinstance(amount, float) and amount.is_integer():
-        return str(int(amount))
+        amount = int(amount)
+    if isinstance(amount, int):
+        return "{:,}".format(amount)
     return str(amount)
 
 
@@ -316,21 +320,25 @@ def sweep_reminder_line(today=None, path=None):
     """Spoken sweep and timesheet lines for one date, or None when nothing is due.
 
     `today` is a datetime.date. Omit it to use the local calendar day.
-    This reads the Apple anchor from money.md when that file exists and
-    otherwise uses the config anchor. It does not touch the network.
+    Apple payday names ``SWEEP_AMOUNT`` and the account label. IHSS payday
+    uses ``IHSS_PAYDAY_REMINDER`` and names no amount. This reads the Apple
+    anchor from money.md when that file exists and otherwise uses the config
+    anchor. It does not touch the network, and it does not move money.
     """
     today = today or datetime.now().astimezone().date()
     schedule = load_pay_schedule(path)
-    move = f"move ${_plain_amount(schedule['amount'])} to {schedule['account']}."
+    apple_line = (
+        f"Apple payday today — move ${_plain_amount(schedule['amount'])} "
+        f"to {schedule['account']}."
+    )
     apple = is_apple_payday(today, schedule["anchor"])
     ihss = is_ihss_payday(today)
     lines = []
-    if apple and ihss:
-        lines.append(f"Apple and IHSS payday today — {move}")
-    elif apple:
-        lines.append(f"Apple payday today — {move}")
-    elif ihss:
-        lines.append(f"IHSS payday today — {move}")
+    if apple:
+        lines.append(apple_line)
+    if ihss:
+        # IHSS is not the Zoe sweep. No amount, so a check is not described as a transfer.
+        lines.append(IHSS_PAYDAY_REMINDER)
     if is_timesheet_day(today):
         lines.append("Time to submit your timesheet.")
     if not lines:

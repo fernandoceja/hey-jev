@@ -925,15 +925,16 @@ def fetch_tts(text):
 
 
 def speak(text):
+    """Play a line. A Fish plan block is spoken once, before the reply."""
+    def fetch(line):
+        path, ms, _cached = fetch_tts(line)
+        return path, ms
+
     try:
-        path, ms, _cached = fetch_tts(text)
+        return commands.play_fish_reply(text, fetch, lambda path: subprocess.run(["afplay", path]))
     except Exception as exc:
         print("  fish failed: {0}".format(type(exc).__name__))
         return 0
-    if not path:
-        return 0
-    subprocess.run(["afplay", path])
-    return ms
 
 
 def all_scripted_lines():
