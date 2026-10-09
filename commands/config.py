@@ -66,6 +66,10 @@ SWEEP_SPOKEN_PATH = os.path.expanduser(
 ZOE_MODE_PATH = os.path.expanduser(
     "~/Library/Application Support/Hey Jev/zoe-mode.txt"
 )
+# "openai" or "scribe". A missing file is OpenAI, the default. Not a secret.
+DICTATION_ENGINE_PATH = os.path.expanduser(
+    "~/Library/Application Support/Hey Jev/dictation-engine.txt"
+)
 # Morning brief voice memo. Local files only, played with afplay. No network.
 # BRIEF_MEMO_DIR overrides the folder. BRIEF_MEMO_TIME is HH:MM local time.
 # BRIEF_MEMO_ENABLED=0 turns the automatic play off. "play my brief" still works.
@@ -621,6 +625,13 @@ STRICT_PATTERNS = (
     (re.compile(
         rf"^{_PLEASE}(?:(?:take\s+)?(?:the\s+|a\s+)?red\s+pill|(?:exit|stop|leave|quit|close|end)\s+(?:the\s+)?matrix){_TAIL}",
         re.I), "matrix_off"),
+    # Dictation engine. Mac-only. Not in BRIDGE_ALLOW. OpenAI stays the default.
+    (re.compile(
+        rf"^{_PLEASE}(?:hey\s+jev\b\s*,?\s+)?{_PLEASE}use\s+scribe\s+for\s+dictation{_TAIL}",
+        re.I), "dictation_scribe"),
+    (re.compile(
+        rf"^{_PLEASE}(?:hey\s+jev\b\s*,?\s+)?{_PLEASE}use\s+open\s*ai\s+for\s+dictation{_TAIL}",
+        re.I), "dictation_openai"),
     # Password lookup is Mac-only. Not in BRIDGE_ALLOW. Also matched before the
     # joiner check, so a dictated password never reaches an API. The handler
     # types the site name only.
@@ -682,6 +693,7 @@ HELP_TEXT = (
     "I can open ChatGPT, Claude, Gemini, Siri, or Google with a capture or your last question. "
     "I can read your clipboard history, copy or paste an item, and clear it. That stays on this Mac. "
     "I can open Passwords and search for a site. I never read or say the password. "
+    "Say use scribe for dictation or use openai for dictation to choose the dictation engine. OpenAI is the default. "
     "I can play your morning brief memo. Stop stops that playback. "
     "I won't send a message or move money."
 )
