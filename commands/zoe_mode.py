@@ -122,6 +122,14 @@ ZOE_BLOCKED = {
         "clipboard_resume",
     ),
     "passwords": ("password_lookup",),
+    # Nearby fires and earthquakes, and the alert toggle. Still not on the bridge.
+    "hazards": (
+        "info_hazards",
+        "info_hazards_fires",
+        "info_hazards_quakes",
+        "hazard_alerts_on",
+        "hazard_alerts_off",
+    ),
     "dictation": ("dictation_scribe", "dictation_openai"),
     "shell": (),
     "system": (

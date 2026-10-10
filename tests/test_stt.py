@@ -16,6 +16,7 @@ NAMES = (
     "ChatGPT", "Claude", "Grok", "Gemini", "Perplexity", "CapCut",
     "WorkJam", "UKG", "Spotify", "YouTube TV", "iMessage",
     "password", "passwords",
+    "earthquake", "earthquakes", "hazard", "hazards", "wildfire", "fires",
 )
 
 

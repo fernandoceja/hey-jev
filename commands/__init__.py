@@ -1,9 +1,11 @@
-"""Local voice commands: apps, calendar, weather, notes, and the iPhone bridge.
+"""Local voice commands: apps, calendar, weather, hazards, notes, and the iPhone bridge.
 
 Names are parsed from the transcript here, the same way timers parse a duration.
 decide() in siri.py calls route_before_api() before any TypeSafe or LLM call.
 
-Nothing in this module listens on a socket. The iPhone bridge only polls an
+Nothing in this module listens on a socket. Hazard checks are outbound HTTPS
+to USGS and, when a Keychain map key is set, NASA FIRMS. Those commands are
+not on the bridge allowlist. The iPhone bridge only polls an
 iCloud Drive folder. Password lookup only opens the Passwords app and writes
 a site name into its search field. It is not on the bridge allowlist.
 The morning brief memo is a local file played with afplay
@@ -83,6 +85,20 @@ from .config import (
     UPLAND_LAT,
     UPLAND_LON,
     WEATHER_TIMEOUT,
+    HAZARD_FIRE_MILES,
+    HAZARD_QUAKE_MILES,
+    HAZARD_QUAKE_MIN_MAG,
+    HAZARD_WINDOW_HOURS,
+    HAZARD_CACHE_TTL_SECONDS,
+    HAZARD_POLL_SECONDS,
+    HAZARD_TIMEOUT,
+    HAZARD_ALERTS_ENABLED,
+    HAZARD_CACHE_PATH,
+    HAZARD_ALERTS_PATH,
+    FIRMS_MAP_KEY_ACCOUNT,
+    USGS_DAY_FEED,
+    FIRMS_SOURCE,
+    FIRMS_AREA_URL,
     FOCUS_ON_NAME,
     FOCUS_OFF_NAME,
     FOCUS_DEFAULT_SECONDS,
@@ -288,6 +304,19 @@ from .weather import (
     speak_weather,
     gmail_brief_line,
     _gmail_stub_noted,
+)
+
+from .hazards import (
+    alert_line,
+    collect_hazards,
+    default_read_key,
+    hazard_alerts_enabled,
+    run_hazard_alerts_once,
+    set_hazard_alerts,
+    speak_fires,
+    speak_hazards,
+    speak_quakes,
+    start_hazard_thread,
 )
 
 from .notes_due import (

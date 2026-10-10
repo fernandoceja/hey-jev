@@ -456,6 +456,11 @@ ACTIONS = {
     "info_next_shift": lambda _arg, _text: commands.speak_next_shift(),
     "info_open_apps": lambda _arg, _text: commands.speak_open_apps(),
     "info_weather": lambda _arg, _text: commands.speak_weather(),
+    "info_hazards": lambda _arg, _text: commands.speak_hazards(),
+    "info_hazards_fires": lambda _arg, _text: commands.speak_fires(),
+    "info_hazards_quakes": lambda _arg, _text: commands.speak_quakes(),
+    "hazard_alerts_on": lambda _arg, _text: commands.set_hazard_alerts(True),
+    "hazard_alerts_off": lambda _arg, _text: commands.set_hazard_alerts(False),
     "info_today": lambda _arg, _text: commands.speak_today(),
     "info_brief": lambda _arg, _text: commands.speak_brief(),
     "brief_play": lambda _arg, _text: commands.request_brief(),
@@ -1666,6 +1671,25 @@ def run_voice_assistant(notify=None, controls=None, mode="ptt", mic=""):
         return posted or spoken
 
     commands.start_leave_nudge_thread(_leave_deliver, quiet_check=_leave_quiet)
+
+    def _hazard_deliver(line):
+        # Dictation already owns the speaker. Leave the event unmarked.
+        if rec.dictating:
+            return False
+        posted = False
+        try:
+            posted = commands.post_leave_notification(line)
+        except Exception as exc:
+            print(f"  hazard watch: {type(exc).__name__}")
+        spoken = False
+        try:
+            say(line, notify)
+            spoken = True
+        except Exception as exc:
+            print(f"  hazard watch: {type(exc).__name__}")
+        return posted or spoken
+
+    commands.start_hazard_thread(_hazard_deliver, quiet_check=_leave_quiet)
     threading.Thread(target=warm_cache, daemon=True).start()
     threading.Thread(target=wake_loop, daemon=True).start()
     set_mode(mode)
