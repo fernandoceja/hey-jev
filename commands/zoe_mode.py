@@ -60,6 +60,11 @@ ZOE_ALLOW = frozenset({
     "voice_which",
     # The Videos folder on this Mac. Still absent from BRIDGE_ALLOW.
     "videos_open",
+    # Drive time to work or home. Still absent from BRIDGE_ALLOW.
+    # The street address is never spoken.
+    "info_eta_work",
+    "info_eta_home",
+    "info_eta_which",
 })
 
 # Existing action keys Zoe mode refuses, grouped the way the spec lists them.
@@ -99,7 +104,7 @@ ZOE_BLOCKED = {
     ),
     "shortcuts": ("shortcut_run", "focus_on"),
     "reminders": ("remind_add", "ihss_remind"),
-    "leave": ("leave_reminders_on", "leave_reminders_off", "info_leave", "info_eta_work"),
+    "leave": ("leave_reminders_on", "leave_reminders_off", "info_leave"),
     "brief": ("brief_play", "brief_stop", "info_brief"),
     "video": (
         "video_mp4",

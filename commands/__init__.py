@@ -30,6 +30,8 @@ from .config import (
     DEFAULT_APPLE_PAY_ANCHOR,
     SHIFT_OVERRIDE_PATH,
     HOME_ADDRESS,
+    HOME_ADDRESS_PATH,
+    HOME_EXACT_HINT,
     BREA_STORE_ADDRESS,
     LEAVE_BUFFER_MINUTES,
     LEAVE_TYPICAL_DRIVE_MINUTES,
@@ -251,11 +253,15 @@ from .shift_override import (
 )
 
 from .travel import (
+    current_coordinate,
     expected_travel_seconds,
 )
 
 from .leave import (
     describe_leave,
+    read_home_address,
+    speak_eta_choice,
+    speak_eta_home,
     speak_eta_to_work,
     speak_leave_time,
 )

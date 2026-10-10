@@ -5,7 +5,7 @@ from . import config
 from .calendar_shift import _load_plain_events, is_shift_title
 from .shift_override import events_with_overrides
 from .textutil import _clock, _day_phrase, _hours_minutes
-from .travel import expected_travel_seconds
+from .travel import current_coordinate, expected_travel_seconds
 
 
 def _is_brea(ev):
@@ -176,19 +176,63 @@ def _shift_gap(now, arrive, path, events):
     return f"Your shift starts at {start_clock}, so you'd be right on time."
 
 
-def speak_eta_to_work(now=None, path=None, events=None):
+def read_home_address(path=None):
+    """(address, exact). exact is True when the local file has one line.
+
+    The address is for MapKit only. Say "home". Never log or speak the line.
+    A missing, unreadable, or blank file is HOME_ADDRESS ("Upland, CA").
+    """
+    target = config.HOME_ADDRESS_PATH if path is None else path
+    try:
+        with open(target, encoding="utf-8") as handle:
+            line = handle.readline().strip()
+    except OSError:
+        return config.HOME_ADDRESS, False
+    if not line:
+        return config.HOME_ADDRESS, False
+    return line, True
+
+
+def _hide_street(spoken, address, exact):
+    """Drop a street if one ever lands in the words we say."""
+    if not exact or not address or len(address) < 8:
+        return spoken
+    if address.lower() not in spoken.lower():
+        return spoken
+    return re.sub(re.escape(address), "home", spoken, flags=re.I)
+
+
+def _with_home_hint(spoken, exact):
+    if exact:
+        return spoken
+    return f"{spoken} {config.HOME_EXACT_HINT}"
+
+
+def speak_eta_choice():
+    """Bare ETA. Work and home are both real answers, so this does not guess.
+
+    The next phrase is "ETA work" or "ETA home". A one-word "home" is left
+    alone so it is not confused with the Home app.
+    """
+    return "Work or home?"
+
+
+def speak_eta_to_work(now=None, path=None, events=None, home_path=None):
     """How long the drive to work is if you leave now.
 
     MapKit is asked for a departure of now, from home to the Brea store.
-    A missing or failed result uses the typical drive and says so.
+    Home is the one line in home-address.txt when that file exists. Otherwise
+    it is HOME_ADDRESS, and the reply says to set the file.
+    A missing or failed MapKit result uses the typical drive and says so.
     A shift today that has not started, including a saved override, adds
     whether that arrival is early or late. A started shift, or none today,
     skips that part.
     """
     now = now or datetime.now().astimezone()
+    origin, exact = read_home_address(home_path)
     try:
         travel = expected_travel_seconds(
-            config.HOME_ADDRESS, config.BREA_STORE_ADDRESS, now, depart=True)
+            origin, config.BREA_STORE_ADDRESS, now, depart=True)
     except Exception:
         travel = None
     minutes, estimate = _minutes_from_travel(travel)
@@ -205,5 +249,44 @@ def speak_eta_to_work(now=None, path=None, events=None):
         spoken = f"About {drive} to work right now. You'd get there around {arrival}."
     gap = _shift_gap(now, arrive, path, events)
     if gap:
-        return f"{spoken} {gap}"
-    return spoken
+        spoken = f"{spoken} {gap}"
+    return _hide_street(_with_home_hint(spoken, exact), origin, exact)
+
+
+def speak_eta_home(now=None, home_path=None, origin=None, locate=True):
+    """How long the drive home is if you leave now.
+
+    The start is this Mac's location when `locate` finds one. Otherwise it is
+    the Brea store, and the reply says so. The end is home-address.txt, or
+    HOME_ADDRESS when that file is missing. The street is not spoken.
+    `origin` skips the location lookup. Tests pass a coordinate or None.
+    """
+    now = now or datetime.now().astimezone()
+    home, exact = read_home_address(home_path)
+    if origin is None and locate:
+        try:
+            origin = current_coordinate()
+        except Exception:
+            origin = None
+    from_here = origin is not None
+    if origin is None:
+        origin = config.BREA_STORE_ADDRESS
+    try:
+        travel = expected_travel_seconds(origin, home, now, depart=True)
+    except Exception:
+        travel = None
+    minutes, estimate = _minutes_from_travel(travel)
+    arrive = now + timedelta(minutes=minutes)
+    drive = _hours_minutes(minutes)
+    arrival = _clock(arrive)
+    if estimate:
+        spoken = (
+            f"About {drive} to get home right now. "
+            f"I'm using a typical drive of {drive} as an estimate. "
+            f"You'd get there around {arrival}."
+        )
+    else:
+        spoken = f"About {drive} to get home right now. You'd get there around {arrival}."
+    if not from_here:
+        spoken += " I'm starting from the Brea store, since I can't see where this Mac is."
+    return _hide_street(_with_home_hint(spoken, exact), home, exact)
