@@ -8,7 +8,8 @@ or written into the cache.
 
 Distance is from Upland, CA. When home-address.txt has a line and a geocoder
 is available, that point is used instead. The street line is never stored
-or spoken. Results are cached in the app support folder for
+or spoken. A location permission read that has not finished skips the
+geocoder, and a geocode call on a command turn gives up after a few seconds. Results are cached in the app support folder for
 HAZARD_CACHE_TTL_SECONDS so a repeat question does not fetch again.
 
 These commands are not on the iPhone bridge allowlist. Background alerts are
@@ -40,8 +41,12 @@ _HOME_MATCH_DEGREES = 0.02
 
 _state_lock = threading.Lock()
 _thread_lock = threading.Lock()
+_geocode_lock = threading.Lock()
 _thread = None
 _quiet_probe = None
+_geocode_running = False
+# MapKit geocode budget. Also the longest a command turn waits on that call.
+GEOCODE_WAIT_SECONDS = 8
 
 
 def distance_miles(lat1, lon1, lat2, lon2):
@@ -181,34 +186,78 @@ def home_point(home_path=None, geocode=None, locate=False):
 
 
 def _mapkit_geocode(address):
-    """(lat, lon) or None. The address is not logged. Linux returns None."""
+    """(lat, lon) or None. The address is not logged. Linux returns None.
+
+    A location permission read that is still out wins: this returns None so
+    distance stays on Upland instead of calling CoreLocation again. On a
+    command turn the geocode itself runs off that turn and gives up after
+    GEOCODE_WAIT_SECONDS.
+    """
     if sys.platform != "darwin" or not address:
         return None
     try:
-        import CoreLocation
-        from .calendar_shift import _wait_for
+        from .travel import location_lookup_busy
+        if location_lookup_busy():
+            return None
     except Exception:
         return None
     try:
-        done, box = threading.Event(), {}
-
-        def finish(placemarks, _error):
-            try:
-                if placemarks:
-                    location = placemarks[0].location()
-                    if location is not None:
-                        coord = location.coordinate()
-                        box["pair"] = (float(coord.latitude), float(coord.longitude))
-            except Exception:
-                box["pair"] = None
-            done.set()
-
-        geocoder = CoreLocation.CLGeocoder.alloc().init()
-        geocoder.geocodeAddressString_completionHandler_(address, finish)
-        _wait_for(done, 8)
-        return box.get("pair")
+        return _geocode_off_worker(lambda: _mapkit_geocode_blocking(address))
     except Exception:
         return None
+
+
+def _geocode_off_worker(fn):
+    """Run fn off a command turn. The main thread stays inline for its run loop."""
+    global _geocode_running
+    inline = GEOCODE_WAIT_SECONDS <= 0 or threading.current_thread() is threading.main_thread()
+    with _geocode_lock:
+        if _geocode_running:
+            return None
+        if not inline:
+            _geocode_running = True
+    if inline:
+        return fn()
+    done, box = threading.Event(), {}
+
+    def run():
+        global _geocode_running
+        try:
+            box["value"] = fn()
+        except Exception:
+            box["value"] = None
+        finally:
+            with _geocode_lock:
+                _geocode_running = False
+            done.set()
+
+    threading.Thread(target=run, name="jev-geocode", daemon=True).start()
+    if not done.wait(GEOCODE_WAIT_SECONDS):
+        return None
+    return box.get("value")
+
+
+def _mapkit_geocode_blocking(address):
+    import CoreLocation
+    from .calendar_shift import _wait_for
+
+    done, box = threading.Event(), {}
+
+    def finish(placemarks, _error):
+        try:
+            if placemarks:
+                location = placemarks[0].location()
+                if location is not None:
+                    coord = location.coordinate()
+                    box["pair"] = (float(coord.latitude), float(coord.longitude))
+        except Exception:
+            box["pair"] = None
+        done.set()
+
+    geocoder = CoreLocation.CLGeocoder.alloc().init()
+    geocoder.geocodeAddressString_completionHandler_(address, finish)
+    _wait_for(done, GEOCODE_WAIT_SECONDS)
+    return box.get("pair")
 
 
 def _event(kind, when, lat, lon, magnitude, brightness, home, source, ident):

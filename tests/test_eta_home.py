@@ -362,6 +362,9 @@ def _core(manager):
 
 
 class TestCurrentLocation(unittest.TestCase):
+    def setUp(self):
+        travel_mod.reset_location_state()
+
     def test_a_cached_fix_is_a_coordinate_and_a_miss_is_none(self):
         with mock.patch.dict("sys.modules", {"CoreLocation": _core(_Manager)}):
             found = travel_mod.current_coordinate()
