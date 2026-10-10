@@ -123,6 +123,33 @@ class TestBridgeValidation(unittest.TestCase):
             self.assertFalse(os.path.exists(path))
             self.assertIn("can't do that from your phone", self._reply(nonce)["reply"])
 
+    def test_new_open_aliases_stay_off_the_phone(self):
+        """Opening an app is still a Mac command. The new names are not allowlisted."""
+        phrases = (
+            ("open codex", "opcodex1", "app_open"),
+            ("open pokemon", "oppokemon", "app_open"),
+            ("open tick tock", "optiktok1", "app_open"),
+            ("open spotify", "opspot01", "app_open"),
+            ("open cap cut", "opcapcut", "app_open"),
+            ("open terminal", "opterm001", "app_open"),
+            ("open launchpad", "oplaunch1", "app_open"),
+            ("open password app", "oppass001", "app_open"),
+            ("open vs code", "opvscode1", "app_open"),
+            ("open kronos", "opkronos", "site_open"),
+            ("open ukg pro", "opukgpro", "site_open"),
+            ("open work gym", "opworkgy", "site_open"),
+        )
+        for phrase, nonce, key in phrases:
+            self.assertEqual(commands.route_before_api(phrase), key, phrase)
+            self.assertIsNone(commands.bridge_allowed(phrase), phrase)
+            self.assertNotIn(key, commands.BRIDGE_ALLOW)
+            calls, path = self._process(phrase, nonce, name=nonce + ".json")
+            self.assertEqual(calls, [], phrase)
+            self.assertFalse(os.path.exists(path))
+            self.assertIn("can't do that from your phone", self._reply(nonce)["reply"])
+        self.assertNotIn("app_open", commands.BRIDGE_ALLOW)
+        self.assertEqual(len(commands.BRIDGE_ALLOW), 30)
+
     def test_disallowed_command_is_rejected(self):
         phrases = (
             ("empty the trash", "nonce1234"),

@@ -139,7 +139,8 @@ class TestCloseAliases(unittest.TestCase):
             return mock.Mock(returncode=0, stdout="", stderr="")
 
         with mock.patch.object(commands.apps, "running_regular_apps", return_value=[]), \
-                mock.patch.object(commands.subprocess, "run", fake_run):
+                mock.patch.object(commands.subprocess, "run", fake_run), \
+                mock.patch.object(commands.apps, "app_index", return_value={"messages": "/System/Applications/Messages.app"}):
             result = commands.focus_any_app(None, "focus imessage", {})
             opened = commands.open_any_app(None, "open imessage", {})
         self.assertEqual(result, {"app": "Messages"})
@@ -189,7 +190,12 @@ class TestChatGPTAndTV(unittest.TestCase):
             ("open chatgpt", "app_open"),
             ("launch chat GPT", "app_open"),
         )
-        with mock.patch.object(commands.subprocess, "run", fake_run):
+        installed = {
+            "chatgpt": "/tmp/hey-jev-tests/ChatGPT.app",
+            "chatgptclassic": "/tmp/hey-jev-tests/ChatGPT Classic.app",
+        }
+        with mock.patch.object(commands.subprocess, "run", fake_run), \
+                mock.patch.object(commands.apps, "app_index", return_value=installed):
             for phrase, key in phrases:
                 self.assertEqual(commands.route_before_api(phrase), key, phrase)
                 self.assertIsNone(commands.bridge_allowed(phrase), phrase)

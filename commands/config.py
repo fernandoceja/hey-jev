@@ -235,18 +235,21 @@ BRIDGE_ALLOW = frozenset({
     "case_status",
 })
 # Names `open -a` should use. Edit a spelling here if Launch Services uses another.
+# Visual Studio Code is not installed; "vs code" is Cursor, below.
+# Spotify, CapCut, and Slack stay here so the name resolves, then open checks
+# the disk and may fall back to a page. See APP_WEB_FALLBACK.
 KNOWN_APPS = (
-    "App Store", "Automator", "Books", "Calculator", "Calendar", "ChatGPT",
+    "App Store", "Apps", "Automator", "Books", "Calculator", "Calendar", "ChatGPT",
     "ChatGPT Classic", "Chess", "Claude", "CleanMyMac_5", "Clock", "Contacts",
     "Cursor", "Dictionary", "FaceTime", "Find My", "Freeform", "Games", "Gemini",
-    "Google Chrome", "Google Password Manager", "Grok Bot", "Home",
+    "gen1recomp", "Google Chrome", "Google Password Manager", "Grok Bot", "Home",
     "Image Playground", "Journal", "Mail", "Maps", "Messages", "MovieBoxPro",
     "Muse", "Music", "News", "Notes", "Numbers Creator Studio",
     "Pages Creator Studio", "Passwords", "Phone", "Photo Booth", "Photos",
     "Podcasts", "Preview", "QuickTime Player", "Reminders", "Safari", "Shortcuts",
-    "Siri", "Stickies", "Stocks", "System Settings", "TV", "TextEdit", "Tips",
-    "Voice Memos", "Weather", "YouTube", "YouTube TV", "iPhone Mirroring",
-    "Zoho Mail - Desktop", "Finder", "Visual Studio Code", "CapCut", "Spotify", "Slack",
+    "Siri", "Stickies", "Stocks", "System Settings", "TV", "Terminal", "TextEdit",
+    "TikTok", "Tips", "Voice Memos", "Weather", "YouTube", "YouTube TV",
+    "iPhone Mirroring", "Zoho Mail - Desktop", "Finder", "CapCut", "Spotify", "Slack",
 )
 # Extra spoken names. The value is what `open -a` is given.
 APP_NICKNAMES = {
@@ -282,20 +285,153 @@ APP_NICKNAMES = {
     "apple tv": "TV",
     "tv app": "TV",
     "the tv app": "TV",
-    "vscode": "Visual Studio Code",
-    "vs code": "Visual Studio Code",
+    # Cursor is the editor on this Mac. VS Code is not installed.
+    "vscode": "Cursor",
+    "vs code": "Cursor",
+    "visual studio code": "Cursor",
+    "code editor": "Cursor",
+    "curser": "Cursor",
+    "cursor ai": "Cursor",
+    "cursor editor": "Cursor",
     "cap cut": "CapCut",
+    "capcat": "CapCut",
+    "cap kit": "CapCut",
+    "kapkut": "CapCut",
     # Messages is the iMessage app. close, quit, hide, and focus use this same map.
     "imessage": "Messages",
     "i message": "Messages",
+    "texts": "Messages",
+    "text messages": "Messages",
+    "messaging": "Messages",
+    # ChatGPT.app is the Codex app (com.openai.codex). Not ChatGPT Classic.
+    # "code x" is the same key as "codex" after spaces are removed.
+    "codex": "ChatGPT",
+    "codecs": "ChatGPT",
+    "kodex": "ChatGPT",
+    "open ai": "ChatGPT",
+    "openai": "ChatGPT",
+    "chat gbt": "ChatGPT",
+    "chat gpd": "ChatGPT",
+    "chad gpt": "ChatGPT",
+    # "cloud" is not here. It is too close to "clod" and means iCloud.
+    "clod": "Claude",
+    "claud": "Claude",
+    "clawed": "Claude",
+    "claude ai": "Claude",
+    "anthropic": "Claude",
+    "grock": "Grok Bot",
+    "groc": "Grok Bot",
+    "grog": "Grok Bot",
+    "rock bot": "Grok Bot",
+    "jemini": "Gemini",
+    "gemeni": "Gemini",
+    "gemini ai": "Gemini",
+    "google gemini": "Gemini",
+    # "news" stays the News app. "mews" is the mishearing of Muse.
+    "meta muse": "Muse",
+    "muse app": "Muse",
+    "mews": "Muse",
+    "tick tock": "TikTok",
+    "tic toc": "TikTok",
+    "tic tac": "TikTok",
+    "tik tock": "TikTok",
+    "tiktoc": "TikTok",
+    # Dock game. Nobody says the filename.
+    "pokemon": "gen1recomp",
+    "pokémon": "gen1recomp",
+    "pokemon red": "gen1recomp",
+    "pokey mon": "gen1recomp",
+    "poke mon": "gen1recomp",
+    "gen one": "gen1recomp",
+    "gen 1": "gen1recomp",
+    "gameboy game": "gen1recomp",
+    "movie box": "MovieBoxPro",
+    "movie box pro": "MovieBoxPro",
+    "movies": "MovieBoxPro",
+    "moviebox": "MovieBoxPro",
+    "clean up": "CleanMyMac_5",
+    "clean up app": "CleanMyMac_5",
+    "mac cleaner": "CleanMyMac_5",
+    # "password manager" stays Google, above. These are Apple's Passwords app.
+    # "open password app" is parsed down to "password" before this map is read.
+    "password": "Passwords",
+    "password app": "Passwords",
+    "passwords app": "Passwords",
+    "apple passwords": "Passwords",
+    "my passwords": "Passwords",
+    "keychain": "Passwords",
+    "iphone": "iPhone Mirroring",
+    "phone mirroring": "iPhone Mirroring",
+    "mirror my phone": "iPhone Mirroring",
+    "iphone mirror": "iPhone Mirroring",
+    "reminder": "Reminders",
+    "my reminders": "Reminders",
+    "to do list": "Reminders",
+    "todo": "Reminders",
+    "command line": "Terminal",
+    "shell": "Terminal",
+    "launchpad": "Apps",
+    "launch pad": "Apps",
+    "all apps": "Apps",
+    "app launcher": "Apps",
+    "apple music": "Music",
+    "my calendar": "Calendar",
+    "calender": "Calendar",
+    "ical": "Calendar",
+    "photo": "Photos",
+    "pictures": "Photos",
+    "photo library": "Photos",
+    "note": "Notes",
+    "apple notes": "Notes",
+    # "zoe mail" is not here. Zoe is his daughter. "zoho male" is the mishearing.
+    "zoho male": "Zoho Mail - Desktop",
+    "number": "Numbers Creator Studio",
+    "spreadsheet": "Numbers Creator Studio",
+    "budget sheet": "Numbers Creator Studio",
+    "facetime call": "FaceTime",
+    "system setting": "System Settings",
+    "mac settings": "System Settings",
+    "email": "Mail",
+    "apple mail": "Mail",
+    "my email": "Mail",
+    "spot a fy": "Spotify",
+    "spotty fi": "Spotify",
+}
+# Spoken forms that must not open an app, even when a nickname is one letter away.
+# "cloud" fuzzy-matches the Claude mishearing "clod". "zoe mail" is not Zoho.
+APP_NOT_APPS = (
+    "cloud",
+    "zoe mail",
+)
+# Bundle id of the .app `open -a` should launch. ChatGPT.app is Codex.
+# ChatGPT Classic is a different app and must not satisfy a Codex request.
+APP_BUNDLES = {
+    "ChatGPT": "com.openai.codex",
+    "ChatGPT Classic": "com.openai.chat",
+    "Spotify": "com.spotify.client",
+    "CapCut": "com.lemon.lvoverseas",
+    "Slack": "com.tinyspeck.slackmacgap",
+}
+# These names are the bundle above and nothing else. A different bundle on a
+# same-named path is not a match.
+APP_BUNDLE_EXCLUSIVE = frozenset({"ChatGPT", "ChatGPT Classic"})
+# Used when the filename scan has not already found the bundle.
+APP_PATHS = {
+    "ChatGPT": "/Applications/ChatGPT.app",
+}
+# Missing apps that have a page. Chrome opens the URL. No other missing app does.
+APP_WEB_FALLBACK = {
+    "Spotify": {"url": "https://open.spotify.com", "label": "Spotify"},
+    "CapCut": {"url": "https://www.capcut.com/editor", "label": "CapCut"},
 }
 # Spoken phrase -> page opened in Google Chrome. editable=True means swap in your real URL.
 # These are public login pages. Jev only hands the URL to `open`. It does not fetch them.
 SITE_CONFIG = (
-    {"phrases": ("workjam", "work jam"), "url": "https://app.workjam.com/login",
-     "label": "WorkJam", "editable": False},
-    {"phrases": ("ukg",), "url": "https://sso.prd.mykronos.com",
-     "label": "UKG", "editable": False},
+    {"phrases": ("workjam", "work jam", "work jam app", "my schedule", "my schedule app",
+                 "workgem", "work gym"),
+     "url": "https://app.workjam.com/login", "label": "WorkJam", "editable": False},
+    {"phrases": ("ukg", "u k g", "ukg pro", "kronos", "you kg", "my pay stub", "my pay stub app"),
+     "url": "https://sso.prd.mykronos.com", "label": "UKG", "editable": False},
     {"phrases": ("apple employee portal", "employee portal", "appleconnect", "apple connect"),
      "url": "https://people.apple.com/", "label": "the Apple employee portal", "editable": False},
     {"phrases": ("umgc", "umgc class", "class site", "school site", "learn umgc"),

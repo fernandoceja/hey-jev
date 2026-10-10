@@ -250,16 +250,18 @@ class TestRouting(unittest.TestCase):
             self.assertTrue(entry["url"].startswith("https://"), entry["label"])
             self.assertNotIn(" ", entry["url"])
 
-    def test_open_app_uses_open_a_and_reports_missing(self):
+    def test_open_app_reports_missing_without_open_a(self):
+        """A known app that is not on disk is not handed to open -a."""
         calls = []
 
         def fake_run(args, **kwargs):
             calls.append(list(args))
             return _cp(args, code=1, stdout="Unable to find application named Zoho")
 
-        with mock.patch.object(commands.subprocess, "run", fake_run):
+        with mock.patch.object(commands.subprocess, "run", fake_run), \
+                mock.patch.object(commands.apps, "app_index", return_value={}):
             spoken = commands.open_any_app(None, "open business email", {})
-        self.assertEqual(calls[0], ["open", "-a", "Zoho Mail - Desktop"])
+        self.assertEqual(calls, [])
         self.assertIn("isn't installed", spoken)
         self.assertIn("Zoho Mail - Desktop", spoken)
 

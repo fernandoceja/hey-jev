@@ -2,14 +2,15 @@
 import difflib
 import glob
 import os
+import plistlib
 import re
 import time
-from .config import APP_DIRS, APP_FUZZY_CUTOFF, APP_INDEX_TTL, APP_NICKNAMES, FINDER_PATH, FOLDER_PATHS, FUZZY_CUTOFF, KNOWN_APPS, PROTECTED_IDS, PROTECTED_NAMES, SITE_CONFIG, _FOCUS_VERBS, _HIDE_VERBS, _OPEN_VERBS, _QUIT_VERBS
+from .config import APP_BUNDLE_EXCLUSIVE, APP_BUNDLES, APP_DIRS, APP_FUZZY_CUTOFF, APP_INDEX_TTL, APP_NICKNAMES, APP_NOT_APPS, APP_PATHS, APP_WEB_FALLBACK, FINDER_PATH, FOLDER_PATHS, FUZZY_CUTOFF, KNOWN_APPS, PROTECTED_IDS, PROTECTED_NAMES, SITE_CONFIG, _FOCUS_VERBS, _HIDE_VERBS, _OPEN_VERBS, _QUIT_VERBS
 from .textutil import _clean, _norm
 from .shell import _run
 from .confirm import is_quit_all
 
-_index_cache = {"at": 0.0, "idx": None}
+_index_cache = {"at": 0.0, "idx": None, "bundles": {}}
 
 
 def app_alias_map():
@@ -72,19 +73,30 @@ def _drop_my(spoken):
     return None
 
 
+def _blocked_app_key(key):
+    """True for words that must not fuzzy-open a nearby nickname."""
+    return key in {_norm(item) for item in APP_NOT_APPS}
+
+
 def _lookup_app(spoken):
-    """Display name for a spoken app, or None. Exact nicknames win; fuzzy is strict."""
+    """Display name for a spoken app, or None. Exact nicknames win; fuzzy is strict.
+
+    A longer key that merely starts with the spoken word is not a fuzzy hit,
+    so "code" does not become Codex. "cloud" and "zoe mail" are refused
+    before fuzzy runs.
+    """
     if not spoken:
         return None
     aliases = app_alias_map()
     key = _norm(spoken)
-    if not key:
+    if not key or _blocked_app_key(key):
         return None
     if key in aliases:
         return aliases[key]
     if len(key) < 4:
         return None
-    matches = difflib.get_close_matches(key, list(aliases), n=2, cutoff=APP_FUZZY_CUTOFF)
+    pool = [name for name in aliases if not (len(name) > len(key) and name.startswith(key))]
+    matches = difflib.get_close_matches(key, pool, n=2, cutoff=APP_FUZZY_CUTOFF)
     if not matches:
         return None
     best = difflib.SequenceMatcher(None, key, matches[0]).ratio()
@@ -165,22 +177,135 @@ def music_target(text, spotify_installed):
 
 
 # --------------------------------------------------------------------------- Apps
+def _read_bundle_id(path):
+    """CFBundleIdentifier from Info.plist, or None. No subprocess."""
+    plist_path = os.path.join(path, "Contents", "Info.plist")
+    try:
+        with open(plist_path, "rb") as handle:
+            info = plistlib.load(handle)
+    except Exception:
+        return None
+    if not isinstance(info, dict):
+        return None
+    bundle = info.get("CFBundleIdentifier")
+    if not isinstance(bundle, str):
+        return None
+    bundle = bundle.strip()
+    if not bundle or any(char in bundle for char in "\x00\n\r"):
+        return None
+    return bundle
+
+
 def app_index(force=False):
-    """Map a normalized app name to its .app path. Cached for APP_INDEX_TTL."""
+    """Map a normalized app name to its .app path. Cached for APP_INDEX_TTL.
+
+    Bundle ids are stored beside the names so Codex (com.openai.codex) is not
+    confused with ChatGPT Classic.
+    """
     now = time.time()
     if not force and _index_cache["idx"] is not None and now - _index_cache["at"] < APP_INDEX_TTL:
         return _index_cache["idx"]
     idx = {}
+    bundles = {}
     if os.path.isdir(FINDER_PATH):
         idx["finder"] = FINDER_PATH
+        bundle = _read_bundle_id(FINDER_PATH)
+        if bundle:
+            bundles[bundle] = FINDER_PATH
     for folder in APP_DIRS:
         if not os.path.isdir(folder):
             continue
         for path in glob.glob(os.path.join(folder, "*.app")):
             idx[_norm(os.path.basename(path)[:-4])] = path
+            bundle = _read_bundle_id(path)
+            if bundle:
+                bundles[bundle] = path
     _index_cache["idx"] = idx
+    _index_cache["bundles"] = bundles
     _index_cache["at"] = now
     return idx
+
+
+def _index_is_live(names):
+    """True when `names` is the cache app_index just built, not a test double."""
+    return _index_cache.get("idx") is names
+
+
+def locate_app(display_name):
+    """Path of an installed .app for this open name, or None.
+
+    Order is bundle id, then a known path, then the filename. ChatGPT has to
+    be com.openai.codex, so ChatGPT Classic cannot stand in for Codex. A
+    replaced app_index is trusted on its own and does not see this Mac's
+    /Applications folder.
+    """
+    if not display_name:
+        return None
+    names = app_index()
+    wanted = APP_BUNDLES.get(display_name)
+    live = _index_is_live(names)
+    if wanted and live:
+        found = (_index_cache.get("bundles") or {}).get(wanted)
+        if found:
+            return found
+    if wanted and not live:
+        for path in names.values():
+            if _read_bundle_id(path) == wanted:
+                return path
+    if live:
+        known = APP_PATHS.get(display_name)
+        if known and os.path.isdir(known):
+            got = _read_bundle_id(known)
+            if wanted is None or got in (None, wanted):
+                return known
+    indexed = names.get(_norm(display_name))
+    if not indexed:
+        return None
+    if wanted and display_name in APP_BUNDLE_EXCLUSIVE:
+        got = _read_bundle_id(indexed)
+        if got not in (None, wanted):
+            return None
+    return indexed
+
+
+def _launch_arg(display, path):
+    """Argument for `open -a`. A matched bundle uses the .app path."""
+    bundle = _read_bundle_id(path)
+    if bundle and APP_BUNDLES.get(display) == bundle:
+        return path
+    return display
+
+
+def _open_web_fallback(display):
+    """Open the https page for an app that is not installed."""
+    entry = APP_WEB_FALLBACK.get(display) or {}
+    url = entry.get("url") or ""
+    label = entry.get("label") or display
+    if not (isinstance(url, str) and url.startswith("https://") and " " not in url and '"' not in url):
+        return f"{display} isn't installed."
+    try:
+        _run(("open", "-a", "Google Chrome", url))
+    except Exception:
+        return "Google Chrome isn't installed, so I couldn't open that."
+    return f"Opening {label} on the web."
+
+
+def _open_resolved_app(display):
+    """Launch a located app, or a website, or say the app isn't installed.
+
+    `open -a` runs only after a bundle id, a known path, or the filename
+    index says the app is there.
+    """
+    path = locate_app(display)
+    if path:
+        try:
+            _run(("open", "-a", _launch_arg(display, path)))
+        except Exception:
+            return f"{display} isn't installed."
+        return {"app": str(display).replace("{", "").replace("}", "")}
+    if display in APP_WEB_FALLBACK:
+        return _open_web_fallback(display)
+    return f"{display} isn't installed."
 
 
 def _display_name(path):
@@ -271,7 +396,11 @@ def parse_app_name(text, kind=None):
     name = match.group(1).strip(" .,!?;:")
     name = re.sub(r"^(?:up|the|an|a)\s+", "", name, flags=re.I)
     name = re.sub(r"\s+(?:app|application|please|for me)$", "", name, flags=re.I).strip(" .,!?")
-    if not name or re.fullmatch(r"all|everything|every app|all apps|all of them", name, re.I):
+    # "open all apps" is the Apps launcher. "quit all apps" is quit-all, and
+    # is_quit_all still catches that before this name is used.
+    if kind != "open" and re.fullmatch(r"all apps", name, re.I):
+        return None
+    if not name or re.fullmatch(r"all|everything|every app|all of them", name, re.I):
         return None
     return name
 
@@ -379,7 +508,11 @@ def _spoken_target(text, kind, arg, favourites):
 
 
 def open_any_app(arg, text, favourites):
-    """Launch a spoken app with `open -a`. favourites is used only when the transcript has no name."""
+    """Launch a spoken app. favourites is used only when the transcript has no name.
+
+    The app has to be on disk before `open -a`. Spotify and CapCut open in
+    Chrome when they are missing. Anything else missing is a short spoken line.
+    """
     spoken = parse_app_name(text, "open")
     from_enum = False
     if not spoken and arg in favourites:
@@ -398,12 +531,7 @@ def open_any_app(arg, text, favourites):
             return UNCLEAR_APP
     if not display:
         return f"{spoken} isn't installed."
-    try:
-        _run(("open", "-a", display))
-    except Exception:
-        return f"{display} isn't installed."
-    # {app} in the scripted reply is filled in by the caller. Only APPS names are pre-rendered.
-    return {"app": display.replace("{", "").replace("}", "")}
+    return _open_resolved_app(display)
 
 
 def _one_app_name(name):
@@ -540,7 +668,7 @@ def speak_open_apps():
 
 
 def app_is_installed(display_name):
-    """True when a .app with this name is in the indexed app folders. No fuzzy match."""
+    """True when this app is on disk. Bundle id, known path, or filename. No fuzzy match."""
     if not display_name:
         return False
-    return _norm(display_name) in app_index()
+    return locate_app(display_name) is not None
