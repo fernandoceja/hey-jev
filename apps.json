@@ -4,7 +4,7 @@
   "chrome": "Google Chrome",
   "brave": "Brave Browser",
   "safari": "Safari",
-  "vscode": {"app": "Visual Studio Code", "say": "VS Code", "heard_as": ["this code", "vs code", "v s code", "visual studio code"]},
+  "vscode": {"app": "Cursor", "say": "Cursor", "heard_as": ["this code", "vs code", "v s code", "visual studio code"]},
   "finder": "Finder",
   "messages": "Messages",
   "notes": "Notes",

@@ -117,6 +117,11 @@ from .config import (
     BRIDGE_ALLOW,
     KNOWN_APPS,
     APP_NICKNAMES,
+    APP_NOT_APPS,
+    APP_BUNDLES,
+    APP_BUNDLE_EXCLUSIVE,
+    APP_PATHS,
+    APP_WEB_FALLBACK,
     SITE_CONFIG,
     FOLDER_PATHS,
     APP_DIRS,
@@ -212,6 +217,7 @@ from .apps import (
     quit_all_apps,
     speak_open_apps,
     app_is_installed,
+    locate_app,
 )
 
 from .time_date import (
