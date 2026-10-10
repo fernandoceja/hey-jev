@@ -142,10 +142,36 @@ DUE_HORIZON_DAYS = 7
 # "remind me to ..." writes an Apple Reminders item. Blank uses the default list.
 REMINDERS_LIST = ""
 
-# Upland, CA. Open-Meteo needs no key.
+# Upland, CA. Open-Meteo needs no key. Hazard distance starts here too.
 UPLAND_LAT = 34.0975
 UPLAND_LON = -117.6484
 WEATHER_TIMEOUT = 4
+# Fires within this many miles, earthquakes at or above the magnitude within
+# the quake radius, both from the last HAZARD_WINDOW_HOURS. Cache so a repeat
+# question does not fetch again. Alerts are off until a spoken toggle.
+HAZARD_FIRE_MILES = 25
+HAZARD_QUAKE_MILES = 50
+HAZARD_QUAKE_MIN_MAG = 3.5
+HAZARD_WINDOW_HOURS = 24
+HAZARD_CACHE_TTL_SECONDS = 15 * 60
+# How often the background thread wakes. The cache, not this interval, decides
+# whether USGS or FIRMS is contacted. While alerts are off the thread only
+# re-reads the toggle.
+HAZARD_POLL_SECONDS = 60
+HAZARD_TIMEOUT = 8
+HAZARD_ALERTS_ENABLED = False
+HAZARD_CACHE_PATH = os.path.expanduser(
+    "~/Library/Application Support/Hey Jev/hazard-cache.json"
+)
+HAZARD_ALERTS_PATH = os.path.expanduser(
+    "~/Library/Application Support/Hey Jev/hazard-alerts.json"
+)
+# Keychain account for the free NASA FIRMS MAP_KEY. The key is not stored here.
+FIRMS_MAP_KEY_ACCOUNT = "FIRMS_MAP_KEY"
+USGS_DAY_FEED = "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/2.5_day.geojson"
+FIRMS_SOURCE = "VIIRS_NOAA20_NRT"
+# {key} is filled from the Keychain when a request is made. It is not a key.
+FIRMS_AREA_URL = "https://firms.modaps.eosdis.nasa.gov/api/area/json/{key}/{source}/{area}/1"
 
 FOCUS_ON_NAME = "Jev Focus On"
 FOCUS_OFF_NAME = "Jev Focus Off"
@@ -353,6 +379,11 @@ JOINER_RE = re.compile(r"\b(?:and|then)\b", re.I)
 # Whole-utterance commands. Checked before the looser patterns below.
 _PLEASE = r"(?:please\s+)?"
 _TAIL = r"(?:\s+please)?[.!?]*$"
+# Hazard phrases. Whole utterance, so "any fires in the news" stays with the LLM.
+_HAZARD_NEAR = r"(?:near\s+me|around\s+me|nearby|around\s+here|close\s+by)"
+_HAZARD_FIRE = r"(?:wild\s*fires?|fires?)"
+_HAZARD_QUAKE = r"(?:earthquakes?|quakes?)"
+_HAZARD_WORD = r"hazards?"
 # "ETA", Whisper's "eta", and "E.T.A." / "E. T. A.". A dot is required when the
 # letters are split, so "eat" does not match.
 _ETA = r"(?<![A-Za-z])e(?:\.\s*)?t(?:\.\s*)?a\.?(?![A-Za-z])"
@@ -393,6 +424,42 @@ STRICT_PATTERNS = (
         rf"^{_PLEASE}play\s+(?:my|the|today'?s)\s+(?:morning\s+)?brief{_TAIL}",
         re.I), "brief_play"),
     (re.compile(rf"^{_PLEASE}(?:what(?:'s| is) the weather(?:\s+like)?|how(?:'s| is) the weather|weather){_TAIL}", re.I), "info_weather"),
+    # Hazard watch. Mac-only. These keys are not in BRIDGE_ALLOW.
+    # "any fires near me", "any earthquakes near me", "hazard check".
+    (re.compile(
+        rf"^{_PLEASE}(?:hey\s+jev\b\s*,?\s+)?{_PLEASE}(?:"
+        rf"(?:are\s+there\s+)?(?:any\s+)?{_HAZARD_FIRE}\s+{_HAZARD_NEAR}"
+        rf"|check\s+for\s+{_HAZARD_FIRE}"
+        rf"|{_HAZARD_FIRE}\s+check"
+        rf"){_TAIL}",
+        re.I), "info_hazards_fires"),
+    (re.compile(
+        rf"^{_PLEASE}(?:hey\s+jev\b\s*,?\s+)?{_PLEASE}(?:"
+        rf"(?:are\s+there\s+)?(?:any\s+)?{_HAZARD_QUAKE}\s+{_HAZARD_NEAR}"
+        rf"|check\s+for\s+{_HAZARD_QUAKE}"
+        rf"|{_HAZARD_QUAKE}\s+check"
+        rf"){_TAIL}",
+        re.I), "info_hazards_quakes"),
+    (re.compile(
+        rf"^{_PLEASE}(?:hey\s+jev\b\s*,?\s+)?{_PLEASE}(?:"
+        rf"hazard\s+check"
+        rf"|hazard\s+watch"
+        rf"|check\s+(?:for\s+)?{_HAZARD_WORD}"
+        rf"|(?:are\s+there\s+)?(?:any\s+)?{_HAZARD_WORD}\s+{_HAZARD_NEAR}"
+        rf"){_TAIL}",
+        re.I), "info_hazards"),
+    (re.compile(
+        rf"^{_PLEASE}(?:hey\s+jev\b\s*,?\s+)?{_PLEASE}(?:"
+        rf"(?:turn\s+on|enable)\s+hazard\s+alerts"
+        rf"|hazard\s+alerts\s+on"
+        rf"){_TAIL}",
+        re.I), "hazard_alerts_on"),
+    (re.compile(
+        rf"^{_PLEASE}(?:hey\s+jev\b\s*,?\s+)?{_PLEASE}(?:"
+        rf"(?:turn\s+off|disable)\s+hazard\s+alerts"
+        rf"|hazard\s+alerts\s+off"
+        rf"){_TAIL}",
+        re.I), "hazard_alerts_off"),
     (re.compile(rf"^{_PLEASE}what(?:'s| is| does| has)\s+zoe\b.*\btomorrow\b{_TAIL}", re.I), "info_zoe"),
     (re.compile(rf"^{_PLEASE}open\s+(?:zoe'?s\s+)?princess\s+academy{_TAIL}", re.I), "zoe_academy"),
     (re.compile(rf"^{_PLEASE}(?:start|set)\s+(?:a\s+|an\s+)?(?:[\w.]+\s+)*timer\s+for\s+zoe\b.*{_TAIL}", re.I), "zoe_timer"),
@@ -746,6 +813,7 @@ HELP_TEXT = (
     "I can convert, trim, or compress a recording, and extract its audio, on this Mac. "
     "I can open the captures folder, and I can look at a screenshot when you ask. "
     "I can open your Videos folder. "
+    "I can check for nearby fires and earthquakes, and turn hazard alerts on or off. "
     "I can open ChatGPT, Claude, Gemini, Siri, or Google with a capture or your last question. "
     "I can read your clipboard history, copy or paste an item, and clear it. That stays on this Mac. "
     "I can open Passwords and search for a site. I never read or say the password. "

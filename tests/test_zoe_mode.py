@@ -119,6 +119,11 @@ BLOCKED_PHRASES = (
     ("passwords", "show my logins for Hulu", "password_lookup"),
     ("dictation", "use scribe for dictation", "dictation_scribe"),
     ("dictation", "use openai for dictation", "dictation_openai"),
+    ("hazards", "any fires near me", "info_hazards_fires"),
+    ("hazards", "any earthquakes near me", "info_hazards_quakes"),
+    ("hazards", "hazard check", "info_hazards"),
+    ("hazards", "turn on hazard alerts", "hazard_alerts_on"),
+    ("hazards", "turn off hazard alerts", "hazard_alerts_off"),
 )
 
 
