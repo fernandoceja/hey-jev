@@ -22,6 +22,8 @@ setup(
             "NSCalendarsUsageDescription": "Hey Jev reads your calendar to answer what's next, today's events, your next shift, the morning brief, Zoe's day, and when to leave for a shift.",
             "NSRemindersFullAccessUsageDescription": "Hey Jev adds an Apple Reminder when you say remind me to, including a due time such as tomorrow at 9.",
             "NSRemindersUsageDescription": "Hey Jev adds an Apple Reminder when you say remind me to, including a due time such as tomorrow at 9.",
+            "NSLocationUsageDescription": "Hey Jev uses this Mac's location to say how long it takes to get home.",
+            "NSLocationWhenInUseUsageDescription": "Hey Jev uses this Mac's location to say how long it takes to get home.",
         },
     }},
     setup_requires=["py2app"],

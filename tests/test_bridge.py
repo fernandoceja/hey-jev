@@ -526,6 +526,52 @@ class TestBridgeValidation(unittest.TestCase):
             self.assertFalse(reply["ok"], phrase)
             self.assertIn("can't do that from your phone", reply["reply"])
 
+    def test_eta_home_and_bare_eta_are_refused(self):
+        """Home, short work phrases, and bare ETA stay on the Mac."""
+        phrases = (
+            ("ETA home", "etahome01", "info_eta_home"),
+            ("ETA to home", "etahome02", "info_eta_home"),
+            ("what's my ETA home", "etahome03", "info_eta_home"),
+            ("what's my ETA to home", "etahome04", "info_eta_home"),
+            ("how long to get home", "etahome05", "info_eta_home"),
+            ("E.T.A. home", "etahome06", "info_eta_home"),
+            ("E.T.A. to home", "etahome07", "info_eta_home"),
+            ("home ETA", "etahome08", "info_eta_home"),
+            ("how long will it take me to get home", "etahome09", "info_eta_home"),
+            ("please ETA home", "etahome10", "info_eta_home"),
+            ("hey jev, ETA to home", "etahome11", "info_eta_home"),
+            ("ETA work", "etawork12", "info_eta_work"),
+            ("work ETA", "etawork13", "info_eta_work"),
+            ("E.T.A. to work", "etawork14", "info_eta_work"),
+            ("ETA", "etawhich1", "info_eta_which"),
+            ("what's my ETA", "etawhich2", "info_eta_which"),
+            ("my ETA", "etawhich3", "info_eta_which"),
+            ("E.T.A.", "etawhich4", "info_eta_which"),
+            ("hey jev, ETA", "etawhich5", "info_eta_which"),
+            ("please what's my ETA", "etawhich6", "info_eta_which"),
+        )
+        root = os.path.dirname(os.path.dirname(__file__))
+        bridge_source = open(os.path.join(root, "commands", "bridge.py"), encoding="utf-8").read()
+        secrets_source = open(os.path.join(root, "secrets_store.py"), encoding="utf-8").read()
+        self.assertEqual(len(commands.BRIDGE_ALLOW), 30)
+        self.assertIsInstance(commands.BRIDGE_ALLOW, frozenset)
+        for key in ("info_eta_work", "info_eta_home", "info_eta_which"):
+            self.assertNotIn(key, commands.BRIDGE_ALLOW, key)
+            self.assertNotIn(key, bridge_source, key)
+        self.assertNotIn("home-address", secrets_source)
+        self.assertNotIn("info_eta_home", secrets_source)
+        self.assertIn("info_leave", commands.BRIDGE_ALLOW)
+        for phrase, nonce, key in phrases:
+            self.assertEqual(commands.route_before_api(phrase), key, phrase)
+            self.assertIsNone(commands.bridge_allowed(phrase), phrase)
+            self.assertNotIn(key, commands.BRIDGE_ALLOW, phrase)
+            calls, path = self._process(phrase, nonce, name=nonce + ".json")
+            self.assertEqual(calls, [], phrase)
+            self.assertFalse(os.path.exists(path), phrase)
+            reply = self._reply(nonce)
+            self.assertFalse(reply["ok"], phrase)
+            self.assertIn("can't do that from your phone", reply["reply"].lower())
+
     def test_dictation_engine_is_refused(self):
         """Switching the dictation engine is Mac-only. A signed file does not run it."""
         phrases = (

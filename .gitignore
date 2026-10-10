@@ -8,6 +8,8 @@ cache/
 *.docx
 *.log
 .DS_Store
+# Local ETA home address. One line. Never commit a street.
+home-address.txt
 build/
 dist/
 .eggs/

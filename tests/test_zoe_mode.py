@@ -58,6 +58,9 @@ ALLOWED = (
     ("which voice are you using", "voice_which"),
     ("open videos", "videos_open"),
     ("show my videos", "videos_open"),
+    ("what's my ETA to work", "info_eta_work"),
+    ("ETA home", "info_eta_home"),
+    ("ETA", "info_eta_which"),
 )
 # One spoken line for each blocked category, plus the action key it already routes to.
 BLOCKED_PHRASES = (
@@ -96,7 +99,6 @@ BLOCKED_PHRASES = (
     ("leave", "turn on leave reminders", "leave_reminders_on"),
     ("leave", "turn off leave reminders", "leave_reminders_off"),
     ("leave", "when should I leave for work", "info_leave"),
-    ("leave", "what's my ETA to work", "info_eta_work"),
     ("brief", "play my brief", "brief_play"),
     ("brief", "stop", "brief_stop"),
     ("brief", "brief me", "info_brief"),
@@ -235,6 +237,7 @@ class TestZoeMode(unittest.TestCase):
             "zoe_academy", "media_play", "media_pause", "info_zoe",
             "voice_dramatic", "voice_normal", "voice_which",
             "videos_open",
+            "info_eta_work", "info_eta_home", "info_eta_which",
         })
         joke = commands.zoe_guard("tell me a joke")
         self.assertEqual(joke["kind"], "speak")

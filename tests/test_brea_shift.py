@@ -398,6 +398,19 @@ class TestLeaveTime(unittest.TestCase):
         self.assertIn("estimate", spoken)
         self.assertIn("8:40 AM", spoken)
 
+    def test_a_coordinate_origin_is_not_geocoded(self):
+        now = _at(2026, 10, 5, 12, 15)
+        _Geocoder.addresses = []
+        here = (33.916, -117.9)
+        with mock.patch.dict("sys.modules", _frameworks()):
+            seconds = travel_mod.expected_travel_seconds(
+                here, commands.BREA_STORE_ADDRESS, now, depart=True)
+        self.assertEqual(seconds, 1800.0)
+        self.assertEqual(_Geocoder.addresses, [commands.BREA_STORE_ADDRESS])
+        self.assertNotIn("33.916", _Geocoder.addresses)
+        self.assertEqual(_Directions.last_request.source.placemark.coord, here)
+        self.assertEqual(_Directions.last_request.departure, now.timestamp())
+
     def test_depart_now_sets_the_departure_date(self):
         now = _at(2026, 10, 5, 12, 15)
         with mock.patch.dict("sys.modules", _frameworks()):

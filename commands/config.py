@@ -29,6 +29,11 @@ SHIFT_OVERRIDE_PATH = os.path.expanduser(
 # "When should I leave for work" drives from home to the Brea store.
 # Apple's retail page lists the store as 1016C. 1065 is the mall building.
 HOME_ADDRESS = "Upland, CA"
+# One line, read locally. Not in this public repo. ETA says "home", never the line.
+HOME_ADDRESS_PATH = os.path.expanduser(
+    "~/Library/Application Support/Hey Jev/home-address.txt"
+)
+HOME_EXACT_HINT = "Set your home address to get an exact ETA."
 BREA_STORE_ADDRESS = "Apple Brea Mall, 1016C Brea Mall, Brea, CA 92821"
 LEAVE_BUFFER_MINUTES = 15
 # Used only when MapKit can't return a drive time. The reply says it is an estimate.
@@ -348,6 +353,9 @@ JOINER_RE = re.compile(r"\b(?:and|then)\b", re.I)
 # Whole-utterance commands. Checked before the looser patterns below.
 _PLEASE = r"(?:please\s+)?"
 _TAIL = r"(?:\s+please)?[.!?]*$"
+# "ETA", Whisper's "eta", and "E.T.A." / "E. T. A.". A dot is required when the
+# letters are split, so "eat" does not match.
+_ETA = r"(?<![A-Za-z])e(?:\.\s*)?t(?:\.\s*)?a\.?(?![A-Za-z])"
 # "the last recording", "this video", "the recording".
 _VIDEO_WHEN = r"(?:(?:the|this)\s+)?(?:last\s+)?(?:recording|video)"
 # 0:05, 1:02:03, 1:02:03.5, or whole seconds.
@@ -430,16 +438,32 @@ STRICT_PATTERNS = (
         rf"|^{_PLEASE}when\s+do\s+i\s+(?:need\s+to\s+)?leave\s+for\s+(?:work|brea){_TAIL}",
         re.I), "info_leave"),
     # Mac-only. Not in BRIDGE_ALLOW. "when should I leave" stays info_leave.
+    # Zoe mode may answer these. Bare "ETA" asks which one, below, so it is
+    # not an app launch. "open home" is still the Home app.
     (re.compile(
         rf"^{_PLEASE}(?:hey\s+jev\b\s*,?\s+)?{_PLEASE}(?:"
-        r"what(?:'s| is)\s+my\s+eta\s+to\s+work"
-        r"|(?:my\s+)?eta\s+to\s+work"
-        r"|how\s+long\s+to\s+get\s+to\s+work"
-        r"|how\s+long\s+will\s+it\s+take(?:\s+me)?\s+to\s+get\s+to\s+work"
-        r"|how\s+long\s+is\s+my\s+drive\s+to\s+work"
-        r"|how\s+far\s+am\s+i\s+from\s+work"
+        rf"what(?:'s| is)\s+my\s+(?:{_ETA}\s+to\s+work\b|{_ETA}\s+work\b|work\s+{_ETA})"
+        rf"|(?:my\s+)?(?:{_ETA}\s+to\s+work\b|{_ETA}\s+work\b|work\s+{_ETA})"
+        r"|how\s+long\s+to\s+get\s+to\s+work\b"
+        r"|how\s+long\s+will\s+it\s+take(?:\s+me)?\s+to\s+get\s+to\s+work\b"
+        r"|how\s+long\s+is\s+my\s+drive\s+to\s+work\b"
+        r"|how\s+far\s+am\s+i\s+from\s+work\b"
         rf"){_TAIL}",
         re.I), "info_eta_work"),
+    (re.compile(
+        rf"^{_PLEASE}(?:hey\s+jev\b\s*,?\s+)?{_PLEASE}(?:"
+        rf"what(?:'s| is)\s+my\s+(?:{_ETA}(?:\s+to)?\s+home\b|home\s+{_ETA})"
+        rf"|(?:my\s+)?(?:{_ETA}(?:\s+to)?\s+home\b|home\s+{_ETA})"
+        r"|how\s+long\s+to\s+get\s+home\b"
+        r"|how\s+long\s+will\s+it\s+take(?:\s+me)?\s+to\s+get\s+home\b"
+        r"|how\s+long\s+is\s+my\s+drive(?:\s+to)?\s+home\b"
+        r"|how\s+far\s+am\s+i\s+from\s+home\b"
+        rf"){_TAIL}",
+        re.I), "info_eta_home"),
+    (re.compile(
+        rf"^{_PLEASE}(?:hey\s+jev\b\s*,?\s+)?{_PLEASE}"
+        rf"(?:what(?:'s| is)\s+my\s+|my\s+)?{_ETA}{_TAIL}",
+        re.I), "info_eta_which"),
     (re.compile(
         rf"^{_PLEASE}(?:turn\s+on|enable)\s+leave\s+reminders{_TAIL}"
         rf"|^{_PLEASE}leave\s+reminders\s+on{_TAIL}",
@@ -713,7 +737,7 @@ HELP_TEXT = (
     "I can play Apple Music or a YouTube search. I can read your calendar, shifts, school, "
     "and bills, log IHSS hours, remind you on payday, and add an Apple Reminder when you say remind me to. "
     "I can save a shift for one day, "
-    "and say when to leave for Brea, and how long the drive is right now. "
+    "and say when to leave for Brea, how long the drive to work is, and how long it takes to get home. "
     "I can nudge you when it's time to leave, "
     "and you can turn leave reminders on or off. I can run shortcuts that are in the Jev folder. "
     "I can also help with Zoe. Say Zoe mode for a kid-safe mode. Leaving it takes a second step. "
