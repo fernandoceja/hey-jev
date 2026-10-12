@@ -120,6 +120,18 @@ JEV_DOCS = os.path.expanduser("~/Documents/Jev")
 # turns a leading ~ into the home directory without a shell. The folder is
 # not created when it is missing.
 VIDEOS_FOLDER = os.path.expanduser("/Users/fernandoceja/Documents/Fernando Ceja/Videos")
+# God's Eye, a local Vite app. Mac-only. Not on the iPhone bridge.
+# JEV_GODS_EYE_DIR overrides the folder. The dev server is expected at
+# GODS_EYE_URL. Jev connects as a client to see if the port is open.
+# It does not listen. A missing folder is not created.
+GODS_EYE_DIR = os.path.expanduser("~/Developer/gods-eye")
+GODS_EYE_HOST = "127.0.0.1"
+GODS_EYE_PORT = 5827
+GODS_EYE_URL = "http://{0}:{1}".format(GODS_EYE_HOST, GODS_EYE_PORT)
+GODS_EYE_WAIT_SECONDS = 15
+GODS_EYE_POLL_SECONDS = 0.25
+GODS_EYE_CONNECT_TIMEOUT = 0.4
+GODS_EYE_LOG_NAME = ".dev.log"
 # Screenshots and screen recordings. Set JEV_CAPTURES_DIR to use another folder.
 CAPTURES_DIR = os.path.expanduser("~/Pictures/Jev Captures")
 # Recent plain-text copies. In memory unless something calls save_clipboard.
@@ -596,6 +608,12 @@ STRICT_PATTERNS = (
         rf"|hazard\s+alerts\s+off"
         rf"){_TAIL}",
         re.I), "hazard_alerts_off"),
+    # God's Eye. Mac-only. Not in BRIDGE_ALLOW. A local Vite app.
+    # "open god's eye", "god's eye", and "gods eye". Zoe mode refuses it.
+    (re.compile(
+        rf"^{_PLEASE}(?:hey\s+jev\b\s*,?\s+)?{_PLEASE}"
+        rf"(?:open\s+)?(?:the\s+)?god(?:'s|s)\s+eye{_TAIL}",
+        re.I), "gods_eye_open"),
     (re.compile(rf"^{_PLEASE}what(?:'s| is| does| has)\s+zoe\b.*\btomorrow\b{_TAIL}", re.I), "info_zoe"),
     (re.compile(rf"^{_PLEASE}open\s+(?:zoe'?s\s+)?princess\s+academy{_TAIL}", re.I), "zoe_academy"),
     (re.compile(rf"^{_PLEASE}(?:start|set)\s+(?:a\s+|an\s+)?(?:[\w.]+\s+)*timer\s+for\s+zoe\b.*{_TAIL}", re.I), "zoe_timer"),
@@ -949,6 +967,7 @@ HELP_TEXT = (
     "I can convert, trim, or compress a recording, and extract its audio, on this Mac. "
     "I can open the captures folder, and I can look at a screenshot when you ask. "
     "I can open your Videos folder. "
+    "I can open God's Eye on this Mac. "
     "I can check for nearby fires and earthquakes, and turn hazard alerts on or off. "
     "I can open ChatGPT, Claude, Gemini, Siri, or Google with a capture or your last question. "
     "I can read your clipboard history, copy or paste an item, and clear it. That stays on this Mac. "

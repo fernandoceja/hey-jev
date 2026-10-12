@@ -469,6 +469,7 @@ _MENU_ROUTES = {
     "leave_reminders_off": "leave_reminders_off",
     "payday": "info_payday_check",
     "hazard": "info_hazards",
+    "gods_eye": "gods_eye_open",
     "hazard_alerts": "hazard_alerts_on",
     "blue_pill": "matrix_on",
     "red_pill": "matrix_off",
@@ -569,7 +570,8 @@ class TestGlass(unittest.TestCase):
                 if key in ("matrix_on", "matrix_off", "notify_off", "volume_set", "volume_mute", "brightness_set",
                            "clipboard_history", "clipboard_clear", "clipboard_pause",
                            "brief_play", "leave_reminders_on", "leave_reminders_off",
-                           "info_hazards", "hazard_alerts_on", "hazard_alerts_off"):
+                           "info_hazards", "hazard_alerts_on", "hazard_alerts_off",
+                           "gods_eye_open"):
                     self.assertNotIn(key, commands.BRIDGE_ALLOW)
                 routed[item["id"]] = key
             else:
@@ -605,8 +607,9 @@ class TestGlass(unittest.TestCase):
         self.assertEqual(off_ids.count("hazard_alerts"), 1)
         payday = off_ids.index("payday")
         self.assertEqual(off_ids[payday + 1], "hazard")
-        self.assertEqual(off_ids[payday + 2], "hazard_alerts")
-        self.assertEqual(off_rows[payday + 3]["kind"], "separator")
+        self.assertEqual(off_ids[payday + 2], "gods_eye")
+        self.assertEqual(off_ids[payday + 3], "hazard_alerts")
+        self.assertEqual(off_rows[payday + 4]["kind"], "separator")
         self.assertEqual(off_rows[off_ids.index("blue_pill")]["title"], "Blue Pill")
 
         check = plus_item("hazard")
