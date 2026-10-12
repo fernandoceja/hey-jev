@@ -468,6 +468,8 @@ _MENU_ROUTES = {
     "leave_reminders_on": "leave_reminders_on",
     "leave_reminders_off": "leave_reminders_off",
     "payday": "info_payday_check",
+    "hazard": "info_hazards",
+    "hazard_alerts": "hazard_alerts_on",
     "blue_pill": "matrix_on",
     "red_pill": "matrix_off",
     "silence": "notify_off",
@@ -566,7 +568,8 @@ class TestGlass(unittest.TestCase):
                 self.assertNotEqual(key, "info_messages")
                 if key in ("matrix_on", "matrix_off", "notify_off", "volume_set", "volume_mute", "brightness_set",
                            "clipboard_history", "clipboard_clear", "clipboard_pause",
-                           "brief_play", "leave_reminders_on", "leave_reminders_off"):
+                           "brief_play", "leave_reminders_on", "leave_reminders_off",
+                           "info_hazards", "hazard_alerts_on", "hazard_alerts_off"):
                     self.assertNotIn(key, commands.BRIDGE_ALLOW)
                 routed[item["id"]] = key
             else:
@@ -584,6 +587,75 @@ class TestGlass(unittest.TestCase):
         self.assertIn("record_stop", recording)
         self.assertNotIn("record_start", recording)
         self.assertIsNone(plus_item("screenshot"))
+
+    def test_hazard_check_and_the_alert_toggle_type_the_voice_phrases(self):
+        """Quick Commands runs the same hazard path as saying the phrase."""
+        def quick_rows(menu):
+            for item in menu:
+                if item.get("id") == "quick":
+                    return list(item["items"])
+            self.fail("Quick Commands is missing")
+
+        off_rows = quick_rows(plus_menu())
+        on_rows = quick_rows(plus_menu(hazard_alerts=True))
+        off_ids = [row.get("id") for row in off_rows]
+        on_ids = [row.get("id") for row in on_rows]
+        self.assertEqual(off_ids, on_ids)
+        self.assertEqual(off_ids.count("hazard"), 1)
+        self.assertEqual(off_ids.count("hazard_alerts"), 1)
+        payday = off_ids.index("payday")
+        self.assertEqual(off_ids[payday + 1], "hazard")
+        self.assertEqual(off_ids[payday + 2], "hazard_alerts")
+        self.assertEqual(off_rows[payday + 3]["kind"], "separator")
+        self.assertEqual(off_rows[off_ids.index("blue_pill")]["title"], "Blue Pill")
+
+        check = plus_item("hazard")
+        self.assertEqual(check["kind"], "text")
+        self.assertEqual(check["title"], "Hazard Check")
+        self.assertEqual(check["phrase"], "hazard check")
+        self.assertEqual(plus_item("hazard", plus_menu(hazard_alerts=True))["phrase"], "hazard check")
+        self.assertFalse(check.get("checked"))
+
+        alerts_off = plus_item("hazard_alerts")
+        alerts_on = plus_item("hazard_alerts", plus_menu(hazard_alerts=True))
+        self.assertEqual(alerts_off["title"], "Turn On Hazard Alerts")
+        self.assertEqual(alerts_off["phrase"], "turn on hazard alerts")
+        self.assertEqual(alerts_off["kind"], "text")
+        self.assertFalse(alerts_off.get("checked"))
+        self.assertEqual(alerts_on["title"], "Turn Off Hazard Alerts")
+        self.assertEqual(alerts_on["phrase"], "turn off hazard alerts")
+        self.assertTrue(alerts_on["checked"])
+
+        phrases = {
+            "hazard check": "info_hazards",
+            "turn on hazard alerts": "hazard_alerts_on",
+            "turn off hazard alerts": "hazard_alerts_off",
+        }
+        for phrase, key in phrases.items():
+            plan = submission(phrase)
+            self.assertEqual(plan["kind"], "run", phrase)
+            self.assertEqual(plan["control"], ("text", phrase), phrase)
+            self.assertFalse(plan["reveal_main"], phrase)
+            self.assertEqual(commands.route_before_api(phrase), key, phrase)
+            self.assertNotIn(key, commands.BRIDGE_ALLOW, phrase)
+        self.assertEqual(commands.route_before_api(check["phrase"]), "info_hazards")
+        self.assertEqual(commands.route_before_api(alerts_off["phrase"]), "hazard_alerts_on")
+        self.assertEqual(commands.route_before_api(alerts_on["phrase"]), "hazard_alerts_off")
+
+        ui = open(os.path.join(ROOT, "assistant_ui.py"), encoding="utf-8").read()
+        build = _func(ui, "miniPlus_")
+        self.assertIn("hazard_alerts_enabled()", build)
+        self.assertIn("hazard_alerts=hazard_on", build)
+        click = _func(ui, "miniPlusItem_")
+        self.assertIn('item_id == "hazard_alerts"', click)
+        self.assertIn("plus_menu(hazard_alerts=self._hazard_alerts_on())", click)
+        self.assertIn("_queue_bar_phrase", click)
+        self.assertIn('("text", phrase)', _func(ui, "_queue_bar_phrase"))
+        self.assertIn("hazard_alerts_enabled()", _func(ui, "_hazard_alerts_on"))
+        self.assertIn('spec.get("checked")', _func(ui, "_fill_plus_menu"))
+        readme = open(os.path.join(ROOT, "README.md"), encoding="utf-8").read()
+        self.assertIn("Hazard Check", readme)
+        self.assertIn("Turn On Hazard Alerts or Turn Off Hazard Alerts", readme)
 
     def test_the_pill_source_uses_glass_or_the_hud_fallback(self):
         ui = open(os.path.join(ROOT, "assistant_ui.py"), encoding="utf-8").read()

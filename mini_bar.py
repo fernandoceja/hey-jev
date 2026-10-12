@@ -463,6 +463,30 @@ def _menu_action(item_id, title, kind, symbol, key=""):
     return {"id": item_id, "title": title, "kind": kind, "phrase": "", "symbol": symbol, "key": key}
 
 
+def _hazard_alerts_item(enabled):
+    """One Quick Commands row for the hazard-alert toggle.
+
+    A click types "turn on hazard alerts" or "turn off hazard alerts".
+    The check mark is the saved state, on while alerts are on. Off is the
+    default, the same as the voice command.
+    """
+    if enabled:
+        item = _menu_text(
+            "hazard_alerts",
+            "Turn Off Hazard Alerts",
+            "turn off hazard alerts",
+            "bell.slash",
+        )
+        item["checked"] = True
+        return item
+    return _menu_text(
+        "hazard_alerts",
+        "Turn On Hazard Alerts",
+        "turn on hazard alerts",
+        "bell.badge",
+    )
+
+
 def capture_saved(sentence):
     """True for a new screenshot or recording, not for a later Notes save."""
     text = " ".join(str(sentence or "").split())
@@ -782,7 +806,8 @@ def clipboard_menu(entries=None, paused=False):
     }
 
 
-def plus_menu(can_attach=None, recording=False, clipboard_entries=None, clipboard_paused=False, zoe_mode=False):
+def plus_menu(can_attach=None, recording=False, clipboard_entries=None,
+              clipboard_paused=False, zoe_mode=False, hazard_alerts=False):
     """Items for the + button. Only commands the app already runs.
 
     `can_attach` defaults to attachments_supported(). Attach File is included
@@ -790,6 +815,9 @@ def plus_menu(can_attach=None, recording=False, clipboard_entries=None, clipboar
     No item sends money or reads My Love. Mail and Messages stay unsent.
     Zoe Mode is checked while kid-safe mode is on. Turning it off is a
     separate confirmation in the window, not a phrase this menu types.
+    Hazard Check types "hazard check", the same phrase as the voice command.
+    The alert row is Turn On Hazard Alerts until `hazard_alerts` is true,
+    then Turn Off Hazard Alerts, and it is checked while alerts are on.
     """
     if can_attach is None:
         can_attach = attachments_supported()
@@ -810,6 +838,8 @@ def plus_menu(can_attach=None, recording=False, clipboard_entries=None, clipboar
         _menu_text("leave_reminders_on", "Turn On Leave Reminders", "turn on leave reminders", "bell.badge"),
         _menu_text("leave_reminders_off", "Turn Off Leave Reminders", "turn off leave reminders", "bell.slash"),
         _menu_text("payday", "Payday Check", "payday check", "bell"),
+        _menu_text("hazard", "Hazard Check", "hazard check", "exclamationmark.triangle"),
+        _hazard_alerts_item(bool(hazard_alerts)),
         {"kind": "separator"},
         _menu_text("blue_pill", "Blue Pill", "blue pill", "play.rectangle"),
         _menu_text("red_pill", "Red Pill", "red pill", "stop.rectangle"),
