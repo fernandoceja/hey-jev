@@ -5,7 +5,9 @@ decide() in siri.py calls route_before_api() before any TypeSafe or LLM call.
 
 Nothing in this module listens on a socket. Hazard checks are outbound HTTPS
 to USGS and, when a Keychain map key is set, NASA FIRMS. Those commands are
-not on the bridge allowlist. The iPhone bridge only polls an
+not on the bridge allowlist. Opening God's Eye connects as a client to
+127.0.0.1 and does not listen. That command is not on the bridge allowlist.
+The iPhone bridge only polls an
 iCloud Drive folder. Password lookup only opens the Passwords app and writes
 a site name into its search field. It is not on the bridge allowlist.
 The morning brief memo is a local file played with afplay
@@ -95,6 +97,14 @@ from .config import (
     HAZARD_ALERTS_ENABLED,
     HAZARD_CACHE_PATH,
     HAZARD_ALERTS_PATH,
+    GODS_EYE_DIR,
+    GODS_EYE_HOST,
+    GODS_EYE_PORT,
+    GODS_EYE_URL,
+    GODS_EYE_WAIT_SECONDS,
+    GODS_EYE_POLL_SECONDS,
+    GODS_EYE_CONNECT_TIMEOUT,
+    GODS_EYE_LOG_NAME,
     FIRMS_MAP_KEY_ACCOUNT,
     USGS_DAY_FEED,
     FIRMS_SOURCE,
@@ -635,6 +645,19 @@ from .dictation_engine import (
     dictation_engine,
     set_dictation_engine,
     set_dictation_engine_path,
+)
+
+from .gods_eye import (
+    GODS_EYE_FAILED,
+    GODS_EYE_MISSING,
+    GODS_EYE_NOT_MAC,
+    OPENING_GODS_EYE,
+    dev_command,
+    find_npm,
+    gods_eye_dir,
+    gods_eye_url,
+    open_gods_eye,
+    port_is_open,
 )
 
 from .brief_memo import (

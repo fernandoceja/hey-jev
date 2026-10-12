@@ -93,6 +93,7 @@ BLOCKED_PHRASES = (
     ("system", "empty the trash", "empty_trash"),
     ("system", "silence notifications", "notify_off"),
     ("system", "turn on voiceover", "voiceover_on"),
+    ("system", "open god's eye", "gods_eye_open"),
     ("llm", "why is the sky blue", None),
     ("reminders", "remind me to buy milk", "remind_add"),
     ("reminders", "remind me to submit my timesheet", "ihss_remind"),

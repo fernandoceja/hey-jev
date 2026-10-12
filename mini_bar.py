@@ -825,6 +825,7 @@ def plus_menu(can_attach=None, recording=False, clipboard_entries=None,
     Zoe Mode is checked while kid-safe mode is on. Turning it off is a
     separate confirmation in the window, not a phrase this menu types.
     Hazard Check types "hazard check", the same phrase as the voice command.
+    Open God's Eye types "open god's eye", the same phrase as the voice command.
     The alert row is Turn On Hazard Alerts until `hazard_alerts` is true,
     then Turn Off Hazard Alerts, and it is checked while alerts are on.
     """
@@ -848,6 +849,7 @@ def plus_menu(can_attach=None, recording=False, clipboard_entries=None,
         _menu_text("leave_reminders_off", "Turn Off Leave Reminders", "turn off leave reminders", "bell.slash"),
         _menu_text("payday", "Payday Check", "payday check", "bell"),
         _menu_text("hazard", "Hazard Check", "hazard check", "exclamationmark.triangle"),
+        _menu_text("gods_eye", "Open God's Eye", "open god's eye", "eye"),
         _hazard_alerts_item(bool(hazard_alerts)),
         {"kind": "separator"},
         _menu_text("blue_pill", "Blue Pill", "blue pill", "play.rectangle"),
