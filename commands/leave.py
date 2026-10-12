@@ -257,9 +257,11 @@ def speak_eta_home(now=None, home_path=None, origin=None, locate=True):
     """How long the drive home is if you leave now.
 
     The start is this Mac's location when `locate` finds one. Otherwise it is
-    the Brea store, and the reply says so. The end is home-address.txt, or
-    HOME_ADDRESS when that file is missing. The street is not spoken.
-    `origin` skips the location lookup. Tests pass a coordinate or None.
+    the Brea store, and the reply says so. The lookup waits a few seconds on
+    a side thread, so a location permission panel cannot hold the command
+    turn. The end is home-address.txt, or HOME_ADDRESS when that file is
+    missing. The street is not spoken. `origin` skips the location lookup.
+    Tests pass a coordinate or None.
     """
     now = now or datetime.now().astimezone()
     home, exact = read_home_address(home_path)
