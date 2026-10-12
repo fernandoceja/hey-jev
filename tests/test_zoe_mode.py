@@ -373,7 +373,7 @@ class TestZoeMode(unittest.TestCase):
         self.assertIn("Turn Off Zoe Mode", ui)
         self.assertIn("zoe_label", ui)
         self.assertIn(
-            "plus_menu(recording=recording, zoe_mode=zoe_on, clipboard_entries=entries, clipboard_paused=paused)",
+            "plus_menu(recording=recording, zoe_mode=zoe_on, clipboard_entries=entries, clipboard_paused=paused, hazard_alerts=hazard_on)",
             ui,
         )
         siri = open(os.path.join(ROOT, "siri.py"), encoding="utf-8").read()

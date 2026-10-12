@@ -2092,24 +2092,36 @@ class AppDelegate(NSObject):
         self._listen_dim = not getattr(self, "_listen_dim", False)
         mic.setAlphaValue_(0.55 if self._listen_dim else 1.0)
 
+    @objc.python_method
+    def _hazard_alerts_on(self):
+        """Saved hazard-alert choice. Off when that file cannot be read."""
+        try:
+            import commands
+            return bool(commands.hazard_alerts_enabled())
+        except Exception:
+            return False
+
     def miniPlus_(self, sender):
         menu = NSMenu.alloc().initWithTitle_("Message Jev")
         recording = False
         entries = ()
         paused = False
         zoe_on = False
+        hazard_on = False
         try:
             import commands
             recording = bool(commands.is_recording())
             entries = commands.clipboard_menu_entries()
             paused = commands.clipboard_is_paused()
             zoe_on = bool(commands.zoe_mode_active())
+            hazard_on = bool(commands.hazard_alerts_enabled())
         except Exception:
             recording = False
             entries = ()
             paused = False
             zoe_on = False
-        self._fill_plus_menu(menu, plus_menu(recording=recording, zoe_mode=zoe_on, clipboard_entries=entries, clipboard_paused=paused))
+            hazard_on = False
+        self._fill_plus_menu(menu, plus_menu(recording=recording, zoe_mode=zoe_on, clipboard_entries=entries, clipboard_paused=paused, hazard_alerts=hazard_on))
         if sender is None:
             return
         height = float(sender.bounds().size.height)
@@ -2172,7 +2184,12 @@ class AppDelegate(NSObject):
         if phrase:
             self._queue_bar_phrase(phrase)
             return
-        spec = plus_item(item_id)
+        # The alert title depends on the saved choice. Look that row up with
+        # the same flag the menu was built from, then type its phrase.
+        if item_id == "hazard_alerts":
+            spec = plus_item(item_id, plus_menu(hazard_alerts=self._hazard_alerts_on()))
+        else:
+            spec = plus_item(item_id)
         if not spec:
             return
         kind = spec.get("kind")
