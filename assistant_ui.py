@@ -106,10 +106,16 @@ from mini_bar import (
     SIZE_KEY,
     BarController,
     BAR_COLLECTION,
+    PillPresentation,
     background_action,
     bar_controls,
     bar_metrics,
+    capsule_click_moved,
+    capsule_controls,
+    collapsed_frame,
     default_size,
+    expanded_frame_from_capsule,
+    status_shows_in_pill,
     drag_origin,
     enabled_from_pref,
     format_origin,
@@ -418,9 +424,36 @@ class MiniBarBackground(NSView):
         if delegate is not None and hasattr(delegate, "refreshPillChrome_"):
             delegate.refreshPillChrome_(self)
 
+    @objc.python_method
+    def _collapsed_click_or_drag(self, window, delegate, _event):
+        """A still click opens the typing pill. A drag moves the capsule."""
+        down = NSEvent.mouseLocation()
+        start = (float(down.x), float(down.y))
+        frame = window.frame()
+        origin = (float(frame.origin.x), float(frame.origin.y))
+        mask = NSEventMaskLeftMouseDragged | NSEventMaskLeftMouseUp
+        moved = False
+        while True:
+            nxt = window.nextEventMatchingMask_(mask)
+            if nxt is None or nxt.type() == NSEventTypeLeftMouseUp:
+                break
+            now = NSEvent.mouseLocation()
+            point = (float(now.x), float(now.y))
+            if capsule_click_moved(start, point):
+                moved = True
+            if moved:
+                x, y = drag_origin(origin, start, point)
+                window.setFrameOrigin_(NSMakePoint(x, y))
+        if not moved and delegate is not None and hasattr(delegate, "expandMiniBar_"):
+            delegate.expandMiniBar_(self)
+
     def mouseDown_(self, event):
         window = self.window()
         if window is None:
+            return
+        delegate = window.delegate()
+        if delegate is not None and getattr(delegate, "pillCollapsed", False):
+            self._collapsed_click_or_drag(window, delegate, event)
             return
         bounds = self.bounds()
         size = (float(bounds.size.width), float(bounds.size.height))
@@ -500,6 +533,10 @@ class PillButton(NSButton):
     def _apply_pill_tint(self):
         if not hasattr(self, "setContentTintColor_"):
             return
+        # Right Option (push to talk) paints the mic blue until the key is released.
+        if getattr(self, "speakingTint", False):
+            self.setContentTintColor_(NSColor.systemBlueColor())
+            return
         if getattr(self, "_pill_pressed", False):
             color = NSColor.tertiaryLabelColor()
         elif getattr(self, "_pill_hover", False):
@@ -517,6 +554,10 @@ class HoldMicButton(PillButton):
 
     def mouseDown_(self, event):
         target = self.target()
+        if getattr(self, "pillRole", "mic") == "expand":
+            if target is not None and hasattr(target, "expandMiniBar_"):
+                target.expandMiniBar_(self)
+            return
         if getattr(self, "pillRole", "mic") == "send":
             self._pill_pressed = True
             self._apply_pill_tint()
@@ -1415,6 +1456,9 @@ class AppDelegate(NSObject):
         if is_down != self.option_down:
             self.option_down = is_down
             self.controls.put("press" if is_down else "release")
+            if hasattr(self, "pill"):
+                self.pill.option_changed(is_down)
+                self._apply_mic_tint()
 
     @objc.python_method
     def _start_worker(self):
@@ -1487,11 +1531,19 @@ class AppDelegate(NSObject):
             return
         x, y = reset_origin(self._visible_screens())
         w, h = default_size()
-        panel.setFrame_display_(NSMakeRect(x, y, w, h), True)
-        self.layoutMiniBar_(self)
+        self._expanded_origin = (x, y)
+        self._expanded_size = (w, h)
+        self._suppress_size_save = True
+        try:
+            panel.setFrame_display_(NSMakeRect(x, y, w, h), True)
+            self.layoutMiniBar_(self)
+        finally:
+            self._suppress_size_save = False
+        self._pill_frame_collapsed = False
         defaults = NSUserDefaults.standardUserDefaults()
         defaults.setObject_forKey_(format_origin(x, y), ORIGIN_KEY)
         defaults.setObject_forKey_(format_size(w, h), SIZE_KEY)
+        self._apply_pill_presentation()
 
     def resetMiniBarSize_(self, _sender):
         """Default width and height. The pill stays where it was dragged."""
@@ -1500,8 +1552,18 @@ class AppDelegate(NSObject):
             return
         frame = panel.frame()
         w, h = default_size()
+        if getattr(self, "pillCollapsed", False):
+            right = float(frame.origin.x) + float(frame.size.width)
+            center_y = float(frame.origin.y) + float(frame.size.height) / 2.0
+            self._expanded_size = (w, h)
+            self._expanded_origin = (right - w, center_y - (h / 2.0))
+            NSUserDefaults.standardUserDefaults().setObject_forKey_(format_size(w, h), SIZE_KEY)
+            return
         panel.setFrame_display_(NSMakeRect(float(frame.origin.x), float(frame.origin.y), w, h), True)
         self.layoutMiniBar_(self)
+        self._expanded_origin = (float(frame.origin.x), float(frame.origin.y))
+        self._expanded_size = (w, h)
+        self._pill_frame_collapsed = False
         NSUserDefaults.standardUserDefaults().setObject_forKey_(format_size(w, h), SIZE_KEY)
 
     def miniBarChanged_(self, sender):
@@ -1519,7 +1581,13 @@ class AppDelegate(NSObject):
         the main window. Return and Esc give the keyboard back.
         """
         self.pill_keys = PillKeyFocus()
+        self.pill = PillPresentation()
+        self.pillCollapsed = False
+        self._pill_frame_collapsed = False
+        self._suppress_size_save = False
         size = remembered_size(NSUserDefaults.standardUserDefaults().stringForKey_(SIZE_KEY))
+        self._expanded_size = size
+        self._expanded_origin = (0.0, 0.0)
         style = NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel
         self.mini_panel = KeyablePanel.alloc().initWithContentRect_styleMask_backing_defer_(
             NSMakeRect(0, 0, size[0], size[1]), style, NSBackingStoreBuffered, False
@@ -1726,8 +1794,11 @@ class AppDelegate(NSObject):
         saved = parse_origin(defaults.stringForKey_(ORIGIN_KEY))
         size = remembered_size(defaults.stringForKey_(SIZE_KEY))
         x, y = place_bar(saved, screens, size)
-        self.mini_panel.setFrame_display_(NSMakeRect(x, y, size[0], size[1]), True)
-        self._layout_mini_bar(size[0], size[1])
+        self._expanded_origin = (x, y)
+        self._expanded_size = size
+        if hasattr(self, "pill") and not self.pill.busy:
+            self.pill.expanded = False
+        self._apply_pill_presentation()
         defaults.setObject_forKey_(format_size(size[0], size[1]), SIZE_KEY)
         motion = self._pill_flags().get("motion", True)
         if motion:
@@ -1752,6 +1823,9 @@ class AppDelegate(NSObject):
         self.bar.reply = ""
         self.mini_field.setStringValue_("")
         if plan["kind"] == "run":
+            # Mark the turn before the keyboard goes back, so that blur waits for it.
+            if hasattr(self, "pill"):
+                self.pill.command_started()
             if not self.worker_started:
                 self._show_bar_reply("Add your API keys in the main window first.")
             else:
@@ -1774,9 +1848,14 @@ class AppDelegate(NSObject):
         self._refresh_trailing_symbol()
 
     def miniDismiss_(self, _sender):
+        """Esc collapses the typing pill and hands the keyboard back.
+
+        Hide Mini Bar still hides the pill. Esc leaves the mic capsule up.
+        """
+        if hasattr(self, "pill"):
+            self.pill.escape()
         self._restore_front_app()
-        self.bar.dismiss()
-        self._apply_bar_visibility()
+        self._apply_pill_presentation()
 
     def control_textView_doCommandBySelector_(self, control, _view, selector):
         if control == getattr(self, "model_field", None) and str(selector) == "insertNewline:":
@@ -1818,8 +1897,14 @@ class AppDelegate(NSObject):
         panel = getattr(self, "mini_panel", None)
         if panel is None or notification.object() != panel or not panel.isVisible():
             return
-        origin = panel.frame().origin
-        NSUserDefaults.standardUserDefaults().setObject_forKey_(format_origin(origin.x, origin.y), ORIGIN_KEY)
+        if getattr(self, "_suppress_size_save", False):
+            return
+        self._sync_expanded_from_window()
+        origin = getattr(self, "_expanded_origin", None)
+        if origin is None:
+            point = panel.frame().origin
+            origin = (point.x, point.y)
+        NSUserDefaults.standardUserDefaults().setObject_forKey_(format_origin(origin[0], origin[1]), ORIGIN_KEY)
 
     def windowDidResize_(self, notification):
         panel = getattr(self, "mini_panel", None)
@@ -1827,10 +1912,26 @@ class AppDelegate(NSObject):
             return
         size = panel.frame().size
         self._layout_mini_bar(float(size.width), float(size.height))
-        if not panel.isVisible():
+        if getattr(self, "_suppress_size_save", False) or not panel.isVisible():
             return
+        if getattr(self, "_pill_frame_collapsed", False):
+            return
+        self._sync_expanded_from_window()
         NSUserDefaults.standardUserDefaults().setObject_forKey_(
             format_size(float(size.width), float(size.height)), SIZE_KEY)
+
+    def windowDidResignKey_(self, notification):
+        panel = getattr(self, "mini_panel", None)
+        if notification is None or panel is None or notification.object() != panel:
+            return
+        if getattr(self, "_pill_menu_open", False):
+            return
+        pill = getattr(self, "pill", None)
+        if pill is None or not pill.expanded:
+            return
+        pill.focus_lost()
+        if pill.collapsed:
+            self._apply_pill_presentation()
 
     def layoutMiniBar_(self, _sender):
         panel = getattr(self, "mini_panel", None)
@@ -1844,6 +1945,11 @@ class AppDelegate(NSObject):
         """Place +, the field, and the mic for this pill size, and scale the type."""
         if not hasattr(self, "mini_field"):
             return
+        if getattr(self, "pillCollapsed", False):
+            self._layout_collapsed_capsule(width, height)
+            return
+        self.mini_plus.setHidden_(False)
+        self.mini_field.setHidden_(False)
         frames = bar_controls((width, height))
         metrics = bar_metrics(width, height)
         on = self._apply_zoe_badge()
@@ -1862,6 +1968,110 @@ class AppDelegate(NSObject):
         self._sync_capsule(width, height)
         self._sync_recording_ui()
         self._style_pill_field()
+        self._refresh_trailing_symbol()
+
+    @objc.python_method
+    def _layout_collapsed_capsule(self, width, height):
+        """Mic only, centered in the idle capsule. The typing controls stay hidden."""
+        frames = capsule_controls((width, height))
+        self.mini_plus.setHidden_(True)
+        self.mini_field.setHidden_(True)
+        _place(self.mini_mic, frames["mic"])
+        self.mini_mic.pillRole = "expand"
+        if hasattr(self, "rec_stop"):
+            _place(self.rec_stop, frames["mic"])
+        self._sync_capsule(width, height)
+        self._sync_recording_ui()
+        if hasattr(self, "rec_label"):
+            self.rec_label.setHidden_(True)
+        if hasattr(self, "zoe_label"):
+            self.zoe_label.setHidden_(True)
+        self.mini_plus.setHidden_(True)
+        self.mini_field.setHidden_(True)
+        recording = hasattr(self, "rec_stop") and not bool(self.rec_stop.isHidden())
+        if not recording:
+            self._set_button_symbol(self.mini_mic, "mic.fill", "Type to Jev")
+        self._apply_mic_tint()
+
+    @objc.python_method
+    def _sync_expanded_from_window(self):
+        """Keep the remembered typing-pill rect in step with a drag or a resize.
+
+        A collapsed window is the right-hand end of that rect, so its origin is
+        not the origin saved for the next launch.
+        """
+        panel = getattr(self, "mini_panel", None)
+        if panel is None:
+            return
+        frame = panel.frame()
+        box = (
+            float(frame.origin.x),
+            float(frame.origin.y),
+            float(frame.size.width),
+            float(frame.size.height),
+        )
+        if getattr(self, "_pill_frame_collapsed", False):
+            size = getattr(self, "_expanded_size", None) or default_size()
+            restored = expanded_frame_from_capsule(box, size)
+            self._expanded_origin = (restored[0], restored[1])
+            self._expanded_size = (restored[2], restored[3])
+            return
+        self._expanded_origin = (box[0], box[1])
+        self._expanded_size = (box[2], box[3])
+
+    @objc.python_method
+    def _target_pill_frame(self):
+        origin = getattr(self, "_expanded_origin", None) or (0.0, 0.0)
+        size = getattr(self, "_expanded_size", None) or default_size()
+        expanded = (float(origin[0]), float(origin[1]), float(size[0]), float(size[1]))
+        if getattr(self, "pill", None) is not None and self.pill.expanded:
+            return expanded
+        return collapsed_frame(expanded)
+
+    @objc.python_method
+    def _apply_pill_presentation(self):
+        """Resize to the capsule or the typing pill without saving that as the user's size."""
+        panel = getattr(self, "mini_panel", None)
+        if panel is None or not hasattr(self, "pill"):
+            return
+        self.pillCollapsed = bool(self.pill.collapsed)
+        target = self._target_pill_frame()
+        self._suppress_size_save = True
+        self._pill_frame_collapsed = self.pillCollapsed
+        try:
+            panel.setFrame_display_(NSMakeRect(target[0], target[1], target[2], target[3]), True)
+            self._layout_mini_bar(target[2], target[3])
+        finally:
+            self._suppress_size_save = False
+        self._apply_mic_tint()
+
+    @objc.python_method
+    def _apply_mic_tint(self):
+        mic = getattr(self, "mini_mic", None)
+        if mic is None or not hasattr(self, "pill"):
+            return
+        mic.speakingTint = self.pill.mic_tint() == "blue"
+        if hasattr(mic, "_apply_pill_tint"):
+            mic._apply_pill_tint()
+
+    @objc.python_method
+    def _finish_pill_command(self):
+        pill = getattr(self, "pill", None)
+        if pill is None or not (pill.busy or pill.showing_reply):
+            return
+        pill.command_finished()
+        self._apply_pill_presentation()
+
+    def expandMiniBar_(self, _sender):
+        """A click on the idle capsule opens the typing pill and shows the caret."""
+        if not hasattr(self, "pill"):
+            return
+        if self.pill.expanded and not getattr(self, "pillCollapsed", False):
+            self._focus_pill_field()
+            return
+        self.pill.click()
+        self._apply_pill_presentation()
+        self._focus_pill_field()
 
     @objc.python_method
     def _pill_flags(self):
@@ -2060,6 +2270,12 @@ class AppDelegate(NSObject):
         field = getattr(self, "mini_field", None)
         if mic is None or field is None:
             return
+        if getattr(self, "pillCollapsed", False):
+            mic.pillRole = "expand"
+            self._set_button_symbol(mic, "mic.fill", "Type to Jev")
+            self._apply_mic_tint()
+            self._sync_listen_pulse(False)
+            return
         listening = self._is_listening()
         reply = self.bar.reply if hasattr(self, "bar") else ""
         name = trailing_symbol(listening, field.stringValue(), reply)
@@ -2067,6 +2283,7 @@ class AppDelegate(NSObject):
         label = "Send" if mic.pillRole == "send" else "Listen"
         self._set_button_symbol(mic, name, label)
         self._sync_listen_pulse(listening and name == "waveform")
+        self._apply_mic_tint()
 
     @objc.python_method
     def _sync_listen_pulse(self, active):
@@ -2125,7 +2342,11 @@ class AppDelegate(NSObject):
         if sender is None:
             return
         height = float(sender.bounds().size.height)
-        menu.popUpMenuPositioningItem_atLocation_inView_(None, NSMakePoint(0.0, height + 6.0), sender)
+        self._pill_menu_open = True
+        try:
+            menu.popUpMenuPositioningItem_atLocation_inView_(None, NSMakePoint(0.0, height + 6.0), sender)
+        finally:
+            self._pill_menu_open = False
 
     @objc.python_method
     def _menu_symbol(self, name, label):
@@ -2615,6 +2836,9 @@ class AppDelegate(NSObject):
     def focusTypeField_(self, _sender):
         panel = getattr(self, "mini_panel", None)
         if self.bar.should_show() and panel is not None and panel.isVisible():
+            if getattr(self, "pillCollapsed", False):
+                self.expandMiniBar_(None)
+                return
             self._focus_pill_field()
             return
         self.showMain_(None)
@@ -2785,9 +3009,16 @@ class AppDelegate(NSObject):
                 name_view.setStringValue_(name)
                 time_view.setStringValue_(f"{h}:{m:02d}:{sec:02d}" if h else f"{m}:{sec:02d}")
         field = getattr(self, "mini_field", None)
-        if field is not None and self.bar.reply_due_clear(time.time(), field.stringValue()):
-            field.setStringValue_("")
-            self._refresh_trailing_symbol()
+        if field is not None and hasattr(self, "bar"):
+            had_reply = bool(self.bar.reply)
+            if self.bar.reply_due_clear(time.time(), field.stringValue()):
+                field.setStringValue_("")
+                self._refresh_trailing_symbol()
+                self._finish_pill_command()
+            elif had_reply and not self.bar.reply and hasattr(self, "pill") and (
+                self.pill.busy or self.pill.showing_reply
+            ):
+                self.pill.keep_typing()
         self._sync_recording_ui()
         self._sync_choice_dismiss()
         self._sync_zoe_ui()
@@ -2815,10 +3046,20 @@ class AppDelegate(NSObject):
         if shown and getattr(self, "typed", None) is not None and self.typed.pending:
             self.typed.note_reply(shown)
             self._refresh_home_history()
-        if shown and getattr(self, "mini_panel", None) is not None and self.mini_panel.isVisible():
+        option_down = bool(getattr(self, "option_down", False))
+        show_line = bool(shown) and status_shows_in_pill(state, option_down)
+        if show_line and getattr(self, "mini_panel", None) is not None and self.mini_panel.isVisible():
+            if hasattr(self, "pill") and self.pill.collapsed:
+                self.pill.reveal_reply()
+                self._apply_pill_presentation()
+            elif hasattr(self, "pill"):
+                self.pill.reveal_reply()
             self._show_bar_reply(shown)
         elif getattr(self, "mini_mic", None) is not None:
             self._refresh_trailing_symbol()
+        if hasattr(self, "pill") and self.pill.busy:
+            if self.pill.note_status(state, bool(shown) and show_line) == "collapsed":
+                self._apply_pill_presentation()
         if shown and getattr(self, "choice_answer", None) is not None:
             panel = getattr(self, "choice_panel", None)
             if panel is not None and panel.isVisible() and not capture_saved(shown):
