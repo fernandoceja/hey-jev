@@ -6,6 +6,8 @@ never includes that line.
 import io
 import os
 import tempfile
+import threading
+import time
 import types
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -364,6 +366,19 @@ def _core(manager):
 class TestCurrentLocation(unittest.TestCase):
     def setUp(self):
         travel_mod.reset_location_state()
+
+    def tearDown(self):
+        travel_mod.reset_location_state()
+        deadline = time.monotonic() + 1
+        while time.monotonic() < deadline:
+            live = [
+                thread for thread in threading.enumerate()
+                if thread.name == "jev-location" and thread.is_alive()
+            ]
+            if not live:
+                break
+            for thread in live:
+                thread.join(timeout=0.1)
 
     def test_a_cached_fix_is_a_coordinate_and_a_miss_is_none(self):
         with mock.patch.dict("sys.modules", {"CoreLocation": _core(_Manager)}):

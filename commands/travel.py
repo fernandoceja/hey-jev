@@ -8,21 +8,43 @@ request fails, the caller uses the typical drive in config and says so.
 An origin may be an address string or a (latitude, longitude) pair. The pair
 is this Mac's current location. It is not logged and not spoken.
 
-The location read runs on its own thread. macOS can block inside the
-permission panel until the user answers, and that call must not sit on the
-command turn or the main thread. The turn waits at most LOCATION_WAIT_SECONDS,
-then the ETA falls back to the Brea store.
+A background keeper owns CoreLocation. The permission panel can block that
+thread until the user answers, so the panel never sits on the command turn
+or the main thread. The keeper keeps the last fix in memory and refreshes
+it. A command uses that cache immediately. With nothing cached yet, the
+turn waits at most LOCATION_WAIT_SECONDS and then falls back to the Brea
+store while the keeper keeps listening.
 """
+import sys
 import threading
 import time
 
-# How long to wait for a location fix before the caller falls back.
+# How long a command turn waits for a fix before it falls back.
 LOCATION_WAIT_SECONDS = 3
+# One background attempt. A cold Wi-Fi fix often outlasts the turn.
+LOCATION_FIX_SECONDS = 15
+# How often a cached fix is refreshed. The coordinate stays in memory only.
+LOCATION_REFRESH_SECONDS = 180
+# Try again sooner when the last attempt produced no fix.
+LOCATION_RETRY_SECONDS = 20
 _LOCATION_THREAD = "jev-location"
 
 _state_lock = threading.Lock()
+_keeper_lock = threading.Lock()
+_cache_event = threading.Event()
+_wake = threading.Event()
 _permission_asked = False
-_lookup_running = False
+_permission_blocked = False
+_last_status = None
+_cache = None
+_generation = 0
+_keeper = None
+_retry_timer = None
+_manager = None
+_delegate = None
+_delegate_class = None
+# Tests replace this with a callable(seconds) to stand in for NSRunLoop.
+_runloop_pump = None
 
 
 def _as_coordinate(value):
@@ -72,21 +94,35 @@ def _pair_from_location(coord):
 
 
 def location_lookup_busy():
-    """True while a CoreLocation call is still on the location thread.
+    """True only while the permission panel call is in progress.
 
-    Callers use their fallback instead of touching CoreLocation again. A
-    permission panel can block that thread until the user answers.
+    A normal fix can take longer than the command turn waits. That wait is
+    not busy: MapKit and the hazard geocoder still run. The panel itself
+    can block the location thread until the user answers, and another
+    CoreLocation call then would block too.
     """
     with _state_lock:
-        return _lookup_running
+        return _permission_blocked
 
 
 def reset_location_state():
-    """Clear the one-time permission flag. Tests join the location thread first."""
-    global _permission_asked, _lookup_running
+    """Drop the cached fix and wake the keeper. Tests join the thread after."""
+    global _permission_asked, _permission_blocked, _last_status, _cache
+    global _generation, _retry_timer, _manager, _delegate
     with _state_lock:
+        _generation += 1
         _permission_asked = False
-        _lookup_running = False
+        _permission_blocked = False
+        _last_status = None
+        _cache = None
+        timer = _retry_timer
+        _retry_timer = None
+        _manager = None
+        _delegate = None
+    _cache_event.clear()
+    _wake.set()
+    if timer is not None:
+        timer.cancel()
 
 
 def _mark_permission_asked():
@@ -99,77 +135,90 @@ def _mark_permission_asked():
         return True
 
 
-def run_off_worker(fn, timeout, name=_LOCATION_THREAD):
-    """Run fn off this thread. None if it has not finished in time.
-
-    One location call at a time. A second call while the first is still
-    inside CoreLocation returns None and does not ask again. A non-positive
-    timeout runs fn here so a test can skip the wait.
-    """
-    global _lookup_running
-    if timeout <= 0:
-        try:
-            return fn()
-        except Exception:
-            return None
+def _already_asked():
     with _state_lock:
-        if _lookup_running:
-            return None
-        _lookup_running = True
-    done = threading.Event()
-    box = {}
-
-    def run():
-        global _lookup_running
-        try:
-            box["value"] = fn()
-        except Exception:
-            box["value"] = None
-        finally:
-            with _state_lock:
-                _lookup_running = False
-            done.set()
-
-    threading.Thread(target=run, name=name, daemon=True).start()
-    if not done.wait(timeout):
-        return None
-    return box.get("value")
+        return _permission_asked
 
 
-def current_coordinate():
-    """(latitude, longitude) for this Mac, or None.
-
-    A missing framework, a denied permission, or no fix returns None. The
-    caller then starts from the Brea store. The coordinate is not logged.
-
-    CoreLocation runs on a side thread. The permission panel can block that
-    thread until the user answers; this returns within LOCATION_WAIT_SECONDS
-    either way. A later call does not ask for permission again.
-    """
+def _remember_status(status):
+    global _last_status
     try:
-        import CoreLocation
-    except Exception:
-        return None
-
-    def work():
-        return _coordinate_from_manager(CoreLocation, max(0.0, LOCATION_WAIT_SECONDS))
-
-    return run_off_worker(work, LOCATION_WAIT_SECONDS)
+        status = int(status)
+    except (TypeError, ValueError):
+        return
+    with _state_lock:
+        _last_status = status
 
 
-def _read_status(manager_type):
+def _stored_status():
+    with _state_lock:
+        return _last_status
+
+
+def _cached_pair():
+    with _state_lock:
+        return _cache
+
+
+def _snapshot():
+    with _state_lock:
+        return _permission_blocked, _permission_asked, _last_status
+
+
+def _same_generation(generation):
+    with _state_lock:
+        return generation == _generation
+
+
+def _current_generation():
+    with _state_lock:
+        return _generation
+
+
+def _clear_cache():
+    global _cache
+    with _state_lock:
+        _cache = None
+    _cache_event.clear()
+
+
+def _publish(pair):
+    """Remember a fix. The coordinate is not logged and not spoken."""
+    global _cache
+    if pair is None:
+        return
+    with _state_lock:
+        _cache = pair
+    _cache_event.set()
+
+
+def _log_source(source):
+    """One line, no coordinates and no street."""
+    print(f"  location: {source}", flush=True)
+
+
+def _read_status(source):
     """Authorization int, or None when this double has no status API."""
-    status_of = getattr(manager_type, "authorizationStatus", None)
+    if source is None:
+        return None
+    status_of = getattr(source, "authorizationStatus", None)
     if status_of is None:
         return None
     try:
-        return int(status_of())
+        value = status_of() if callable(status_of) else status_of
+        return int(value)
     except Exception:
         return None
 
 
 def _permission_method(manager):
-    for name in ("requestWhenInUseAuthorization", "requestAlwaysAuthorization"):
+    # macOS delivers the grant through requestAlwaysAuthorization.
+    # Test doubles on other platforms keep the When In Use method.
+    if sys.platform == "darwin":
+        names = ("requestAlwaysAuthorization", "requestWhenInUseAuthorization")
+    else:
+        names = ("requestWhenInUseAuthorization", "requestAlwaysAuthorization")
+    for name in names:
         ask = getattr(manager, name, None)
         if ask is not None:
             return ask
@@ -180,13 +229,411 @@ def _ask_once(manager):
     """Show the panel once. False when there is no API or this process already asked.
 
     The call itself can block until the user answers, which is why it stays
-    off the command turn. The flag is set before the call.
+    off the command turn. The flag is set before the call. Busy is true only
+    for the duration of that call, not for the later fix.
     """
+    global _permission_blocked
     ask = _permission_method(manager)
     if ask is None or not _mark_permission_asked():
         return False
-    ask()
+    with _state_lock:
+        _permission_blocked = True
+    try:
+        ask()
+    finally:
+        with _state_lock:
+            _permission_blocked = False
     return True
+
+
+def _on_locations(_manager, locations):
+    if not locations:
+        return
+    try:
+        latest = locations[-1]
+    except Exception:
+        return
+    try:
+        coord = latest.coordinate()
+    except Exception:
+        coord = latest
+    pair = _pair_from_location(coord)
+    if pair is not None:
+        _publish(pair)
+
+
+def _on_location_error(_manager, _error):
+    """Ignore the error object. It can carry a place, and it is not logged."""
+    return None
+
+
+def _on_authorization(_manager, status):
+    _remember_status(status)
+
+
+def _on_authorization_changed(manager):
+    _remember_status(_read_status(manager))
+
+
+def _location_delegate_class():
+    """One NSObject subclass. PyObjC will not register the same name twice."""
+    global _delegate_class
+    if _delegate_class is not None:
+        return _delegate_class
+    try:
+        import Foundation
+    except Exception:
+        return None
+    base = getattr(Foundation, "NSObject", None)
+    if base is None:
+        return None
+
+    class _JevLocationDelegate(base):
+        def locationManager_didUpdateLocations_(self, manager, locations):
+            _on_locations(manager, locations)
+
+        def locationManager_didFailWithError_(self, manager, error):
+            _on_location_error(manager, error)
+
+        def locationManager_didChangeAuthorizationStatus_(self, manager, status):
+            _on_authorization(manager, status)
+
+        def locationManagerDidChangeAuthorization_(self, manager):
+            _on_authorization_changed(manager)
+
+    _delegate_class = _JevLocationDelegate
+    return _delegate_class
+
+
+def _install_delegate(manager):
+    global _delegate
+    setter = getattr(manager, "setDelegate_", None)
+    if setter is None:
+        return
+    kind = _location_delegate_class()
+    if kind is None:
+        return
+    try:
+        delegate = kind.alloc().init()
+        setter(delegate)
+    except Exception:
+        return
+    with _state_lock:
+        _delegate = delegate
+
+
+def _retain(manager):
+    global _manager
+    with _state_lock:
+        _manager = manager
+
+
+def _set_accuracy(manager, CoreLocation):
+    accuracy = getattr(CoreLocation, "kCLLocationAccuracyHundredMeters", None)
+    setter = getattr(manager, "setDesiredAccuracy_", None)
+    if accuracy is None or setter is None:
+        return
+    try:
+        setter(accuracy)
+    except Exception:
+        pass
+
+
+def _pump_runloop(seconds):
+    """Let CoreLocation deliver a fix. Tests can stand in for the run loop.
+
+    time.sleep does not deliver delegate callbacks. The run loop does.
+    """
+    if _wake.is_set():
+        return
+    seconds = max(0.0, float(seconds))
+    pump = _runloop_pump
+    if pump is not None:
+        try:
+            pump(seconds)
+        except Exception:
+            pass
+        return
+    try:
+        import Foundation
+        run_loop = Foundation.NSRunLoop.currentRunLoop()
+        until = Foundation.NSDate.dateWithTimeIntervalSinceNow_(seconds)
+        run_loop.runUntilDate_(until)
+        return
+    except Exception:
+        pass
+    time.sleep(min(seconds, 0.05))
+
+
+def _begin_updates(manager):
+    request = getattr(manager, "requestLocation", None)
+    if callable(request):
+        request()
+        return
+    start = getattr(manager, "startUpdatingLocation", None)
+    if callable(start):
+        start()
+
+
+def _stop_updates(manager):
+    stop = getattr(manager, "stopUpdatingLocation", None)
+    if stop is None:
+        return
+    try:
+        stop()
+    except Exception:
+        pass
+
+
+def _listen_for_fix(manager, generation, wait_seconds):
+    """Pump until a fix, a reset, or the attempt budget. Then stop updates.
+
+    The manager and its delegate stay referenced so the next refresh can
+    reuse them. Updates are not left running between attempts.
+    """
+    _begin_updates(manager)
+    try:
+        deadline = time.monotonic() + max(0.0, wait_seconds)
+        while time.monotonic() < deadline:
+            if _wake.is_set() or not _same_generation(generation):
+                return
+            found = _cached_pair()
+            if found is None:
+                found = _pair_from_location(_safe_coordinate(manager))
+            if found is not None:
+                _publish(found)
+                return
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            _pump_runloop(min(0.2, remaining))
+    finally:
+        _stop_updates(manager)
+
+
+def _refresh_status(manager, manager_type, status):
+    """Instance status, then the class method, then a delegate update."""
+    instance = _read_status(manager)
+    if instance is None:
+        instance = _read_status(manager_type)
+    if instance is not None:
+        status = instance
+    else:
+        remembered = _stored_status()
+        if remembered is not None:
+            status = remembered
+    if status is not None:
+        _remember_status(status)
+    return status
+
+
+def _attempt_fix(CoreLocation, generation):
+    """One authorization check and one fix attempt. Runs on the keeper thread."""
+    if not _same_generation(generation):
+        return
+    manager_type = getattr(CoreLocation, "CLLocationManager", None)
+    if manager_type is None:
+        return
+    enabled = getattr(manager_type, "locationServicesEnabled", None)
+    if enabled is not None:
+        try:
+            if not enabled():
+                return
+        except Exception:
+            return
+    status = _read_status(manager_type)
+    if status in (1, 2):
+        _remember_status(status)
+        return
+
+    try:
+        manager = manager_type.alloc().init()
+    except Exception:
+        return
+    _retain(manager)
+    _install_delegate(manager)
+    _set_accuracy(manager, CoreLocation)
+    if not _same_generation(generation):
+        return
+
+    status = _refresh_status(manager, manager_type, status)
+    if status in (1, 2):
+        return
+    found = _pair_from_location(_safe_coordinate(manager))
+    if found is not None:
+        _publish(found)
+        return
+
+    if status == 0 and not _already_asked():
+        if not _ask_once(manager):
+            return
+        if not _same_generation(generation):
+            return
+        status = _refresh_status(manager, manager_type, status)
+        if status in (0, None):
+            _pump_runloop(0.2)
+            if not _same_generation(generation):
+                return
+            status = _refresh_status(manager, manager_type, status)
+        if status in (1, 2) or status == 0:
+            return
+
+    if status is None and not _already_asked():
+        if _ask_once(manager):
+            if not _same_generation(generation):
+                return
+            found = _pair_from_location(_safe_coordinate(manager))
+            if found is not None:
+                _publish(found)
+                return
+            instance = _read_status(manager)
+            if instance in (0, 1, 2):
+                _remember_status(instance)
+                return
+
+    if status == 0:
+        return
+    _listen_for_fix(manager, generation, LOCATION_FIX_SECONDS)
+
+
+def _schedule_retry(delay, generation):
+    global _retry_timer
+
+    def fire():
+        global _retry_timer
+        with _state_lock:
+            if generation != _generation:
+                return
+            current = _retry_timer
+            if current is timer:
+                _retry_timer = None
+        _ensure_keeper(force=True)
+
+    timer = threading.Timer(max(0.0, float(delay)), fire)
+    timer.daemon = True
+    with _state_lock:
+        if generation != _generation:
+            return
+        previous = _retry_timer
+        _retry_timer = timer
+    if previous is not None:
+        previous.cancel()
+    timer.start()
+
+
+def _keeper_main():
+    generation = _current_generation()
+    imported = False
+    try:
+        try:
+            import CoreLocation
+        except Exception:
+            return
+        imported = CoreLocation is not None and getattr(
+            CoreLocation, "CLLocationManager", None) is not None
+        if not imported or not _same_generation(generation):
+            return
+        try:
+            _attempt_fix(CoreLocation, generation)
+        except Exception:
+            pass
+    finally:
+        if imported and _same_generation(generation):
+            delay = LOCATION_REFRESH_SECONDS if _cached_pair() else LOCATION_RETRY_SECONDS
+            _schedule_retry(delay, generation)
+
+
+def _ensure_keeper(force=False):
+    """Start the keeper thread. A live thread or a pending refresh is enough.
+
+    force cancels a delayed retry and starts now. A command that still has
+    no fix uses that so the wait is not spent with nobody listening.
+    """
+    global _keeper, _retry_timer
+    with _keeper_lock:
+        if _keeper is not None and _keeper.is_alive():
+            return _keeper
+        if not force:
+            with _state_lock:
+                timer = _retry_timer
+                pending = timer is not None and timer.is_alive()
+            if pending:
+                return _keeper
+        with _state_lock:
+            timer = _retry_timer
+            _retry_timer = None
+        if timer is not None:
+            timer.cancel()
+        _wake.clear()
+        thread = threading.Thread(
+            target=_keeper_main, name=_LOCATION_THREAD, daemon=True)
+        _keeper = thread
+        thread.start()
+        return thread
+
+
+def start_location_keeper():
+    """Start the background location refresh. None off macOS.
+
+    The command turn does not wait for this. ETA home reads the cached fix.
+    Nothing here opens a socket.
+    """
+    if sys.platform != "darwin":
+        return None
+    return _ensure_keeper(force=True)
+
+
+def current_coordinate():
+    """(latitude, longitude) for this Mac, or None.
+
+    A cached fix returns immediately. Otherwise this waits at most
+    LOCATION_WAIT_SECONDS while the keeper listens. A missing framework, a
+    denied permission, or no fix returns None, and the caller starts from
+    the Brea store. The coordinate is not logged. A later call does not ask
+    for permission again.
+
+    A non-positive LOCATION_WAIT_SECONDS reads once on this thread so a test
+    can skip the keeper.
+    """
+    try:
+        import CoreLocation
+    except Exception:
+        _log_source("no fix, Brea store")
+        return None
+    manager_type = getattr(CoreLocation, "CLLocationManager", None)
+    if manager_type is None:
+        _log_source("no fix, Brea store")
+        return None
+
+    status = _read_status(manager_type)
+    if status in (1, 2):
+        _clear_cache()
+        _log_source("no fix, Brea store")
+        return None
+
+    if LOCATION_WAIT_SECONDS <= 0:
+        found = _coordinate_from_manager(CoreLocation, 0.0)
+        _log_source("fresh fix" if found is not None else "no fix, Brea store")
+        return found
+
+    cached = _cached_pair()
+    if cached is not None:
+        _log_source("cached fix")
+        _ensure_keeper(force=False)
+        return cached
+
+    blocked, asked, last = _snapshot()
+    if blocked or (asked and (last == 0 or status == 0)):
+        _log_source("no fix, Brea store")
+        return None
+
+    _ensure_keeper(force=True)
+    found = _cached_pair()
+    if found is None:
+        _cache_event.wait(max(0.0, LOCATION_WAIT_SECONDS))
+        found = _cached_pair()
+    _log_source("fresh fix" if found is not None else "no fix, Brea store")
+    return found
 
 
 def _await_fix(manager, wait_seconds):
@@ -214,6 +661,7 @@ def _await_fix(manager, wait_seconds):
 
 
 def _coordinate_from_manager(CoreLocation, wait_seconds):
+    """Inline read used when LOCATION_WAIT_SECONDS is not positive."""
     manager_type = CoreLocation.CLLocationManager
     enabled = getattr(manager_type, "locationServicesEnabled", None)
     if enabled is not None and not enabled():
@@ -224,11 +672,8 @@ def _coordinate_from_manager(CoreLocation, wait_seconds):
         return None
     # Not determined, and this process already asked. Do not prompt again,
     # and do not start updates: that can raise the panel a second time.
-    if status == 0:
-        with _state_lock:
-            already = _permission_asked
-        if already:
-            return None
+    if status == 0 and _already_asked():
+        return None
 
     manager = manager_type.alloc().init()
     if status == 0:

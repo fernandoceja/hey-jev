@@ -114,6 +114,7 @@ class TestLocationPrompt(unittest.TestCase):
 
     def tearDown(self):
         self.hang.set()
+        travel_mod.reset_location_state()
         deadline = time.monotonic() + 2
         while time.monotonic() < deadline:
             live = [
@@ -124,7 +125,6 @@ class TestLocationPrompt(unittest.TestCase):
                 break
             for thread in live:
                 thread.join(timeout=0.2)
-        travel_mod.reset_location_state()
         with hazard_mod._geocode_lock:
             hazard_mod._geocode_running = False
 
