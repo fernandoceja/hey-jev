@@ -7,6 +7,10 @@ numbers the window stores. Nothing here opens a socket.
 
 The pill stays nonactivating until the field is clicked or Control-Option-J
 focuses it. Return and Esc hand the keyboard back to the app that was in front.
+
+Idle, the pill is a small capsule with only the mic. A click opens the typing
+pill. It closes again when the command finishes, when focus leaves, or on Esc.
+Holding Option to talk turns that mic blue until the key comes up.
 """
 
 BAR_W = 420.0
@@ -24,6 +28,11 @@ BAR_GRIP = 6.0
 # for the dictation bubble, which sits in that same bottom-center spot.
 DOCK_GAP = 72.0
 PLACEHOLDER = "Type to Jev\u2026"
+# Template-image tint while right Option is held for push-to-talk, and after.
+MIC_TINT_NORMAL = "normal"
+MIC_TINT_SPEAKING = "blue"
+# A typed command is finished when the turn lands on one of these.
+_COMMAND_DONE = {"Ready", "Something went wrong", "Time's up"}
 # Control-Option-J. Works while another app is in front, so he can type without speaking.
 TYPE_KEY_CODE = 38
 TYPE_FLAG_CONTROL = 1 << 18
@@ -969,6 +978,65 @@ def bar_controls(size=None):
     return {"plus": plus, "field": field, "mic": mic}
 
 
+def capsule_size(height=None):
+    """Idle capsule. The height matches the pill. The width matches the height.
+
+    The window's corner radius is half the height, so this is a circle with
+    room for the mic and nothing else. It is not clamped to the typing-pill
+    minimum width.
+    """
+    if height is None:
+        height = BAR_H
+    try:
+        h = float(height)
+    except (TypeError, ValueError):
+        h = BAR_H
+    h = min(BAR_MAX_H, max(BAR_MIN_H, h))
+    return (h, h)
+
+
+def collapsed_frame(expanded_frame):
+    """Capsule frame that keeps the mic where it sits on the expanded pill.
+
+    The right edge stays put, and the capsule is centered on the pill's height.
+    """
+    x, y, w, h = (float(v) for v in expanded_frame)
+    cw, ch = capsule_size(h)
+    return (x + w - cw, y + (h - ch) / 2.0, cw, ch)
+
+
+def expanded_frame_from_capsule(capsule_frame, expanded_size):
+    """Typing-pill frame for a capsule, using the same right edge."""
+    x, y, w, h = (float(v) for v in capsule_frame)
+    ew, eh = clamp_size(*(expanded_size or default_size()))
+    return (x + w - ew, y + (h - eh) / 2.0, ew, eh)
+
+
+def capsule_controls(size=None):
+    """The mic, centered. The idle capsule has no plus button and no field."""
+    if size is None:
+        width, height = capsule_size()
+    else:
+        width, height = float(size[0]), float(size[1])
+    metrics = bar_metrics(BAR_W, height)
+    button = metrics["button"]
+    button = min(button, max(width, 0.0), max(height, 0.0))
+    return {
+        "mic": ((width - button) / 2.0, (height - button) / 2.0, button, button),
+    }
+
+
+def capsule_click_moved(start, now, threshold=4.0):
+    """True when a press on the capsule has moved far enough to count as a drag."""
+    try:
+        dx = float(now[0]) - float(start[0])
+        dy = float(now[1]) - float(start[1])
+        limit = float(threshold)
+    except (TypeError, ValueError):
+        return False
+    return dx * dx + dy * dy >= limit * limit
+
+
 def hit_control(x, y, controls=None):
     """'plus', 'field', or 'mic' when a click lands on that control. Else None.
 
@@ -1029,6 +1097,110 @@ def reply_text(state, detail):
     return text
 
 
+def status_shows_in_pill(state, option_down=False):
+    """Whether a status line may open the typing pill.
+
+    Holding Option is push-to-talk: the capsule stays up and the mic turns
+    blue. Listening is that same moment, so it does not unfold the field.
+    """
+    if option_down:
+        return False
+    return state != "Listening"
+
+
+class PillPresentation:
+    """Idle capsule versus the expanded typing pill, and the mic tint.
+
+    Starts collapsed. A click expands to the typing pill. The command
+    finishing, focus leaving, and Esc collapse it. Focus that leaves while a
+    typed command is still running waits for that command to finish, so the
+    reply can stay in the field. Option held for push-to-talk turns the mic
+    blue until release. The tint does not open or close the pill.
+    """
+
+    def __init__(self):
+        self.expanded = False
+        self.busy = False
+        self.showing_reply = False
+        self.option_down = False
+
+    @property
+    def collapsed(self):
+        return not self.expanded
+
+    def _mode(self):
+        return "expanded" if self.expanded else "collapsed"
+
+    def click(self):
+        """Open the typing pill."""
+        self.expanded = True
+        return self._mode()
+
+    def command_started(self):
+        """A typed line was queued. Stay open through the focus hand-off."""
+        self.busy = True
+        self.expanded = True
+        return self._mode()
+
+    def reveal_reply(self):
+        """A spoken turn has a line to show. Open the pill without taking the keyboard."""
+        self.showing_reply = True
+        self.expanded = True
+        return self._mode()
+
+    def command_finished(self):
+        """The turn is over. Back to the mic capsule."""
+        self.busy = False
+        self.showing_reply = False
+        self.expanded = False
+        return self._mode()
+
+    def focus_lost(self):
+        """Collapse unless a typed command is still running."""
+        if self.busy:
+            return self._mode()
+        self.showing_reply = False
+        self.expanded = False
+        return self._mode()
+
+    def escape(self):
+        """Esc drops a draft and any in-flight typing session."""
+        self.busy = False
+        self.showing_reply = False
+        self.expanded = False
+        return self._mode()
+
+    def keep_typing(self):
+        """The user typed over the reply. Stay open, and a later blur can close it."""
+        self.busy = False
+        self.showing_reply = False
+        return self._mode()
+
+    def option_changed(self, down):
+        """Right Option down is blue. Release is the normal template tint."""
+        self.option_down = bool(down)
+        return self.mic_tint()
+
+    def mic_tint(self):
+        if self.option_down:
+            return MIC_TINT_SPEAKING
+        return MIC_TINT_NORMAL
+
+    def note_status(self, state, has_reply):
+        """Finish a typed command when its status lands and nothing is left to show.
+
+        A reply stays up; the caller collapses when that reply is cleared.
+        Status while the capsule is idle does not open the typing pill.
+        """
+        if not self.busy:
+            return self._mode()
+        if has_reply and status_shows_in_pill(state, self.option_down):
+            self.showing_reply = True
+        if state in _COMMAND_DONE and not has_reply:
+            return self.command_finished()
+        return self._mode()
+
+
 class BarController:
     """Whether the pill is on screen. Default is on, but only while the main window is hidden."""
 
@@ -1057,10 +1229,11 @@ class BarController:
         return self.should_show()
 
     def dismiss(self):
-        """Esc or Hide Mini Bar, while the pill is up.
+        """Hide Mini Bar, while the pill is up.
 
-        Stays down until the main window is shown again. Doing it while the
-        main window is already on screen does not block the next minimize.
+        Esc collapses the typing pill instead of hiding it. This stays down
+        until the main window is shown again. Doing it while the main window
+        is already on screen does not block the next minimize.
         """
         if self.main_on_screen or not self.enabled or self.quitting:
             return self.should_show()
