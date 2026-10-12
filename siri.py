@@ -1690,6 +1690,7 @@ def run_voice_assistant(notify=None, controls=None, mode="ptt", mic=""):
         return posted or spoken
 
     commands.start_hazard_thread(_hazard_deliver, quiet_check=_leave_quiet)
+    commands.start_location_keeper()
     threading.Thread(target=warm_cache, daemon=True).start()
     threading.Thread(target=wake_loop, daemon=True).start()
     set_mode(mode)

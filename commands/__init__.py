@@ -277,6 +277,7 @@ from .shift_override import (
 from .travel import (
     current_coordinate,
     expected_travel_seconds,
+    start_location_keeper,
 )
 
 from .leave import (

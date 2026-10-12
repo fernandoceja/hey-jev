@@ -256,10 +256,11 @@ def speak_eta_to_work(now=None, path=None, events=None, home_path=None):
 def speak_eta_home(now=None, home_path=None, origin=None, locate=True):
     """How long the drive home is if you leave now.
 
-    The start is this Mac's location when `locate` finds one. Otherwise it is
-    the Brea store, and the reply says so. The lookup waits a few seconds on
-    a side thread, so a location permission panel cannot hold the command
-    turn. The end is home-address.txt, or HOME_ADDRESS when that file is
+    The start is this Mac's location when a cached or fresh fix is available.
+    The command turn waits at most a few seconds. A background keeper keeps
+    listening after that and refreshes the cache, so a later ETA can use the
+    fix without waiting. Otherwise the start is the Brea store, and the reply
+    says so. The end is home-address.txt, or HOME_ADDRESS when that file is
     missing. The street is not spoken. `origin` skips the location lookup.
     Tests pass a coordinate or None.
     """
