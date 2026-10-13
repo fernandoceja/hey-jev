@@ -661,6 +661,18 @@ from .tutor import (
     tutor_command,
 )
 
+from .games import (
+    GAMES,
+    GAME_NOT_INSTALLED,
+    GAMES_NOT_MAC,
+    OPENING_GAME,
+    game_app_path,
+    is_game_phrase,
+    match_game,
+    open_game,
+    open_game_from_text,
+)
+
 from .gods_eye import (
     GODS_EYE_FAILED,
     GODS_EYE_MISSING,
