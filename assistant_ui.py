@@ -1822,16 +1822,20 @@ class AppDelegate(NSObject):
             return
         self.bar.reply = ""
         self.mini_field.setStringValue_("")
+        local_reply = False
         if plan["kind"] == "run":
             # Mark the turn before the keyboard goes back, so that blur waits for it.
             if hasattr(self, "pill"):
                 self.pill.command_started()
             if not self.worker_started:
                 self._show_bar_reply("Add your API keys in the main window first.")
+                local_reply = True
             else:
                 self.controls.put(plan["control"])
         self._refresh_trailing_symbol()
         self._restore_front_app()
+        if local_reply and hasattr(self, "pill"):
+            self.pill.hold_local_reply()
 
     def miniMicDown_(self, _sender):
         if self._mini_mic_held:
@@ -2053,14 +2057,6 @@ class AppDelegate(NSObject):
         mic.speakingTint = self.pill.mic_tint() == "blue"
         if hasattr(mic, "_apply_pill_tint"):
             mic._apply_pill_tint()
-
-    @objc.python_method
-    def _finish_pill_command(self):
-        pill = getattr(self, "pill", None)
-        if pill is None or not (pill.busy or pill.showing_reply):
-            return
-        pill.command_finished()
-        self._apply_pill_presentation()
 
     def expandMiniBar_(self, _sender):
         """A click on the idle capsule opens the typing pill and shows the caret."""
@@ -3014,7 +3010,10 @@ class AppDelegate(NSObject):
             if self.bar.reply_due_clear(time.time(), field.stringValue()):
                 field.setStringValue_("")
                 self._refresh_trailing_symbol()
-                self._finish_pill_command()
+                # The timer clears text. It collapses only a reply that already
+                # reached a terminal status. A slow turn stays open.
+                if hasattr(self, "pill") and self.pill.display_cleared() == "collapsed":
+                    self._apply_pill_presentation()
             elif had_reply and not self.bar.reply and hasattr(self, "pill") and (
                 self.pill.busy or self.pill.showing_reply
             ):
@@ -3048,7 +3047,9 @@ class AppDelegate(NSObject):
             self._refresh_home_history()
         option_down = bool(getattr(self, "option_down", False))
         show_line = bool(shown) and status_shows_in_pill(state, option_down)
+        displayed = False
         if show_line and getattr(self, "mini_panel", None) is not None and self.mini_panel.isVisible():
+            displayed = True
             if hasattr(self, "pill") and self.pill.collapsed:
                 self.pill.reveal_reply()
                 self._apply_pill_presentation()
@@ -3058,7 +3059,7 @@ class AppDelegate(NSObject):
         elif getattr(self, "mini_mic", None) is not None:
             self._refresh_trailing_symbol()
         if hasattr(self, "pill") and self.pill.busy:
-            if self.pill.note_status(state, bool(shown) and show_line) == "collapsed":
+            if self.pill.note_status(state, displayed) == "collapsed":
                 self._apply_pill_presentation()
         if shown and getattr(self, "choice_answer", None) is not None:
             panel = getattr(self, "choice_panel", None)

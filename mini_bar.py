@@ -1188,18 +1188,47 @@ class PillPresentation:
             return MIC_TINT_SPEAKING
         return MIC_TINT_NORMAL
 
-    def note_status(self, state, has_reply):
-        """Finish a typed command when its status lands and nothing is left to show.
+    def hold_local_reply(self):
+        """The line in the field is the whole result, after the keyboard was handed back.
 
-        A reply stays up; the caller collapses when that reply is cleared.
-        Status while the capsule is idle does not open the typing pill.
+        Missing keys never reaches a terminal status. The field timer may close
+        this reply. It is not a turn that is still running.
+        """
+        self.busy = False
+        self.showing_reply = True
+        self.expanded = True
+        return self._mode()
+
+    def display_cleared(self):
+        """The 4-second field timer wiped a line.
+
+        That timer only closes a reply whose command already finished. A slow
+        turn (Thinking, then a long jev or model call) stays open.
+        """
+        if self.busy:
+            return self._mode()
+        if self.showing_reply:
+            return self.command_finished()
+        return self._mode()
+
+    def note_status(self, state, displayed):
+        """Finish a typed command on a terminal status.
+
+        `displayed` is true only when the line was put in the pill. A line that
+        could have been shown, but was not because the bar was hidden, does not
+        count. A hidden terminal status clears busy immediately so it cannot
+        stick. A shown terminal reply stays up until the field timer clears it.
+        The timer itself never finishes a command that is still running.
         """
         if not self.busy:
             return self._mode()
-        if has_reply and status_shows_in_pill(state, self.option_down):
+        if displayed:
             self.showing_reply = True
-        if state in _COMMAND_DONE and not has_reply:
+        if state not in _COMMAND_DONE:
+            return self._mode()
+        if not displayed:
             return self.command_finished()
+        self.busy = False
         return self._mode()
 
 
