@@ -4,6 +4,8 @@ import unittest
 
 import commands
 from mini_bar import (
+    BAR_COLLECTION,
+    meter_active,
     ACTIVATE_IGNORING_OTHERS,
     PILL_BECOMES_KEY_ONLY_IF_NEEDED,
     PillKeyFocus,
@@ -221,3 +223,35 @@ class TestPillKeyWindow(unittest.TestCase):
         self.assertNotIn("listen(", bar)
         self.assertNotIn("app_quit", commands.BRIDGE_ALLOW)
         self.assertNotIn("app_open", commands.BRIDGE_ALLOW)
+
+    def test_hold_option_meter_and_level_stay_off_appkit(self):
+        """BAR_COLLECTION includes IgnoresCycle. The capsule window level is 28.
+
+        Listening starts the meter timer. A final status stops it. This reads
+        source only, so AppKit is not imported. mac_guard covers the suite.
+        """
+        ui = open(os.path.join(ROOT, "assistant_ui.py"), encoding="utf-8").read()
+        self.assertEqual(BAR_COLLECTION & 64, 64)
+        level = None
+        for line in ui.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("BAR_LEVEL ="):
+                level = int(stripped.split("=", 1)[1].split("#", 1)[0].strip())
+        self.assertEqual(level, 28)
+        self.assertTrue(meter_active("Listening"))
+        self.assertFalse(meter_active("Ready"))
+        self.assertFalse(meter_active("Something went wrong"))
+        self.assertFalse(meter_active("Time's up"))
+        status = _func(ui, "updateStatus_")
+        self.assertIn("meter_active(state, held)", status)
+        self.assertIn("_sync_level_meter(True)", status)
+        self.assertIn("_sync_level_meter(False)", status)
+        meter = _func(ui, "_sync_level_meter")
+        self.assertIn("1.0 / 30.0", meter)
+        self.assertIn("invalidate()", meter)
+        expand = _func(ui, "expandMiniBar_")
+        self.assertIn("_place_expanded_on_main_screen()", expand)
+        placed = _func(ui, "_place_expanded_on_main_screen")
+        self.assertIn("NSScreen.mainScreen()", placed)
+        self.assertIn("ptt.watchdog(time.monotonic(), NSEvent.modifierFlags())", _func(ui, "tick_"))
+        self.assertNotIn("CGEventTap", ui)

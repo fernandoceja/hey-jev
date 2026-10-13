@@ -29,6 +29,7 @@ from mini_bar import (
     format_origin,
     format_size,
     hit_control,
+    meter_active,
     mic_event,
     attachments_supported,
     parse_origin,
@@ -151,7 +152,8 @@ class TestSubmit(unittest.TestCase):
         self.assertEqual(mic_event("down"), "press")
         self.assertEqual(mic_event("up"), "release")
         ui = open(os.path.join(ROOT, "assistant_ui.py"), encoding="utf-8").read()
-        self.assertIn('self.controls.put("press" if is_down else "release")', ui)
+        self.assertIn("self.controls.put(token)", ui)
+        self.assertIn("on_flags", _func(ui, "_handle_flags"))
         submit = _func(ui, "miniSubmit_")
         for banned in ("deminiaturize_", "makeKeyAndOrderFront_", "activateIgnoringOtherApps_", "showMain_"):
             self.assertNotIn(banned, submit)
@@ -227,6 +229,7 @@ class TestPlacement(unittest.TestCase):
         self.assertEqual(FULL_SCREEN_AUXILIARY, 256)
         self.assertEqual(BAR_COLLECTION & CAN_JOIN_ALL_SPACES, CAN_JOIN_ALL_SPACES)
         self.assertEqual(BAR_COLLECTION & FULL_SCREEN_AUXILIARY, FULL_SCREEN_AUXILIARY)
+        self.assertEqual(BAR_COLLECTION & 64, 64)
 
     def test_plus_field_and_mic_fit_in_the_pill(self):
         frames = list(bar_controls().values())
@@ -516,6 +519,47 @@ _CAPTURE_MENU_IDS = (
     "ask_jev",
     "captures_open",
 )
+
+
+def _assigned_int(source, name):
+    prefix = name + " ="
+    for line in source.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(prefix):
+            return int(stripped.split("=", 1)[1].split("#", 1)[0].strip())
+    raise AssertionError(name)
+
+
+class TestLevelMeter(unittest.TestCase):
+    def test_the_meter_starts_on_listening_and_stops_on_a_final_status(self):
+        """IgnoresCycle is part of the mask. The capsule level is above the menu extras.
+
+        The 30 fps timer runs while Listening or held, and a terminal status
+        stops it. AppKit is not loaded here; the suite mac_guard stays in place.
+        """
+        self.assertEqual(BAR_COLLECTION & 64, 64)
+        ui = open(os.path.join(ROOT, "assistant_ui.py"), encoding="utf-8").read()
+        self.assertEqual(_assigned_int(ui, "BAR_LEVEL"), 28)
+        self.assertTrue(meter_active("Listening"))
+        self.assertTrue(meter_active("Thinking", held=True))
+        self.assertFalse(meter_active("Ready"))
+        self.assertFalse(meter_active("Something went wrong"))
+        self.assertFalse(meter_active("Time's up", held=True))
+        self.assertFalse(meter_active("Transcribing"))
+        status = _func(ui, "updateStatus_")
+        self.assertIn("meter_active(state, held)", status)
+        self.assertIn("_sync_level_meter(True)", status)
+        self.assertIn("_sync_level_meter(False)", status)
+        self.assertLess(status.index("meter_active(state, held)"), status.index("_sync_level_meter(True)"))
+        self.assertLess(status.index("_sync_level_meter(True)"), status.index("_sync_level_meter(False)"))
+        meter = _func(ui, "_sync_level_meter")
+        self.assertIn("1.0 / 30.0", meter)
+        self.assertIn('pulseMeter:', meter)
+        self.assertIn("invalidate()", meter)
+        pulse = _func(ui, "pulseMeter_")
+        self.assertIn("mic.level()", pulse)
+        self.assertIn("unit ** 0.7", pulse)
+        self.assertNotIn("CGEventTap", ui)
 
 
 class TestGlass(unittest.TestCase):

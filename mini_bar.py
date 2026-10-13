@@ -10,8 +10,11 @@ focuses it. Return and Esc hand the keyboard back to the app that was in front.
 
 Idle, the pill is a small capsule with only the mic. A click opens the typing
 pill. It closes again when the command finishes, when focus leaves, or on Esc.
-Holding Option to talk turns that mic blue until the key comes up.
+Holding Option to talk turns that mic blue until the key comes up. While that
+hold is Listening, the mic view draws a level from the same block loudness the
+recorder stores.
 """
+import math
 
 BAR_W = 420.0
 BAR_H = 44.0
@@ -412,9 +415,11 @@ def normalize_typed(text):
 # NSWindowCollectionBehaviorCanJoinAllSpaces | FullScreenAuxiliary | Stationary.
 # Stationary keeps the pill from hopping when Spaces change; the other two put
 # it on every Space, including over a full-screen app.
+# IgnoresCycle (64) keeps the capsule out of the Command-` window cycle.
 CAN_JOIN_ALL_SPACES = 1
 FULL_SCREEN_AUXILIARY = 256
 BAR_COLLECTION = CAN_JOIN_ALL_SPACES | FULL_SCREEN_AUXILIARY | 16
+BAR_COLLECTION |= 64
 
 
 def attachments_supported():
@@ -1097,6 +1102,76 @@ def reply_text(state, detail):
     if state == "Ready" and text in _IDLE_READY:
         return None
     return text
+
+
+def block_level_db(samples):
+    """dBFS of one mic block.
+
+    rms = sqrt(mean(x**2)), then 20*log10(max(rms, 1e-6)). Silence is that
+    1e-6 floor. Recorder._cb stores the same expression on every block.
+    """
+    total = 0.0
+    count = 0
+    for value in samples:
+        try:
+            sample = float(value)
+        except (TypeError, ValueError):
+            continue
+        total += sample * sample
+        count += 1
+    if count <= 0:
+        rms = 0.0
+    else:
+        rms = math.sqrt(total / float(count))
+    return 20.0 * math.log10(max(rms, 1e-6))
+
+
+def level_to_unit(db, floor=-60):
+    """Map dBFS onto 0..1. The floor, and anything quieter, is silence. 0 dB is full."""
+    try:
+        value = float(db)
+        bottom = float(floor)
+    except (TypeError, ValueError):
+        return 0.0
+    if bottom >= 0.0:
+        return 0.0
+    if value <= bottom:
+        return 0.0
+    if value >= 0.0:
+        return 1.0
+    return (value - bottom) / (0.0 - bottom)
+
+
+def smooth(prev, new, a=0.4):
+    """Step `prev` toward `new`. `a` is the weight of the new sample."""
+    try:
+        previous = float(prev)
+        current = float(new)
+        alpha = float(a)
+    except (TypeError, ValueError):
+        return 0.0
+    return previous + alpha * (current - previous)
+
+
+def status_is_final(state):
+    """Ready, a failure, or a finished timer. Listening is not final.
+
+    The same set the pill uses to finish a typed command. The level meter
+    stops on any of these.
+    """
+    return str(state or "") in _COMMAND_DONE
+
+
+def meter_active(state, held=False):
+    """True while Listening or while the key is held, until a final status.
+
+    A final status stops the meter even if the key is still down.
+    """
+    if status_is_final(state):
+        return False
+    if held:
+        return True
+    return str(state or "") == "Listening"
 
 
 def status_shows_in_pill(state, option_down=False):
