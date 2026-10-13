@@ -184,6 +184,8 @@ ZOE_BLOCKED = {
         "media_now",
         # Local Vite app. Still absent from BRIDGE_ALLOW.
         "gods_eye_open",
+        # On-screen tutor. Still absent from BRIDGE_ALLOW.
+        "tutor_explain",
     ),
     "llm": (),
 }

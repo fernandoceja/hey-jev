@@ -830,6 +830,7 @@ def plus_menu(can_attach=None, recording=False, clipboard_entries=None,
     Zoe Mode is checked while kid-safe mode is on. Turning it off is a
     separate confirmation in the window, not a phrase this menu types.
     Hazard Check types "hazard check", the same phrase as the voice command.
+    Tutor types "tutor me". Typed text in the pill is sent as "tutor me on ...".
     Open God's Eye types "open god's eye", the same phrase as the voice command.
     The alert row is Turn On Hazard Alerts until `hazard_alerts` is true,
     then Turn Off Hazard Alerts, and it is checked while alerts are on.
@@ -846,6 +847,7 @@ def plus_menu(can_attach=None, recording=False, clipboard_entries=None,
     else:
         record = _menu_action("record_start", "Start Screen Recording", "record_start", "record.circle")
     quick = (
+        _menu_text("tutor", "Tutor", "tutor me", "graduationcap"),
         _menu_text("brief", "Brief Me", "brief me", "newspaper"),
         _menu_text("play_brief", "Play My Brief", "play my brief", "play.circle"),
         _menu_text("next_shift", "Next Shift", "what's my next shift", "calendar"),

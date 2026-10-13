@@ -464,6 +464,7 @@ class TestSize(unittest.TestCase):
 
 # Phrases the + menu types, and the local command each one already routes to.
 _MENU_ROUTES = {
+    "tutor": "tutor_explain",
     "brief": "info_brief",
     "play_brief": "brief_play",
     "next_shift": "info_next_shift",
@@ -615,7 +616,7 @@ class TestGlass(unittest.TestCase):
                            "clipboard_history", "clipboard_clear", "clipboard_pause",
                            "brief_play", "leave_reminders_on", "leave_reminders_off",
                            "info_hazards", "hazard_alerts_on", "hazard_alerts_off",
-                           "gods_eye_open"):
+                           "gods_eye_open", "tutor_explain"):
                     self.assertNotIn(key, commands.BRIDGE_ALLOW)
                 routed[item["id"]] = key
             else:

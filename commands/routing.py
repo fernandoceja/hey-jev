@@ -5,6 +5,7 @@ from .textutil import _clean
 from .confirm import is_private_message_request, is_quit_all
 from .apps import known_app_name, parse_app_name, resolve_app, resolve_folder, resolve_site, unclear_app_guess
 from .passwords import is_password_lookup
+from .tutor import is_tutor_phrase
 from .shortcuts import jev_shortcut_catalog, parse_shortcut_name, resolve_shortcut
 
 def route_before_api(text):
@@ -28,6 +29,10 @@ def route_before_api(text):
     # to an API, even when the sentence also says "and".
     if is_password_lookup(raw):
         return "password_lookup"
+    # Before the joiner check. "tutor me on sine and cosine" is one explanation.
+    # "explain this problem and mute" does not match, so that sentence can still split.
+    if is_tutor_phrase(raw):
+        return "tutor_explain"
     if JOINER_RE.search(raw):
         return None
     for pattern, key in STRICT_PATTERNS:
