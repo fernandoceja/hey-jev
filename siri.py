@@ -916,8 +916,11 @@ def fetch_tts(text):
     """Return a wav path for this line, generating it once and caching on disk.
 
     Returns (path, ms, cached). path is None when Fish produced no audio.
-    The key is still FISH_AUDIO_API_KEY from the Keychain. Dramatic voice
-    selects drama-3-preview inside synthesize_speech and falls back there.
+    The key is still FISH_AUDIO_API_KEY from the Keychain. The normal Fish
+    model is the default. Dramatic voice, only when the voice-mode file
+    says so, selects drama-3-preview inside synthesize_speech and falls
+    back there. A model that returns HTTP 402 is not requested again
+    until this process ends.
     """
     os.makedirs(CACHE_DIR, exist_ok=True)
     result = commands.synthesize_speech(

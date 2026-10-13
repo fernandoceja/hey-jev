@@ -68,6 +68,12 @@ class TestVoiceSetting(unittest.TestCase):
         self.assertEqual(commands.which_voice(), "I'm using the normal voice.")
         self.assertEqual(commands.use_normal_voice(), "You're already using the normal voice.")
         self.assertFalse(os.path.exists(self.path))
+        request = commands.speech_request("Opening it up.", commands.dramatic_voice_enabled())
+        self.assertEqual(request["model"], FISH_MODEL)
+        self.assertEqual(request["model"], "s2.1-pro-free")
+        self.assertNotEqual(request["model"], DRAMA_MODEL)
+        self.assertNotIn("drama-3-preview", request["model"])
+        self.assertNotIn("eleven", request["model"])
 
     def test_use_dramatic_voice_persists_and_use_normal_voice_clears_it(self):
         self.assertEqual(commands.use_dramatic_voice(), "Dramatic voice is on.")
@@ -165,6 +171,20 @@ class TestRouting(unittest.TestCase):
         self.assertNotIn("import requests", helper)
         self.assertNotIn("urllib", helper)
         self.assertNotIn("secrets_store", helper)
+        self.assertNotIn("get_secret", helper)
+        self.assertNotIn("import socket", helper)
+        self.assertNotIn("socket.socket", helper)
+        self.assertNotIn(".bind(", helper)
+        self.assertNotIn(".listen(", helper)
+        self.assertNotIn("elevenlabs", helper.lower())
+        self.assertNotIn("ElevenLabs", helper)
+        fetch = source.split("def fetch_tts", 1)[1].split("\ndef speak", 1)[0]
+        warm = source.split("def warm_cache", 1)[1].split("\n# ", 1)[0]
+        self.assertIn("dramatic_voice_enabled()", fetch)
+        self.assertNotIn("dramatic=True", fetch)
+        self.assertNotIn("drama-3-preview", warm)
+        self.assertNotIn("elevenlabs", warm.lower())
+        self.assertIn("fetch_tts", warm)
 
 
 class TestCues(unittest.TestCase):
@@ -586,8 +606,104 @@ class TestSynthesize(unittest.TestCase):
         self.assertIsNone(result)
         self.assertEqual(len(client.calls), 1)
         self.assertEqual(client.calls[0]["headers"]["model"], FISH_MODEL)
+        self.assertEqual(commands.claim_drama_plan_notice(), "")
         result2, client2 = self._speak("Hello there.", [_Response(content=b"drama-wav")], True)
         self.assertEqual(len(client2.calls), 1)
         self.assertEqual(client2.calls[0]["headers"]["model"], DRAMA_MODEL)
         self.assertFalse(result2.fell_back)
         self.assertEqual(result2.model, DRAMA_MODEL)
+
+    def test_startup_and_speech_default_to_the_normal_model(self):
+        lines = ("Opening it up.", "Done.", "It's been a while.")
+        for line in lines:
+            result, client = self._speak(line, [_Response(content=b"wav")], False)
+            self.assertEqual(len(client.calls), 1, line)
+            self.assertEqual(client.calls[0]["headers"]["model"], FISH_MODEL, line)
+            self.assertNotEqual(client.calls[0]["headers"]["model"], DRAMA_MODEL, line)
+            self.assertNotIn("eleven", client.calls[0]["headers"]["model"])
+            self.assertEqual(result.model, FISH_MODEL, line)
+            self.assertFalse(result.fell_back, line)
+        opted, client = self._speak("Now dramatic.", [_Response(content=b"drama-wav")], True)
+        self.assertEqual(client.calls[0]["headers"]["model"], DRAMA_MODEL)
+        self.assertEqual(opted.model, DRAMA_MODEL)
+        self.assertFalse(opted.fell_back)
+
+    def test_a_402_on_the_normal_model_is_not_retried(self):
+        result, client = self._speak("Hello.", [_Response(status=402)], False)
+        self.assertIsNone(result)
+        self.assertEqual(len(client.calls), 1)
+        self.assertIn("402", self.logs[0])
+        self.assertIn(FISH_MODEL, self.logs[0])
+        self.assertNotIn(DRAMA_MODEL, self.logs[0])
+        self.assertNotIn(API_KEY, self.logs[0])
+        again, client_again = self._speak("Another line.", [_Response(content=b"should-not")], False)
+        self.assertIsNone(again)
+        self.assertEqual(client_again.calls, [])
+        self.assertEqual(len(self.logs), 1)
+        # A different status is still retried. Only 402 sticks to the model.
+        reset_drama_session()
+        self.logs = []
+        denied, denied_client = self._speak("Hello.", [_Response(status=401)], False)
+        self.assertIsNone(denied)
+        retried, retry_client = self._speak("Hello again.", [_Response(content=b"ok")], False)
+        self.assertEqual(len(denied_client.calls), 1)
+        self.assertEqual(len(retry_client.calls), 1)
+        self.assertEqual(retry_client.calls[0]["headers"]["model"], FISH_MODEL)
+        self.assertEqual(open(retried.path, "rb").read(), b"ok")
+
+    def test_a_cached_normal_line_still_plays_after_that_model_returns_402(self):
+        first, _client = self._speak("Hello.", [_Response(content=b"cached")], False)
+        missed, client = self._speak("Other line.", [_Response(status=402)], False)
+        self.assertIsNone(missed)
+        self.assertEqual(len(client.calls), 1)
+        again, client_again = self._speak("Hello.", [_Response(content=b"new")], False)
+        self.assertEqual(client_again.calls, [])
+        self.assertTrue(again.cached)
+        self.assertEqual(again.path, first.path)
+        self.assertEqual(open(again.path, "rb").read(), b"cached")
+
+    def test_a_402_on_either_model_stops_that_model_for_the_session(self):
+        result, client = self._speak(
+            "[cheerful] Hello.",
+            [_Response(status=402), _Response(status=402)],
+            True,
+        )
+        self.assertIsNone(result)
+        self.assertEqual(len(client.calls), 2)
+        self.assertEqual(client.calls[0]["headers"]["model"], DRAMA_MODEL)
+        self.assertEqual(client.calls[1]["headers"]["model"], FISH_MODEL)
+        self.assertEqual(client.calls[1]["json"]["text"], "Hello.")
+        self.assertIn("402", self.logs[0])
+        self.assertIn("also failed", self.logs[0])
+        self.assertNotIn(API_KEY, self.logs[0])
+        self.assertNotIn("eleven", self.logs[0].lower())
+        later, later_client = self._speak("Next line.", [_Response(content=b"nope")], True)
+        self.assertIsNone(later)
+        self.assertEqual(later_client.calls, [])
+        warmup, warmup_client = self._speak("Warmup line.", [_Response(content=b"nope")], False)
+        self.assertIsNone(warmup)
+        self.assertEqual(warmup_client.calls, [])
+
+    def test_a_402_on_the_fallback_is_not_retried_when_drama_times_out_again(self):
+        result, client = self._speak(
+            "Hello.",
+            [TimeoutError("timed out"), _Response(status=402)],
+            True,
+        )
+        self.assertIsNone(result)
+        self.assertEqual(len(client.calls), 2)
+        self.assertEqual(client.calls[0]["headers"]["model"], DRAMA_MODEL)
+        self.assertEqual(client.calls[1]["headers"]["model"], FISH_MODEL)
+        self.assertIn("also failed", self.logs[0])
+        self.assertNotIn("for the rest of this session", self.logs[0])
+        later, later_client = self._speak(
+            "Next line.",
+            [TimeoutError("timed out"), _Response(content=b"should-not")],
+            True,
+        )
+        self.assertIsNone(later)
+        self.assertEqual(len(later_client.calls), 1)
+        self.assertEqual(later_client.calls[0]["headers"]["model"], DRAMA_MODEL)
+        self.assertIn("was not requested again after HTTP 402", self.logs[-1])
+        self.assertNotIn(API_KEY, self.logs[-1])
+        self.assertNotIn("eleven", self.logs[-1].lower())
