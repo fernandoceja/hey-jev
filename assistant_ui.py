@@ -120,6 +120,8 @@ from mini_bar import (
     enabled_from_pref,
     format_origin,
     format_size,
+    level_to_unit,
+    meter_active,
     mic_event,
     parse_origin,
     pill_chrome,
@@ -141,6 +143,7 @@ from mini_bar import (
     reset_origin,
     resize_edges,
     resize_frame,
+    smooth,
     submission,
     trailing_symbol,
     type_focus_hotkey,
@@ -152,6 +155,7 @@ from mini_bar import (
     undo_main_reveal,
     is_our_app,
 )
+from ptt import PushToTalk
 from secrets_store import KEY_NAMES, OPTIONAL, get_secret, missing_secrets, save_secret
 from commands.model import CLAUDE_MODEL, MODEL_PREF
 from updates import check_upstream, safe_browser_url
@@ -160,7 +164,7 @@ from updates import check_upstream, safe_browser_url
 KeyablePanel = keyable_panel(NSPanel)
 
 NORMAL, FLOATING = 0, 3  # NSNormalWindowLevel, NSFloatingWindowLevel
-BAR_LEVEL = 25  # NSStatusWindowLevel, above the main window even when that one floats
+BAR_LEVEL = 28  # above NSStatusWindowLevel, so the capsule stays over status items
 SIDEBAR_MATERIAL = 7  # NSVisualEffectMaterialSidebar
 HINTS = {"ptt": "Hold right Option to talk", "wake": "Say “Hey Jev”, then your command"}
 MODES = ("ptt", "wake")
@@ -203,6 +207,24 @@ STATUS_COLORS = {
     "Dictating": NSColor.systemRedColor(),
     "Finishing": NSColor.systemBlueColor(),
 }
+
+
+_IDLE_STATUS_DETAILS = {
+    "",
+    "Loading Whisper\u2026",
+    "Add your API keys to begin",
+    "Ready when you are",
+    "Say \u201cHey Jev\u201d and your command",
+}
+
+
+def _hold_option_detail(owner, state, detail):
+    """Keep the permission line on idle states. A real reply still shows."""
+    if not getattr(owner, "_hold_option_blocked", False):
+        return detail
+    if state in ("Starting", "Ready") and detail in _IDLE_STATUS_DETAILS:
+        return "Hold-Option needs Accessibility"
+    return detail
 
 
 def label(text, frame, size, color=None, weight=0.5):
@@ -546,6 +568,69 @@ class PillButton(NSButton):
         self.setContentTintColor_(color)
 
 
+class MicLevelView(NSView):
+    """Live mic level over the glyph: a ring and four bars.
+
+    Amplitude is the smoothed unit raised to 0.7. Clicks fall through to the
+    mic button. An idle amplitude draws nothing, so the glyph stays put until
+    the key is held.
+    """
+
+    def hitTest_(self, _point):
+        return None
+
+    def setAmplitude_(self, unit):
+        try:
+            value = float(unit)
+        except (TypeError, ValueError):
+            value = 0.0
+        if value < 0.0:
+            value = 0.0
+        elif value > 1.0:
+            value = 1.0
+        self.amplitude = value
+        self.setNeedsDisplay_(True)
+
+    def drawRect_(self, _rect):
+        try:
+            self._draw_level()
+        except Exception as exc:
+            print(f"  mic level draw failed: {exc}")
+
+    @objc.python_method
+    def _draw_level(self):
+        amp = float(getattr(self, "amplitude", 0.0) or 0.0)
+        if amp <= 0.02:
+            return
+        bounds = self.bounds()
+        width = float(bounds.size.width)
+        height = float(bounds.size.height)
+        if width < 8.0 or height < 8.0:
+            return
+        color = NSColor.systemBlueColor()
+        inset = 1.0
+        radius = min(width, height) / 2.0 - inset
+        oval = NSMakeRect(width / 2.0 - radius, height / 2.0 - radius, radius * 2.0, radius * 2.0)
+        ring = NSBezierPath.bezierPathWithOvalInRect_(oval)
+        color.colorWithAlphaComponent_(0.35 + 0.65 * amp).setStroke()
+        ring.setLineWidth_(1.0 + 1.5 * amp)
+        ring.stroke()
+        shapes = (0.55, 0.9, 1.0, 0.7)
+        gap = max(1.0, width * 0.05)
+        bar_w = max(1.5, (width * 0.46 - gap * (len(shapes) - 1)) / len(shapes))
+        total = bar_w * len(shapes) + gap * (len(shapes) - 1)
+        left = (width - total) / 2.0
+        max_h = height * 0.46
+        for index, shape in enumerate(shapes):
+            bar_h = max(2.0, max_h * amp * shape)
+            x = left + index * (bar_w + gap)
+            y = (height - bar_h) / 2.0
+            rect = NSMakeRect(x, y, bar_w, bar_h)
+            bar = NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(rect, bar_w / 2.0, bar_w / 2.0)
+            color.colorWithAlphaComponent_(0.9).setFill()
+            bar.fill()
+
+
 class HoldMicButton(PillButton):
     """Mouse down and up map to the same press and release as right Option.
 
@@ -610,6 +695,7 @@ class AppDelegate(NSObject):
     def applicationDidFinishLaunching_(self, _notification):
         self.controls = queue.Queue()
         self.option_down = False
+        self.ptt = PushToTalk()
         self.worker_started = False
         defaults = NSUserDefaults.standardUserDefaults()
         self.mode = defaults.stringForKey_("mode") or "ptt"
@@ -681,10 +767,13 @@ class AppDelegate(NSObject):
             NSEventMaskKeyDown, self._global_type_key
         )
         self._sync_mini_bar()
+        self._hold_option_blocked = self.global_monitor is None or not self._accessibility_trusted()
         if missing_secrets():
             self.updateStatus_({"state": "Starting", "detail": "Add your API keys to begin"})
         else:
             self._start_worker()
+        if self._hold_option_blocked:
+            self.updateStatus_({"state": "Starting", "detail": "Hold-Option needs Accessibility"})
 
     # ------------------------------------------------------------------ layout
     @objc.python_method
@@ -1442,23 +1531,87 @@ class AppDelegate(NSObject):
             if panel is not None and panel.isKeyWindow():
                 self.miniDismiss_(None)
                 return None
+        if getattr(self, "ptt", None) is not None and self.ptt.on_key(event.keyCode(), time.monotonic()) == "cancel":
+            self._cancel_ptt()
+            return None
         return event
 
     def _global_type_key(self, event):
         if type_focus_hotkey(event.keyCode(), event.modifierFlags()):
             self.performSelectorOnMainThread_withObject_waitUntilDone_("focusTypeField:", None, False)
+            return
+        if getattr(self, "ptt", None) is not None and self.ptt.on_key(event.keyCode(), time.monotonic()) == "cancel":
+            self._cancel_ptt()
 
     @objc.python_method
     def _handle_flags(self, event):
-        if event.keyCode() != 61:
+        ptt = getattr(self, "ptt", None)
+        if ptt is None:
             return
-        is_down = bool(event.modifierFlags() & NSEventModifierFlagOption)
+        token = ptt.on_flags(event.keyCode(), event.modifierFlags(), time.monotonic())
+        if not token:
+            return
+        self.controls.put(token)
+        is_down = token == "press"
         if is_down != self.option_down:
             self.option_down = is_down
-            self.controls.put("press" if is_down else "release")
             if hasattr(self, "pill"):
                 self.pill.option_changed(is_down)
                 self._apply_mic_tint()
+        self._sync_level_meter(is_down or self._is_listening())
+
+    @objc.python_method
+    def _cancel_ptt(self):
+        """A typing key inside the interrupt window: release the hold and drop the audio."""
+        self.option_down = False
+        if hasattr(self, "pill"):
+            self.pill.option_changed(False)
+            self._apply_mic_tint()
+        self._sync_level_meter(False)
+        self.controls.put("discard")
+        self.controls.put("release")
+
+    @objc.python_method
+    def _release_ptt(self, token):
+        if token != "release":
+            return
+        self.option_down = False
+        self.controls.put(token)
+        if hasattr(self, "pill"):
+            self.pill.option_changed(False)
+            self._apply_mic_tint()
+        self._sync_level_meter(False)
+
+    @objc.python_method
+    def _force_ptt_release(self, reason):
+        ptt = getattr(self, "ptt", None)
+        if ptt is None:
+            return
+        token = ptt.force_release(reason)
+        if token:
+            self._release_ptt(token)
+
+    def workspaceWillSleep_(self, _notification):
+        self._force_ptt_release("sleep")
+
+    def activeSpaceDidChange_(self, _notification):
+        self._force_ptt_release("space")
+
+    @objc.python_method
+    def _accessibility_trusted(self):
+        """False only when the Accessibility check itself says so.
+
+        A missing binding is not a failed check. The global monitor returning
+        None is the other signal, handled by the caller.
+        """
+        try:
+            from ApplicationServices import AXIsProcessTrusted
+        except Exception:
+            return True
+        try:
+            return bool(AXIsProcessTrusted())
+        except Exception:
+            return True
 
     @objc.python_method
     def _start_worker(self):
@@ -1649,6 +1802,9 @@ class AppDelegate(NSObject):
         self.mini_mic.pillRole = "mic"
         self._set_button_symbol(self.mini_mic, "mic.fill", "Listen")
         root.addSubview_(self.mini_mic)
+        self.mic_level_view = MicLevelView.alloc().initWithFrame_(NSMakeRect(0, 0, 10, 10))
+        self.mic_level_view.setAmplitude_(0.0)
+        root.addSubview_(self.mic_level_view)
         self.rec_label = NSTextField.labelWithString_("")
         self.rec_label.setTextColor_(NSColor.systemRedColor())
         self.rec_label.setFont_(NSFont.systemFontOfSize_weight_(13, 0.6))
@@ -1842,6 +1998,7 @@ class AppDelegate(NSObject):
             return
         self._mini_mic_held = True
         self.controls.put(mic_event("down"))
+        self._sync_level_meter(True)
         self._refresh_trailing_symbol()
 
     def miniMicUp_(self, _sender):
@@ -1849,6 +2006,7 @@ class AppDelegate(NSObject):
             return
         self._mini_mic_held = False
         self.controls.put(mic_event("up"))
+        self._sync_level_meter(self._is_listening())
         self._refresh_trailing_symbol()
 
     def miniDismiss_(self, _sender):
@@ -1964,6 +2122,7 @@ class AppDelegate(NSObject):
         _place(self.mini_field, (field[0], field[1], max(40.0, field[2] - badge), field[3]))
         self.mini_field.setFont_(NSFont.systemFontOfSize_(metrics["field_font"]))
         _place(self.mini_mic, frames["mic"])
+        self._place_mic_level(frames["mic"])
         if hasattr(self, "rec_stop"):
             _place(self.rec_stop, frames["mic"])
             _place(self.rec_label, (field[0], field[1], min(88.0, field[2]), field[3]))
@@ -1975,12 +2134,20 @@ class AppDelegate(NSObject):
         self._refresh_trailing_symbol()
 
     @objc.python_method
+    def _place_mic_level(self, mic_frame):
+        view = getattr(self, "mic_level_view", None)
+        if view is None:
+            return
+        _place(view, mic_frame)
+
+    @objc.python_method
     def _layout_collapsed_capsule(self, width, height):
         """Mic only, centered in the idle capsule. The typing controls stay hidden."""
         frames = capsule_controls((width, height))
         self.mini_plus.setHidden_(True)
         self.mini_field.setHidden_(True)
         _place(self.mini_mic, frames["mic"])
+        self._place_mic_level(frames["mic"])
         self.mini_mic.pillRole = "expand"
         if hasattr(self, "rec_stop"):
             _place(self.rec_stop, frames["mic"])
@@ -2050,6 +2217,23 @@ class AppDelegate(NSObject):
         self._apply_mic_tint()
 
     @objc.python_method
+    def _place_expanded_on_main_screen(self):
+        """The typing pill opens on the main screen. An origin already there stays."""
+        screen = NSScreen.mainScreen()
+        if screen is None:
+            return
+        rect = screen.visibleFrame()
+        visible = (
+            float(rect.origin.x),
+            float(rect.origin.y),
+            float(rect.size.width),
+            float(rect.size.height),
+        )
+        size = getattr(self, "_expanded_size", None) or default_size()
+        origin = getattr(self, "_expanded_origin", None)
+        self._expanded_origin = place_bar(origin, visible, size)
+
+    @objc.python_method
     def _apply_mic_tint(self):
         mic = getattr(self, "mini_mic", None)
         if mic is None or not hasattr(self, "pill"):
@@ -2066,6 +2250,7 @@ class AppDelegate(NSObject):
             self._focus_pill_field()
             return
         self.pill.click()
+        self._place_expanded_on_main_screen()
         self._apply_pill_presentation()
         self._focus_pill_field()
 
@@ -2214,10 +2399,23 @@ class AppDelegate(NSObject):
     def _watch_display_options(self):
         if getattr(self, "_pill_watched", False):
             return
-        NSWorkspace.sharedWorkspace().notificationCenter().addObserver_selector_name_object_(
+        center = NSWorkspace.sharedWorkspace().notificationCenter()
+        center.addObserver_selector_name_object_(
             self,
             "refreshPillChrome:",
             "NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification",
+            None,
+        )
+        center.addObserver_selector_name_object_(
+            self,
+            "workspaceWillSleep:",
+            "NSWorkspaceWillSleepNotification",
+            None,
+        )
+        center.addObserver_selector_name_object_(
+            self,
+            "activeSpaceDidChange:",
+            "NSWorkspaceActiveSpaceDidChangeNotification",
             None,
         )
         self._pill_watched = True
@@ -2304,6 +2502,43 @@ class AppDelegate(NSObject):
             return
         self._listen_dim = not getattr(self, "_listen_dim", False)
         mic.setAlphaValue_(0.55 if self._listen_dim else 1.0)
+
+    @objc.python_method
+    def _sync_level_meter(self, active):
+        """30 fps while Listening or held. A final status, and leaving that state, stops it."""
+        timer = getattr(self, "_meter_timer", None)
+        if active:
+            if timer is None:
+                self._meter_unit = 0.0
+                self._meter_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                    1.0 / 30.0, self, "pulseMeter:", None, True)
+            return
+        if timer is not None:
+            timer.invalidate()
+            self._meter_timer = None
+        self._meter_unit = 0.0
+        view = getattr(self, "mic_level_view", None)
+        if view is not None:
+            view.setAmplitude_(0.0)
+
+    def pulseMeter_(self, _timer):
+        siri = sys.modules.get("siri")
+        mic = getattr(siri, "live_mic", None) if siri is not None else None
+        if mic is None or not hasattr(mic, "level"):
+            return
+        try:
+            db = mic.level()
+        except Exception:
+            return
+        unit = smooth(getattr(self, "_meter_unit", 0.0), level_to_unit(db))
+        self._meter_unit = unit
+        amplitude = unit ** 0.7
+        view = getattr(self, "mic_level_view", None)
+        if view is not None:
+            view.setAmplitude_(amplitude)
+        button = getattr(self, "mini_mic", None)
+        if button is not None:
+            button.amplitude = amplitude
 
     @objc.python_method
     def _hazard_alerts_on(self):
@@ -2993,6 +3228,11 @@ class AppDelegate(NSObject):
             detail.setStringValue_(shown)
 
     def tick_(self, _timer):
+        ptt = getattr(self, "ptt", None)
+        if ptt is not None:
+            token = ptt.watchdog(time.monotonic(), NSEvent.modifierFlags())
+            if token:
+                self._release_ptt(token)
         siri = sys.modules.get("siri")
         timers = siri.timer_snapshot()[:3] if hasattr(siri, "timer_snapshot") else []  # siri may still be loading
         for i, (name_view, time_view) in enumerate(self.timer_rows):
@@ -3035,7 +3275,7 @@ class AppDelegate(NSObject):
         state = str(payload["state"])
         detail = str(payload.get("detail", ""))
         self.status.setStringValue_(state)
-        self.detail.setStringValue_(detail)
+        self.detail.setStringValue_(_hold_option_detail(self, state, detail))
         self.dot.setTextColor_(STATUS_COLORS.get(state, NSColor.labelColor()))
         if state in ("Dictating", "Finishing"):
             self.bubble.show(working=state == "Finishing")
@@ -3052,6 +3292,7 @@ class AppDelegate(NSObject):
             displayed = True
             if hasattr(self, "pill") and self.pill.collapsed:
                 self.pill.reveal_reply()
+                self._place_expanded_on_main_screen()
                 self._apply_pill_presentation()
             elif hasattr(self, "pill"):
                 self.pill.reveal_reply()
@@ -3061,6 +3302,11 @@ class AppDelegate(NSObject):
         if hasattr(self, "pill") and self.pill.busy:
             if self.pill.note_status(state, displayed) == "collapsed":
                 self._apply_pill_presentation()
+        held = bool(getattr(self, "option_down", False) or getattr(self, "_mini_mic_held", False))
+        if meter_active(state, held):
+            self._sync_level_meter(True)
+        else:
+            self._sync_level_meter(False)
         if shown and getattr(self, "choice_answer", None) is not None:
             panel = getattr(self, "choice_panel", None)
             if panel is not None and panel.isVisible() and not capture_saved(shown):
@@ -3081,6 +3327,10 @@ class AppDelegate(NSObject):
         if timer is not None:
             timer.invalidate()
             self._listen_timer = None
+        meter = getattr(self, "_meter_timer", None)
+        if meter is not None:
+            meter.invalidate()
+            self._meter_timer = None
         fade = getattr(self, "_fade_timer", None)
         if fade is not None:
             fade.invalidate()

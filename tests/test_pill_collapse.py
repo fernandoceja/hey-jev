@@ -173,7 +173,8 @@ class TestPillCollapseWiring(unittest.TestCase):
     def test_the_window_collapses_and_tints_the_mic_from_the_same_rules(self):
         ui = open(os.path.join(ROOT, "assistant_ui.py"), encoding="utf-8").read()
         flags = _func(ui, "_handle_flags")
-        self.assertIn('self.controls.put("press" if is_down else "release")', flags)
+        self.assertIn("on_flags", flags)
+        self.assertIn("self.controls.put(token)", flags)
         self.assertIn("option_changed(is_down)", flags)
         self.assertIn("_apply_mic_tint", flags)
         tint = _func(ui, "_apply_pill_tint")

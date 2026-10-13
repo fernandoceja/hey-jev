@@ -68,6 +68,7 @@ WAKE = re.compile(rf"(?:(?:^\W*a|\b(?:hey|hi|hay|okay|ok))\W+(?:{NAMES})\b|^\W*(
 WAKE_WINDOW = 10.0
 DICTATE_CHIME = "/System/Library/Sounds/Pop.aiff"
 MIC_LEVELS = collections.deque(maxlen=40)  # mic loudness while dictating, the bubble draws it
+live_mic = None  # the open Recorder, so the pill can read level() on the main thread
 
 # Add an app with a line in apps.json: "name": "App Name", or {"app", "say", "heard_as"} for extras
 with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "apps.json")) as f:
@@ -1311,13 +1312,20 @@ class Recorder:
     BLOCK = 1600  # 100ms at 16kHz
 
     def __init__(self, mic=""):
+        global live_mic
         self.frames, self.on = [], False
         self.wake, self.paused, self.dictating = False, False, False
         self.segments = queue.Queue()
         self.noise = 0.005
+        self.level_db = -120.0  # 20*log10(1e-6) until the first block
         self._reset_segment()
         self.stream = self._open(mic)
         self.mic_lock = threading.Lock()
+        live_mic = self
+
+    def level(self):
+        """Latest block level in dBFS. Silence sits on the 1e-6 floor."""
+        return float(self.level_db)
 
     def _open(self, mic):
         if mic:
@@ -1355,6 +1363,10 @@ class Recorder:
         self.preroll = collections.deque(maxlen=3)
 
     def _cb(self, indata, *_):
+        # Per block, including hold-to-talk. Wake and dictation VAD below are unchanged.
+        x = indata[:, 0]
+        rms = float(np.sqrt(np.mean(x ** 2)))
+        self.level_db = 20.0 * float(np.log10(max(rms, 1e-6)))
         if self.on:
             self.frames.append(indata.copy())
         if not (self.wake or self.dictating) or self.paused:
@@ -1598,6 +1610,16 @@ def run_voice_assistant(notify=None, controls=None, mode="ptt", mic=""):
             if len(audio) > SAMPLE_RATE * 0.3:
                 threading.Thread(target=ptt_turn, args=(audio,), daemon=True).start()
 
+    def discard_recording():
+        """Drop a hold that was cancelled. The audio is not transcribed."""
+        if not rec.on:
+            return
+        rec.on = False
+        rec.frames = []
+        rec.sync_mic()
+        if not busy.locked() and not rec.dictating:
+            emit(notify, "Ready", ready_text(rec.wake))
+
     def timer_done(t):
         if rec.dictating:  # don't pause the mic or talk over a dictation, just chime and tell her afterwards
             late_timers.append(t)
@@ -1710,6 +1732,8 @@ def run_voice_assistant(notify=None, controls=None, mode="ptt", mic=""):
                 rec.set_device(command[1])
             elif command == "press":
                 start_recording()
+            elif command == "discard":
+                discard_recording()
             elif command == "release":
                 stop_recording()
             elif isinstance(command, tuple) and command[0] == "text":
