@@ -848,6 +848,7 @@ def plus_menu(can_attach=None, recording=False, clipboard_entries=None,
         record = _menu_action("record_start", "Start Screen Recording", "record_start", "record.circle")
     quick = (
         _menu_text("tutor", "Tutor", "tutor me", "graduationcap"),
+        _menu_text("play_zelda", "Play Zelda", "play zelda", "gamecontroller"),
         _menu_text("brief", "Brief Me", "brief me", "newspaper"),
         _menu_text("play_brief", "Play My Brief", "play my brief", "play.circle"),
         _menu_text("next_shift", "Next Shift", "what's my next shift", "calendar"),

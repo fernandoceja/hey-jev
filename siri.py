@@ -423,6 +423,7 @@ ACTIONS = {
     "folder_open": lambda _arg, text: commands.open_folder_from_text(text),
     "videos_open": lambda _arg, _text: commands.open_videos_folder(),
     "gods_eye_open": lambda _arg, _text: commands.open_gods_eye(),
+    "game_open": lambda _arg, text: commands.open_game_from_text(text),
     "tutor_explain": lambda _arg, text: commands.explain_from_text(text),
     "site_open": lambda _arg, text: commands.open_site_from_text(text),
     "continue_chatgpt": lambda _arg, _text: commands.continue_chatgpt(),

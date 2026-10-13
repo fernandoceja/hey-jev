@@ -186,6 +186,8 @@ ZOE_BLOCKED = {
         "gods_eye_open",
         # On-screen tutor. Still absent from BRIDGE_ALLOW.
         "tutor_explain",
+        # Game ports. Still absent from BRIDGE_ALLOW.
+        "game_open",
     ),
     "llm": (),
 }
