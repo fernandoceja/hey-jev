@@ -2645,6 +2645,18 @@ class AppDelegate(NSObject):
         if not spec:
             return
         kind = spec.get("kind")
+        if item_id == "tutor":
+            from commands.tutor import tutor_command
+            field = ""
+            reply = ""
+            mini = getattr(self, "mini_field", None)
+            if mini is not None:
+                field = mini.stringValue()
+            bar = getattr(self, "bar", None)
+            if bar is not None:
+                reply = getattr(bar, "reply", "") or ""
+            self._queue_bar_phrase(tutor_command(field, reply))
+            return
         if kind == "text":
             self._queue_bar_phrase(spec.get("phrase") or "")
             return

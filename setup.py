@@ -9,6 +9,11 @@ setup(
     options={"py2app": {
         "argv_emulation": False,
         "iconfile": "assets/icon.icns",
+        # KaTeX, Three.js, plot.js, and their licenses. Alias mode (-A) runs
+        # the checkout in place, so commands/tutor.py loads assets/tutor from
+        # the source tree. A full build copies this folder to
+        # Contents/Resources/tutor.
+        "resources": ["assets/tutor"],
         "plist": {
             "CFBundleName": APP_NAME,
             "CFBundleDisplayName": APP_NAME,

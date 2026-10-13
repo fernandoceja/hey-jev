@@ -968,6 +968,7 @@ HELP_TEXT = (
     "I can open the captures folder, and I can look at a screenshot when you ask. "
     "I can open your Videos folder. "
     "I can open God's Eye on this Mac. "
+    "I can tutor a problem. Say tutor me on a topic, or explain this problem. "
     "I can check for nearby fires and earthquakes, and turn hazard alerts on or off. "
     "I can open ChatGPT, Claude, Gemini, Siri, or Google with a capture or your last question. "
     "I can read your clipboard history, copy or paste an item, and clear it. That stays on this Mac. "

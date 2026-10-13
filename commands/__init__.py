@@ -7,6 +7,8 @@ Nothing in this module listens on a socket. Hazard checks are outbound HTTPS
 to USGS and, when a Keychain map key is set, NASA FIRMS. Those commands are
 not on the bridge allowlist. Opening God's Eye connects as a client to
 127.0.0.1 and does not listen. That command is not on the bridge allowlist.
+The tutor writes a local HTML file and shows it in a web view. It does not
+listen, and it is not on the bridge allowlist.
 The iPhone bridge only polls an
 iCloud Drive folder. Password lookup only opens the Passwords app and writes
 a site name into its search field. It is not on the bridge allowlist.
@@ -645,6 +647,18 @@ from .dictation_engine import (
     dictation_engine,
     set_dictation_engine,
     set_dictation_engine_path,
+)
+
+from .tutor import (
+    TUTOR_FAILED,
+    TUTOR_NEED_KEY,
+    TUTOR_NEED_PROBLEM,
+    TUTOR_NOT_MAC,
+    TUTOR_OPENING,
+    TUTOR_PRIVATE,
+    explain_from_text,
+    is_tutor_phrase,
+    tutor_command,
 )
 
 from .gods_eye import (

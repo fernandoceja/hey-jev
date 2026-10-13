@@ -54,6 +54,7 @@ COMMAND_PROMPT = (
     "Use dramatic voice. Use normal voice. Which voice are you using. "
     "Open videos. Open my videos. Show my videos. "
     "Open God's Eye. God's eye. Gods eye. "
+    "Tutor me on the quadratic formula. Explain this problem. "
     "Open settings. Open business email. Run shortcut Leaving for work. What can you do."
 )
 # No prompt in wake mode: on noise Whisper echoes the prompt back, which looked like a real "Hey Jev"
@@ -422,6 +423,7 @@ ACTIONS = {
     "folder_open": lambda _arg, text: commands.open_folder_from_text(text),
     "videos_open": lambda _arg, _text: commands.open_videos_folder(),
     "gods_eye_open": lambda _arg, _text: commands.open_gods_eye(),
+    "tutor_explain": lambda _arg, text: commands.explain_from_text(text),
     "site_open": lambda _arg, text: commands.open_site_from_text(text),
     "continue_chatgpt": lambda _arg, _text: commands.continue_chatgpt(),
     "info_help": lambda _arg, _text: commands.speak_help(),
