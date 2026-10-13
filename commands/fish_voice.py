@@ -2,22 +2,28 @@
 
 The Text to Speech API picks the model with the ``model`` request header
 (https://docs.fish.audio/api-reference/endpoint/openapi-v1/text-to-speech).
-Drama 3 is ``drama-3-preview``. Directions travel in the ``text`` field:
-square brackets such as ``[warm and relaxed]`` or ``[sigh]``, and paired
-tags such as ``<whisper>go on</whisper>`` for a few words
-(https://fish.audio/drama-3/).
+The normal voice is ``s2.1-pro-free``. That is the default for startup
+cache warmup and for speech. Drama 3 is ``drama-3-preview`` and is
+requested only when the voice-mode file says dramatic. Directions travel
+in the ``text`` field: square brackets such as ``[warm and relaxed]`` or
+``[sigh]``, and paired tags such as ``<whisper>go on</whisper>`` for a
+few words (https://fish.audio/drama-3/).
 
 The voice id stays the one siri.py already sends as ``reference_id``.
-The API key stays in the Keychain and is passed in by the caller.
+The API key stays in the Keychain and is passed in by the caller. This
+module does not read the Keychain and does not open a socket. A failure
+stays on Fish. It does not switch to another speech provider.
 
 If the ``model`` header is omitted or unrecognized, Fish serves ``s2.1-pro``
 (the paid model). A failed Drama 3 call therefore retries with the header
 set to ``s2.1-pro-free``, which is the model this app already uses. Cue
 text is removed from that retry so a tag cannot be spoken as words.
 
-A 401, 402, or 403 is different. Drama 3 stays off for the rest of this
-process, the voice-mode file is left as it was, and one line is logged.
-Playback says this once, before the reply, and later lines skip Drama 3:
+A 402 on any model is remembered until this process ends. That model is
+not requested again. A 401 or 403 on Drama 3 also leaves Drama 3 off for
+the rest of this process. The voice-mode file is left as it was, and one
+line is logged. Playback says this once, before the reply, and later
+lines skip Drama 3:
 
     Dramatic voice isn't available on your Fish Audio plan right now, so I'm using my normal voice.
 
@@ -32,11 +38,16 @@ import time
 from .config import VOICE_MODE_PATH
 
 FISH_TTS_URL = "https://api.fish.audio/v1/tts"
-# Current Hey Jev voice. Also the explicit fallback. Do not leave the header
-# off: Fish would answer with paid s2.1-pro.
+# Normal Hey Jev voice. Default at startup and for every spoken line.
+# Also the explicit fallback when Drama 3 fails. Do not leave the header
+# off: Fish would answer with paid s2.1-pro. Do not send drama-3-preview
+# unless the voice-mode file says dramatic.
 FISH_MODEL = "s2.1-pro-free"
 DRAMA_MODEL = "drama-3-preview"
 FISH_TTS_TIMEOUT = 60
+# HTTP 402 is payment required. Remember the model that returned it and
+# do not request that model again until the process starts over.
+PAYMENT_REQUIRED = 402
 # Fish plan and auth failures. After the first one, Drama 3 is not tried again
 # until the process starts over. The saved voice setting is not changed.
 DRAMA_PLAN_STATUSES = (401, 402, 403)
@@ -69,6 +80,15 @@ _path_override = None
 # In-memory only. A relaunch tries Drama 3 again if the file still says dramatic.
 _drama_session_blocked = False
 _drama_notice_pending = False
+# Models that returned HTTP 402 during this process. Not written to disk.
+_payment_blocked = set()
+
+
+class _NotRetried(object):
+    """The normal model already returned 402. Do not request it again."""
+
+
+_NOT_RETRIED = _NotRetried()
 
 
 class Speech(object):
@@ -91,11 +111,12 @@ def set_voice_mode_path(path):
 
 
 def reset_drama_session():
-    """Forget a plan block. Tests use this. A real session ends when the app quits."""
+    """Forget plan and payment blocks. Tests use this. A real session ends when the app quits."""
     global _drama_session_blocked, _drama_notice_pending
     with _lock:
         _drama_session_blocked = False
         _drama_notice_pending = False
+        _payment_blocked.clear()
 
 
 def _drama_blocked():
@@ -112,6 +133,22 @@ def _mark_drama_blocked():
         if first:
             _drama_notice_pending = True
         return first
+
+
+def _model_payment_blocked(model):
+    with _lock:
+        return model in _payment_blocked
+
+
+def _mark_model_payment_blocked(model):
+    with _lock:
+        _payment_blocked.add(model)
+
+
+def _remember_payment_failure(model, exc):
+    """A 402 sticks to that model for the rest of this process."""
+    if _http_status(exc) == PAYMENT_REQUIRED:
+        _mark_model_payment_blocked(model)
 
 
 def _claim_drama_notice():
@@ -242,8 +279,12 @@ def with_default_cue(text):
     return DEFAULT_CUE + " " + body
 
 
-def speech_request(text, dramatic):
-    """The model header value and the text body for one Fish call."""
+def speech_request(text, dramatic=False):
+    """The model header value and the text body for one Fish call.
+
+    ``dramatic`` defaults off. Startup and speech use that unless the
+    voice-mode file says dramatic.
+    """
     if dramatic:
         return {"model": DRAMA_MODEL, "text": with_default_cue(text)}
     return {"model": FISH_MODEL, "text": text or ""}
@@ -291,22 +332,31 @@ def _store(path, content):
 
 
 def _post_audio(post, model, text, api_key, voice_id, timeout):
-    response = post(
-        FISH_TTS_URL,
-        headers={
-            "Authorization": "Bearer {0}".format(api_key),
-            "Content-Type": "application/json",
-            "model": model,
-        },
-        json={"text": text, "reference_id": voice_id, "format": "wav"},
-        timeout=timeout,
-    )
+    try:
+        response = post(
+            FISH_TTS_URL,
+            headers={
+                "Authorization": "Bearer {0}".format(api_key),
+                "Content-Type": "application/json",
+                "model": model,
+            },
+            json={"text": text, "reference_id": voice_id, "format": "wav"},
+            timeout=timeout,
+        )
+    except Exception as exc:
+        _remember_payment_failure(model, exc)
+        raise
     raiser = getattr(response, "raise_for_status", None)
     if raiser is not None:
-        raiser()
+        try:
+            raiser()
+        except Exception as exc:
+            _remember_payment_failure(model, exc)
+            raise
     elif getattr(response, "status_code", 200) >= 400:
         error = RuntimeError("fish status {0}".format(response.status_code))
         error.response = response
+        _remember_payment_failure(model, error)
         raise error
     content = getattr(response, "content", None)
     if isinstance(content, str):
@@ -334,6 +384,8 @@ def _speak_normal(text, post, api_key, voice_id, cache_dir, timeout, log, log_fa
     outcome = _fallback(spoken, post, api_key, voice_id, cache_dir, timeout, started)
     if isinstance(outcome, Speech):
         return outcome
+    if outcome is _NOT_RETRIED:
+        return None
     if log_failure:
         log("  fish: {0} failed ({1})".format(FISH_MODEL, outcome))
         return None
@@ -358,12 +410,14 @@ def _block_drama(text, exc, post, api_key, voice_id, cache_dir, timeout, log):
         return outcome
     if first:
         extra = ""
-        if outcome:
+        if outcome is _NOT_RETRIED:
+            extra = "; {0} was not requested again after HTTP 402".format(FISH_MODEL)
+        elif outcome:
             extra = "; {0} also failed ({1})".format(FISH_MODEL, outcome)
         log("  fish: {0} failed ({1}), using {2} for the rest of this session{3}".format(
             DRAMA_MODEL, reason, FISH_MODEL, extra))
         return None
-    if outcome:
+    if outcome and outcome is not _NOT_RETRIED:
         log("  fish: {0} failed ({1})".format(FISH_MODEL, outcome))
     return None
 
@@ -371,13 +425,25 @@ def _block_drama(text, exc, post, api_key, voice_id, cache_dir, timeout, log):
 def synthesize_speech(text, post, api_key, voice_id, dramatic, cache_dir, timeout=FISH_TTS_TIMEOUT, log=print):
     """Return a Speech, or None when Fish could not produce audio.
 
-    Drama 3 errors and timeouts retry on ``s2.1-pro-free`` with cues removed.
-    A 401, 402, or 403 disables Drama 3 for the rest of this process instead
-    of retrying it on the next line. This function does not raise for those
-    failures, and it does not change the saved voice setting.
+    Pass ``dramatic`` false for the normal model, ``s2.1-pro-free``. That
+    is the default at startup and for speech. ``drama-3-preview`` is sent
+    only when ``dramatic`` is true, which is the voice-mode file opt-in.
+    Drama 3 errors and timeouts retry on ``s2.1-pro-free`` with cues
+    removed. A 401, 402, or 403 disables Drama 3 for the rest of this
+    process instead of retrying it on the next line. A 402 on either model
+    is remembered the same way: that model is not requested again this
+    process. This function does not raise for those failures, and it does
+    not change the saved voice setting.
     """
-    if dramatic and _drama_blocked():
+    if dramatic and (_drama_blocked() or _model_payment_blocked(DRAMA_MODEL)):
         return _speak_normal(text, post, api_key, voice_id, cache_dir, timeout, log)
+
+    if not dramatic and _model_payment_blocked(FISH_MODEL):
+        body = text or ""
+        hit = _read_cached(cache_path(cache_dir, voice_id, FISH_MODEL, body))
+        if hit:
+            return _speak_saved(hit, FISH_MODEL, body, 0, True, False)
+        return None
 
     primary = speech_request(text, dramatic)
     primary_path = cache_path(cache_dir, voice_id, primary["model"], primary["text"])
@@ -403,6 +469,10 @@ def synthesize_speech(text, post, api_key, voice_id, dramatic, cache_dir, timeou
         if isinstance(outcome, Speech):
             log("  fish: {0} failed ({1}), using {2}".format(DRAMA_MODEL, reason, FISH_MODEL))
             return outcome
+        if outcome is _NOT_RETRIED:
+            log("  fish: {0} failed ({1}); {2} was not requested again after HTTP 402".format(
+                DRAMA_MODEL, reason, FISH_MODEL))
+            return None
         log("  fish: {0} failed ({1}); {2} also failed ({3})".format(
             DRAMA_MODEL, reason, FISH_MODEL, outcome))
         return None
@@ -450,6 +520,8 @@ def _fallback(spoken, post, api_key, voice_id, cache_dir, timeout, started):
     if hit:
         waited = int((time.time() - started) * 1000)
         return _speak_saved(hit, FISH_MODEL, spoken, waited, True, True)
+    if _model_payment_blocked(FISH_MODEL):
+        return _NOT_RETRIED
     try:
         content = _post_audio(post, FISH_MODEL, spoken, api_key, voice_id, timeout)
     except Exception as exc:
