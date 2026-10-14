@@ -313,6 +313,22 @@ def app_key(name):
     return re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")  # "Claude Code" -> claude_code, what Jev matches on
 
 
+
+def hid_modifier_flags():
+    """Modifier flags with the device-dependent bits, or None.
+
+    NSEvent.modifierFlags() drops NX_DEVICERALTKEYMASK (0x40), so the PTT
+    watchdog read right Option as up while it was held and cut every hold
+    off within half a second. CGEventSourceFlagsState keeps that bit. When
+    Quartz is missing the watchdog is skipped rather than guessing.
+    """
+    try:
+        import Quartz
+        return int(Quartz.CGEventSourceFlagsState(Quartz.kCGEventSourceStateHIDSystemState))
+    except Exception:
+        return None
+
+
 class CenteredFieldCell(NSTextFieldCell):
     """One line of text, vertically centered in the field. Placeholder included."""
 
@@ -3242,7 +3258,8 @@ class AppDelegate(NSObject):
     def tick_(self, _timer):
         ptt = getattr(self, "ptt", None)
         if ptt is not None:
-            token = ptt.watchdog(time.monotonic(), NSEvent.modifierFlags())
+            flags_now = hid_modifier_flags()
+            token = ptt.watchdog(time.monotonic(), flags_now) if flags_now is not None else None
             if token:
                 self._release_ptt(token)
         siri = sys.modules.get("siri")
