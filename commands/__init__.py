@@ -671,6 +671,10 @@ from .games import (
     match_game,
     open_game,
     open_game_from_text,
+    close_game,
+    close_game_from_text,
+    is_game_close_phrase,
+    match_game_close,
 )
 
 from .gods_eye import (

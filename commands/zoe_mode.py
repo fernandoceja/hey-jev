@@ -188,6 +188,7 @@ ZOE_BLOCKED = {
         "tutor_explain",
         # Game ports. Still absent from BRIDGE_ALLOW.
         "game_open",
+        "game_close",
     ),
     "llm": (),
 }

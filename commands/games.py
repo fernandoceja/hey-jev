@@ -24,6 +24,8 @@ GAMES = (
             "ship of harkenian", "soh",
         ),
         "apps": ("~/Applications/soh.app", "/Applications/soh.app"),
+        "bundle_id": "com.shipofharkinian.ShipOfHarkinian",
+        "process": "soh",
     },
     {
         "id": "majora",
@@ -35,6 +37,8 @@ GAMES = (
             "2s2h",
         ),
         "apps": ("~/Applications/2s2h.app", "/Applications/2s2h.app"),
+        "bundle_id": "com.2ship2harkinian.2s2h",
+        "process": "2s2h",
     },
 )
 
@@ -113,3 +117,64 @@ def open_game_from_text(text, platform=None, exists=os.path.exists):
     if game is None:
         return GAME_UNKNOWN
     return open_game(game, platform=platform, exists=exists)
+
+
+CLOSING_GAME = "Closing {name}."
+GAME_NOT_RUNNING = "{name} isn't running."
+GAME_CLOSE_FAILED = "I couldn't close {name}."
+_CLOSE_VERB = r"(?:close|quit|exit|stop|kill|end)"
+
+
+def match_game_close(text):
+    """The GAMES entry a close phrase names ("close zelda"), or None."""
+    t = _strip(text)
+    m = re.match(_CLOSE_VERB + r"\s+(?:out\s+of\s+)?(?:the\s+)?(?:game\s+)?(.+)$", t)
+    if not m:
+        return None
+    body = re.sub(r"\s+(?:game|app)$", "", m.group(1).strip()).strip()
+    for game in GAMES:
+        for alias in game["aliases"]:
+            if body == _norm(alias):
+                return game
+    return None
+
+
+def is_game_close_phrase(text):
+    return match_game_close(text) is not None
+
+
+def _is_running(process):
+    try:
+        _run(["pgrep", "-x", process])
+        return True
+    except Exception:
+        return False
+
+
+def close_game(game, platform=None, running=None):
+    """Quit by bundle id via osascript; fall back to pkill -x of the process."""
+    name = game["name"]
+    if (sys.platform if platform is None else platform) != "darwin":
+        return GAMES_NOT_MAC
+    check = running or _is_running
+    process = game.get("process", "")
+    if not process or not check(process):
+        return GAME_NOT_RUNNING.format(name=name)
+    bundle = game.get("bundle_id", "")
+    try:
+        _run(["osascript", "-e", 'tell application id "{0}" to quit'.format(bundle)], timeout=10)
+        return CLOSING_GAME.format(name=name)
+    except Exception:
+        pass
+    try:
+        _run(["pkill", "-x", process])
+    except Exception:
+        return GAME_CLOSE_FAILED.format(name=name)
+    return CLOSING_GAME.format(name=name)
+
+
+def close_game_from_text(text, platform=None, running=None):
+    game = match_game_close(text)
+    if game is None:
+        return GAME_UNKNOWN
+    return close_game(game, platform=platform, running=running)
