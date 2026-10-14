@@ -23,6 +23,7 @@ from commands.model import (
 )
 from secrets_store import get_secret
 from dictation import Dictation, START as DICTATE_START, paste
+from ptt import MIC_SILENT_DETAIL, release_outcome
 
 load_dotenv()
 TS_KEY = get_secret("TYPESAFE_API_KEY")
@@ -1611,8 +1612,16 @@ def run_voice_assistant(notify=None, controls=None, mode="ptt", mic=""):
     def stop_recording():
         if rec.on:
             audio = rec.stop()
-            if len(audio) > SAMPLE_RATE * 0.3:
+            outcome = release_outcome(len(audio), SAMPLE_RATE)  # from ptt
+            if outcome == "transcribe":
                 threading.Thread(target=ptt_turn, args=(audio,), daemon=True).start()
+                return
+            # Nothing to transcribe. Leave "Listening" so the window is never stuck on it.
+            print(f"\n[released: {outcome}]", end="", flush=True)
+            if outcome == "no_audio":
+                emit(notify, "No sound from the mic", MIC_SILENT_DETAIL)
+            elif not busy.locked() and not rec.dictating:
+                emit(notify, "Ready", ready_text(rec.wake))
 
     def discard_recording():
         """Drop a hold that was cancelled. The audio is not transcribed."""
