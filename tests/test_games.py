@@ -83,3 +83,59 @@ class TestGames(unittest.TestCase):
         item = plus_item("play_zelda")
         self.assertEqual(item["phrase"], "play zelda")
         self.assertEqual(commands.route_before_api(item["phrase"]), "game_open")
+
+
+CLOSE_OCARINA = ("close zelda", "quit zelda", "Close Zelda.", "hey jev, close zelda",
+                 "quit ocarina of time", "close ship of harkinian", "exit the game zelda",
+                 "close zelda ocarina", "quit ship of harkin", "close zelda game")
+CLOSE_MAJORA = ("close majora's mask", "quit majoras mask", "close 2 ship")
+
+
+class TestGameClose(unittest.TestCase):
+    def test_routes(self):
+        for p in CLOSE_OCARINA:
+            self.assertEqual(commands.route_before_api(p), "game_close", p)
+            self.assertEqual(games.match_game_close(p)["id"], "ocarina", p)
+            self.assertIsNone(commands.bridge_allowed(p), p)
+        for p in CLOSE_MAJORA:
+            self.assertEqual(commands.route_before_api(p), "game_close", p)
+            self.assertEqual(games.match_game_close(p)["id"], "majora", p)
+        self.assertNotIn("game_close", commands.BRIDGE_ALLOW)
+        self.assertFalse(commands.zoe_allows("game_close"))
+        self.assertEqual(commands.route_before_api("quit safari"), "app_quit")
+        self.assertNotEqual(commands.route_before_api("close zelda and mute"), "game_close")
+
+    def test_osascript_quit_by_bundle(self):
+        with mock.patch.object(games, "_run") as run:
+            spoken = games.close_game_from_text("close zelda", platform="darwin", running=lambda p: p == "soh")
+        args = run.call_args_list[0][0][0]
+        self.assertEqual(args[0], "osascript")
+        self.assertIn('id "com.shipofharkinian.ShipOfHarkinian"', args[2])
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(spoken, "Closing Ocarina of Time.")
+
+    def test_pkill_fallback(self):
+        calls = []
+        def fake(args, **kw):
+            calls.append(list(args))
+            if args[0] == "osascript":
+                raise RuntimeError("no")
+        with mock.patch.object(games, "_run", side_effect=fake):
+            spoken = games.close_game_from_text("quit ocarina of time", platform="darwin", running=lambda p: True)
+        self.assertEqual(calls[-1], ["pkill", "-x", "soh"])
+        self.assertEqual(spoken, "Closing Ocarina of Time.")
+        with mock.patch.object(games, "_run", side_effect=RuntimeError("x")):
+            self.assertEqual(games.close_game_from_text("close zelda", platform="darwin", running=lambda p: True),
+                             "I couldn't close Ocarina of Time.")
+
+    def test_not_running_and_not_mac(self):
+        with mock.patch.object(games, "_run") as run:
+            self.assertEqual(games.close_game_from_text("close majora's mask", platform="darwin", running=lambda p: False),
+                             "Majora's Mask isn't running.")
+            self.assertEqual(games.close_game_from_text("close zelda", platform="linux"), games.GAMES_NOT_MAC)
+        run.assert_not_called()
+
+    def test_running_check_uses_exact_pgrep(self):
+        with mock.patch.object(games, "_run") as run:
+            self.assertTrue(games._is_running("soh"))
+        run.assert_called_once_with(["pgrep", "-x", "soh"])

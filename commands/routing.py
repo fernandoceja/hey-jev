@@ -6,7 +6,7 @@ from .confirm import is_private_message_request, is_quit_all
 from .apps import known_app_name, parse_app_name, resolve_app, resolve_folder, resolve_site, unclear_app_guess
 from .passwords import is_password_lookup
 from .tutor import is_tutor_phrase
-from .games import is_game_phrase
+from .games import is_game_close_phrase, is_game_phrase
 from .shortcuts import jev_shortcut_catalog, parse_shortcut_name, resolve_shortcut
 
 def route_before_api(text):
@@ -39,6 +39,8 @@ def route_before_api(text):
     # Game ports. Mac-only, not in BRIDGE_ALLOW.
     if is_game_phrase(raw):
         return "game_open"
+    if is_game_close_phrase(raw):
+        return "game_close"
     for pattern, key in STRICT_PATTERNS:
         if pattern.match(raw):
             return key
