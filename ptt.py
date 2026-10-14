@@ -122,3 +122,26 @@ class PushToTalk:
         self.down = False
         self.interrupted = False
         self.pressed_at = None
+
+
+MIN_HOLD_SECONDS = 0.3
+MIC_SILENT_DETAIL = "Check System Settings \u2192 Privacy & Security \u2192 Microphone for Hey Jev"
+
+
+def release_outcome(samples, sample_rate=16000):
+    """What a right Option release does with the audio it got.
+
+    "transcribe" for a real hold. "no_audio" when the mic delivered nothing at
+    all, which is what a denied or stale Microphone permission looks like.
+    "short" for a tap. Only "transcribe" starts a turn; the other two must
+    still move the window off "Listening".
+    """
+    try:
+        n = int(samples)
+    except (TypeError, ValueError):
+        n = 0
+    if n <= 0:
+        return "no_audio"
+    if n > sample_rate * MIN_HOLD_SECONDS:
+        return "transcribe"
+    return "short"

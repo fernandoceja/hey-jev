@@ -110,3 +110,24 @@ class TestCancelWiring(unittest.TestCase):
         self.assertIn("NSWorkspaceWillSleepNotification", ui)
         self.assertIn("NSWorkspaceActiveSpaceDidChangeNotification", ui)
         self.assertIn("force_release", ui)
+
+
+class TestReleaseOutcome(unittest.TestCase):
+    def test_outcomes(self):
+        from ptt import release_outcome
+        self.assertEqual(release_outcome(0, 16000), "no_audio")
+        self.assertEqual(release_outcome(None, 16000), "no_audio")
+        self.assertEqual(release_outcome(1600, 16000), "short")
+        self.assertEqual(release_outcome(4800, 16000), "short")
+        self.assertEqual(release_outcome(4801, 16000), "transcribe")
+        self.assertEqual(release_outcome(32000, 16000), "transcribe")
+
+    def test_siri_never_leaves_listening_on_a_dropped_release(self):
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        src = open(os.path.join(root, "siri.py"), encoding="utf-8").read()
+        body = src[src.index("    def stop_recording():"):src.index("    def discard_recording():")]
+        self.assertIn("release_outcome(", body)
+        self.assertIn('"No sound from the mic"', body)
+        self.assertIn('"Ready"', body)
+        self.assertIn("from ptt import MIC_SILENT_DETAIL, release_outcome", src)
+        self.assertNotIn("import socket", open(os.path.join(root, "ptt.py"), encoding="utf-8").read())
