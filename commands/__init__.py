@@ -649,6 +649,14 @@ from .dictation_engine import (
     set_dictation_engine_path,
 )
 
+from .recreate import (
+    confirm_prompt as recreate_confirm_prompt,
+    is_recreate_phrase,
+    is_recreate_status,
+    parse_target as recreate_target,
+    read_status as recreate_status,
+    write_job_card as recreate_write_job,
+)
 from .tutor import (
     TUTOR_FAILED,
     TUTOR_NEED_KEY,

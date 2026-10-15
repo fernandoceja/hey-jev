@@ -6,6 +6,7 @@ from .confirm import is_private_message_request, is_quit_all
 from .apps import known_app_name, parse_app_name, resolve_app, resolve_folder, resolve_site, unclear_app_guess
 from .passwords import is_password_lookup
 from .tutor import is_tutor_phrase
+from .recreate import is_recreate_phrase, is_recreate_status
 from .games import is_game_close_phrase, is_game_phrase
 from .shortcuts import jev_shortcut_catalog, parse_shortcut_name, resolve_shortcut
 
@@ -34,6 +35,12 @@ def route_before_api(text):
     # "explain this problem and mute" does not match, so that sentence can still split.
     if is_tutor_phrase(raw):
         return "tutor_explain"
+    # Before the joiner check. "recreate airbnb.com and add dark mode" is one job.
+    # Mac-only, not in BRIDGE_ALLOW.
+    if is_recreate_status(raw):
+        return "recreate_status"
+    if is_recreate_phrase(raw):
+        return "recreate_this"
     if JOINER_RE.search(raw):
         return None
     # Game ports. Mac-only, not in BRIDGE_ALLOW.

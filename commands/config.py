@@ -497,7 +497,7 @@ PROTECTED_IDS = {
 }
 PROTECTED_NAMES = {"finder", "loginwindow", "system settings", "system preferences"}
 # Actions that must be confirmed out loud before they run. Never inside a two-part command.
-CONFIRM = {"apps_quit_all", "empty_trash"}
+CONFIRM = {"apps_quit_all", "empty_trash", "recreate_this"}
 
 YES_RE = re.compile(
     r"^(?:yes|yeah|yep|yup|confirm|do it)"
