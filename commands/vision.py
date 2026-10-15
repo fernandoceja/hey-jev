@@ -279,7 +279,16 @@ def _read_bytes(path):
         return handle.read()
 
 
-def ask_about_capture(path, question="", post=None, key=None, model=None, prepare=None, read=None):
+def _typesafe_try(question, image_path, read):
+    from .typesafe_vision import try_answer
+
+    def _run(command):
+        import subprocess
+        return subprocess.run(command, capture_output=True, text=True, check=True).stdout
+    return try_answer(question, image_path, _run, read)
+
+
+def ask_about_capture(path, question="", post=None, key=None, model=None, prepare=None, read=None, typesafe=None):
     """Send one still and a question. `prepare` returns (path, media type).
 
     A missing key or a failed request is a spoken sentence. The image is not
@@ -301,6 +310,10 @@ def ask_about_capture(path, question="", post=None, key=None, model=None, prepar
         return "I couldn't read that capture."
     if not raw or len(raw) > MAX_IMAGE_BYTES:
         return "That picture is too large to send."
+    # Experimental TypeSafe images, off by default. None means use the path below.
+    quick = (typesafe or _typesafe_try)(question, image_path, read or _read_bytes)
+    if quick:
+        return quick
     body = vision_body(model, question, base64.b64encode(raw).decode("ascii"), media)
     poster = post or _post_messages
     started = time.time()
