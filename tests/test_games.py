@@ -142,7 +142,7 @@ class TestGameClose(unittest.TestCase):
 
 
 SUNSHINE = ("play mario sunshine", "play super mario sunshine", "super mario sunshine",
-            "mario sunshine", "play sunshine", "open sunshine", "hey jev, play mario sunshine",
+            "mario sunshine", "hey jev, play mario sunshine",
             "launch super mario sunshine")
 
 
@@ -151,7 +151,11 @@ class TestDolphinGames(unittest.TestCase):
         for p in SUNSHINE:
             self.assertEqual(commands.route_before_api(p), "game_open", p)
             self.assertEqual(games.match_game(p)["id"], "sunshine", p)
-        self.assertIsNone(games.match_game("sunshine"))
+        for p in ("sunshine", "play sunshine", "open sunshine", "close sunshine"):
+            self.assertIsNone(games.match_game(p), p)
+            self.assertIsNone(games.match_game_close(p), p)
+            self.assertFalse(games.is_game_phrase(p), p)
+            self.assertNotIn(commands.route_before_api(p), ("game_open", "game_close"), p)
         self.assertEqual(games.match_game_close("close mario sunshine")["id"], "sunshine")
 
     def test_not_on_bridge(self):

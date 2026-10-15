@@ -40,7 +40,7 @@ def dolphin_game(game_id, name, rom, aliases, bare_ok=()):
 DOLPHIN_GAMES = (
     dolphin_game(
         "sunshine", "Super Mario Sunshine", "Super Mario Sunshine (USA, Canada).ciso",
-        ("super mario sunshine", "mario sunshine", "sunshine", "the mario sunshine",
+        ("super mario sunshine", "mario sunshine", "the mario sunshine",
          "super mario sunshine gamecube", "mario sunshine gamecube"),
     ),
 )
