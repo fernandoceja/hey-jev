@@ -106,27 +106,65 @@ class TestGameClose(unittest.TestCase):
         self.assertNotEqual(commands.route_before_api("close zelda and mute"), "game_close")
 
     def test_osascript_quit_by_bundle(self):
-        with mock.patch.object(games, "_run") as run:
-            spoken = games.close_game_from_text("close zelda", platform="darwin", running=lambda p: p == "soh")
+        state = {"up": True}
+        def fake(args, **kw):
+            if args[0] == "osascript":
+                state["up"] = False
+        with mock.patch.object(games, "_run", side_effect=fake) as run:
+            spoken = games.close_game_from_text("close zelda", platform="darwin",
+                                                running=lambda p: state["up"], sleep=lambda s: None)
         args = run.call_args_list[0][0][0]
         self.assertEqual(args[0], "osascript")
         self.assertIn('id "com.shipofharkinian.ShipOfHarkinian"', args[2])
         self.assertEqual(run.call_count, 1)
         self.assertEqual(spoken, "Closing Ocarina of Time.")
 
-    def test_pkill_fallback(self):
+    def test_minus_128_but_process_gone_is_success(self):
+        # Dolphin: osascript errors -128 "User canceled" yet exits cleanly a moment later.
+        checks = {"n": 0}
+        def running(p):
+            checks["n"] += 1
+            return checks["n"] < 4
         calls = []
         def fake(args, **kw):
             calls.append(list(args))
             if args[0] == "osascript":
-                raise RuntimeError("no")
+                raise RuntimeError("execution error: User canceled. (-128)")
+        naps = []
         with mock.patch.object(games, "_run", side_effect=fake):
-            spoken = games.close_game_from_text("quit ocarina of time", platform="darwin", running=lambda p: True)
+            spoken = games.close_game_from_text("close mario sunshine", platform="darwin",
+                                                running=running, sleep=naps.append)
+        self.assertEqual(spoken, "Closing Super Mario Sunshine.")
+        self.assertEqual([c[0] for c in calls], ["osascript"])
+        self.assertIn('id "org.dolphin-emu.dolphin"', calls[0][2])
+        self.assertTrue(naps)
+
+    def test_still_running_falls_back_to_pkill(self):
+        state = {"up": True}
+        calls = []
+        def fake(args, **kw):
+            calls.append(list(args))
+            if args[0] == "osascript":
+                raise RuntimeError("-128")
+            if args[0] == "pkill":
+                state["up"] = False
+        naps = []
+        with mock.patch.object(games, "_run", side_effect=fake):
+            spoken = games.close_game_from_text("quit ocarina of time", platform="darwin",
+                                                running=lambda p: state["up"], sleep=naps.append)
         self.assertEqual(calls[-1], ["pkill", "-x", "soh"])
         self.assertEqual(spoken, "Closing Ocarina of Time.")
+        self.assertAlmostEqual(sum(naps), games.CLOSE_WAIT_SECONDS, delta=0.5)
+
+    def test_pkill_and_still_running_fails(self):
         with mock.patch.object(games, "_run", side_effect=RuntimeError("x")):
-            self.assertEqual(games.close_game_from_text("close zelda", platform="darwin", running=lambda p: True),
+            self.assertEqual(games.close_game_from_text("close zelda", platform="darwin",
+                                                        running=lambda p: True, sleep=lambda s: None),
                              "I couldn't close Ocarina of Time.")
+        with mock.patch.object(games, "_run"):
+            self.assertEqual(games.close_game_from_text("close mario sunshine", platform="darwin",
+                                                        running=lambda p: True, sleep=lambda s: None),
+                             "I couldn't close Super Mario Sunshine.")
 
     def test_not_running_and_not_mac(self):
         with mock.patch.object(games, "_run") as run:

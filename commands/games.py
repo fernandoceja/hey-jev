@@ -10,6 +10,7 @@ binds or listens, reads the Keychain, or touches the bridge.
 import os
 import re
 import sys
+import time
 
 from .shell import _run
 
@@ -190,30 +191,54 @@ def _is_running(process):
         return False
 
 
-def close_game(game, platform=None, running=None):
-    """Quit by bundle id via osascript; fall back to pkill -x of the process."""
+CLOSE_WAIT_SECONDS = 5.0
+_POLL_SECONDS = 0.25
+
+
+def _wait_gone(process, check, sleep, wait):
+    """True once the process is gone, polling up to wait seconds."""
+    steps = max(1, int(wait / _POLL_SECONDS))
+    for _ in range(steps):
+        if not check(process):
+            return True
+        sleep(_POLL_SECONDS)
+    return not check(process)
+
+
+def close_game(game, platform=None, running=None, sleep=None, wait=CLOSE_WAIT_SECONDS):
+    """Quit by bundle id via osascript, then poll for the process to exit.
+
+    Some apps (Dolphin) return -128 "User canceled" from a clean quit, so the
+    osascript return code is ignored: if the process is gone, it closed. If it
+    is still running after the wait, fall back to pkill -x and re-check.
+    """
     name = game["name"]
     if (sys.platform if platform is None else platform) != "darwin":
         return GAMES_NOT_MAC
     check = running or _is_running
+    nap = sleep or time.sleep
     process = game.get("process", "")
     if not process or not check(process):
         return GAME_NOT_RUNNING.format(name=name)
     bundle = game.get("bundle_id", "")
-    try:
-        _run(["osascript", "-e", 'tell application id "{0}" to quit'.format(bundle)], timeout=10)
-        return CLOSING_GAME.format(name=name)
-    except Exception:
-        pass
+    if bundle:
+        try:
+            _run(["osascript", "-e", 'tell application id "{0}" to quit'.format(bundle)], timeout=10)
+        except Exception:
+            pass  # e.g. -128 on a clean quit; the poll below decides.
+        if _wait_gone(process, check, nap, wait):
+            return CLOSING_GAME.format(name=name)
     try:
         _run(["pkill", "-x", process])
     except Exception:
-        return GAME_CLOSE_FAILED.format(name=name)
-    return CLOSING_GAME.format(name=name)
+        pass
+    if _wait_gone(process, check, nap, 2.0):
+        return CLOSING_GAME.format(name=name)
+    return GAME_CLOSE_FAILED.format(name=name)
 
 
-def close_game_from_text(text, platform=None, running=None):
+def close_game_from_text(text, platform=None, running=None, sleep=None, wait=CLOSE_WAIT_SECONDS):
     game = match_game_close(text)
     if game is None:
         return GAME_UNKNOWN
-    return close_game(game, platform=platform, running=running)
+    return close_game(game, platform=platform, running=running, sleep=sleep, wait=wait)
