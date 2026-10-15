@@ -13,6 +13,38 @@ import sys
 
 from .shell import _run
 
+DOLPHIN_APPS = ("/Applications/Dolphin.app", "~/Applications/Dolphin.app")
+DOLPHIN_BUNDLE_ID = "org.dolphin-emu.dolphin"
+GAMECUBE_DIR = "~/Games/GameCube"
+
+
+def dolphin_game(game_id, name, rom, aliases, bare_ok=()):
+    """A GameCube game opened by Dolphin. Add one line per new game.
+
+    rom is a file name inside GAMECUBE_DIR (or an absolute/~ path). It is
+    launched as ["open", "-a", Dolphin.app, "--args", "-e", rom].
+    """
+    path = rom if rom.startswith(("/", "~")) else GAMECUBE_DIR + "/" + rom
+    return {
+        "id": game_id,
+        "name": name,
+        "aliases": tuple(aliases),
+        "needs_verb": tuple(a for a in aliases if a not in bare_ok and len(a.split()) == 1),
+        "apps": DOLPHIN_APPS,
+        "rom": path,
+        "bundle_id": DOLPHIN_BUNDLE_ID,
+        "process": "Dolphin",
+    }
+
+
+DOLPHIN_GAMES = (
+    dolphin_game(
+        "sunshine", "Super Mario Sunshine", "Super Mario Sunshine (USA, Canada).ciso",
+        ("super mario sunshine", "mario sunshine", "the mario sunshine",
+         "super mario sunshine gamecube", "mario sunshine gamecube"),
+    ),
+)
+
 GAMES = (
     {
         "id": "ocarina",
@@ -40,7 +72,7 @@ GAMES = (
         "bundle_id": "com.2ship2harkinian.2s2h",
         "process": "2s2h",
     },
-)
+) + DOLPHIN_GAMES
 
 GAMES_NOT_MAC = "Games open on this Mac."
 GAME_FAILED = "I couldn't open {name}."
@@ -80,7 +112,8 @@ def match_game(text):
         for alias in game["aliases"]:
             if body == _norm(alias):
                 # A bare "zelda"/"ocarina"/"majora"/"soh" needs a verb.
-                if not m and alias in ("zelda", "the zelda", "ocarina", "majora", "soh", "2s2h"):
+                if not m and (alias in ("zelda", "the zelda", "ocarina", "majora", "soh", "2s2h")
+                              or alias in game.get("needs_verb", ())):
                     continue
                 return game
     return None
@@ -105,8 +138,14 @@ def open_game(game, platform=None, exists=os.path.exists):
     path = game_app_path(game, exists)
     if not path:
         return GAME_NOT_INSTALLED.format(name=name)
+    argv = ["open", path]
+    if game.get("rom"):
+        rom = os.path.abspath(os.path.expanduser(game["rom"]))
+        if not exists(rom):
+            return GAME_NOT_INSTALLED.format(name=name)
+        argv = ["open", "-a", path, "--args", "-e", rom]
     try:
-        _run(["open", path])
+        _run(argv)
     except Exception:
         return GAME_FAILED.format(name=name)
     return OPENING_GAME.format(name=name)

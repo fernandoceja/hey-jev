@@ -849,6 +849,7 @@ def plus_menu(can_attach=None, recording=False, clipboard_entries=None,
     quick = (
         _menu_text("tutor", "Tutor", "tutor me", "graduationcap"),
         _menu_text("play_zelda", "Play Zelda", "play zelda", "gamecontroller"),
+        _menu_text("play_sunshine", "Play Mario Sunshine", "play mario sunshine", "gamecontroller"),
         _menu_text("brief", "Brief Me", "brief me", "newspaper"),
         _menu_text("play_brief", "Play My Brief", "play my brief", "play.circle"),
         _menu_text("next_shift", "Next Shift", "what's my next shift", "calendar"),
