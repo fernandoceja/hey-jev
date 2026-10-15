@@ -420,6 +420,9 @@ ACTIONS = {
     "video_audio": lambda _arg, text: commands.video_from_text("video_audio", text),
     "video_choose": lambda _arg, text: commands.choose_video(),
     "empty_trash": lambda _arg, _text: commands.empty_trash(),
+    # Mac-only. Not in BRIDGE_ALLOW. Writes a job card to the local handoff folder.
+    "recreate_this": lambda arg, text: commands.recreate_write_job(arg, text),
+    "recreate_status": lambda _arg, _text: commands.recreate_status(),
     "show_desktop": lambda _arg, _text: commands.show_desktop(),
     "folder_open": lambda _arg, text: commands.open_folder_from_text(text),
     "videos_open": lambda _arg, _text: commands.open_videos_folder(),
@@ -1010,6 +1013,22 @@ def _speak_result(action, result, reply_key, fmt):
     return say_line("unsupported")
 
 
+def _arm_prompt(action, arg, text, reply_key, fmt):
+    """Arm a confirmation and return (prompt, armed).
+
+    Recreate reads its target back, so the prompt is built here. With no
+    target it asks one question and arms nothing.
+    """
+    if action == "recreate_this":
+        target = commands.recreate_target(text)
+        if not target:
+            return "What should I recreate?", False
+        commands.arm_confirmation(action, target, text, reply_key, fmt)
+        return commands.recreate_confirm_prompt(target), True
+    commands.arm_confirmation(action, arg, text, reply_key, fmt)
+    return (say_line(reply_key) if reply_key in REPLIES else "Say yes to confirm."), True
+
+
 def _finish_confirmed(notify):
     """Run the action that was armed by a previous turn. The yes was already checked locally."""
     action, arg, source, reply_key, fmt = commands.take_confirmation()
@@ -1144,9 +1163,8 @@ def handle(text, stt_ms=None, notify=None, reply_sink=None, quiet=False):
                         dynamic = [say_line("quit_all_alone")]
                         done += 1
                         break
-                    commands.arm_confirmation(action, arg, text, reply_key, fmt)
-                    dynamic = [say_line(reply_key) if reply_key in REPLIES else "Say yes to confirm."]
-                    armed = True
+                    prompt, armed = _arm_prompt(action, arg, text, reply_key, fmt)
+                    dynamic = [prompt]
                     done += 1
                     print(f"  confirm: waiting for yes/no on {action}")
                     break
@@ -1260,11 +1278,11 @@ def _run_local(payload, text, notify, reply_sink):
         return None
     _conf, action, arg, reply_key, fmt = payload[0]
     if action in commands.CONFIRM:
-        commands.arm_confirmation(action, arg, text, reply_key, fmt)
-        prompt = say_line(reply_key) if reply_key in REPLIES else "Say yes to confirm."
+        prompt, armed = _arm_prompt(action, arg, text, reply_key, fmt)
         print(f"  confirm: waiting for yes/no on {action} (local)")
         _deliver(prompt, notify, reply_sink)
-        commands.refresh_confirmation()
+        if armed:
+            commands.refresh_confirmation()
         return "expect_reply"
     private = (
         action == "info_messages"

@@ -14,3 +14,4 @@ build/
 dist/
 .eggs/
 assets/icon.iconset/
+handoff/
