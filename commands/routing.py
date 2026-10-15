@@ -8,6 +8,7 @@ from .passwords import is_password_lookup
 from .tutor import is_tutor_phrase
 from .recreate import is_recreate_phrase, is_recreate_status
 from .games import is_game_close_phrase, is_game_phrase
+from .cleanmymac import is_cleanmymac_phrase
 from .shortcuts import jev_shortcut_catalog, parse_shortcut_name, resolve_shortcut
 
 def route_before_api(text):
@@ -48,6 +49,10 @@ def route_before_api(text):
         return "game_open"
     if is_game_close_phrase(raw):
         return "game_close"
+    # CleanMyMac Smart Care scan. Scan only. Mac-only, not in BRIDGE_ALLOW.
+    # Before the "clean my mac" open-app nickname, which "open CleanMyMac" keeps.
+    if is_cleanmymac_phrase(raw):
+        return "cleanmymac_scan"
     for pattern, key in STRICT_PATTERNS:
         if pattern.match(raw):
             return key

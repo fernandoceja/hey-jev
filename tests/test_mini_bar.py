@@ -467,6 +467,7 @@ _MENU_ROUTES = {
     "tutor": "tutor_explain",
     "play_zelda": "game_open",
     "play_sunshine": "game_open",
+    "cleanmymac_scan": "cleanmymac_scan",
     "brief": "info_brief",
     "play_brief": "brief_play",
     "next_shift": "info_next_shift",

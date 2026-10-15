@@ -685,6 +685,19 @@ from .games import (
     match_game_close,
 )
 
+from .cleanmymac import (
+    CLEANMYMAC_APPS,
+    CMM_ALREADY,
+    CMM_NOT_INSTALLED,
+    CMM_NOT_MAC,
+    CMM_PRESS_SCAN,
+    CMM_SCANNING,
+    find_cleanmymac,
+    is_cleanmymac_phrase,
+    start_scan as cleanmymac_scan,
+    start_scan_from_text as cleanmymac_scan_from_text,
+)
+
 from .gods_eye import (
     GODS_EYE_FAILED,
     GODS_EYE_MISSING,

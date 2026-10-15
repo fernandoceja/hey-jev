@@ -417,3 +417,14 @@ Below 0.65 confidence it asks you to say it again, twice in a row and it gives u
 ## Change the voice
 
 `VOICE_ID` at the top of `siri.py`. Find voices at [https://fish.audio/?fpr=henryk](https://fish.audio/?fpr=henryk) open one and copy its ID from the page link. Her replies re-render in the new voice automatically on the next launch.
+
+## CleanMyMac scan (Mac-only, scan only)
+
+Say "run CleanMyMac", "CleanMyMac scan", "scan my Mac", or "clean my Mac"
+(also "clean mymac", "smart care scan"), or pick **+ > Quick Commands >
+CleanMyMac Scan**. Jev opens CleanMyMac (CleanMyMac_5.app / CleanMyMac.app,
+`com.macpaw.CleanMyMac5`, or CleanMyMac X, `com.macpaw.CleanMyMac4`), selects
+Smart Care, and presses **Scan** with System Events (Jev's Accessibility
+permission). It never presses Run, Clean, or Remove; you review the results.
+If Scan can't be pressed, Jev opens the app and says to press Scan.
+"open CleanMyMac" still just opens the app. Not on the iPhone bridge.
