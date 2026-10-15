@@ -466,6 +466,7 @@ class TestSize(unittest.TestCase):
 _MENU_ROUTES = {
     "tutor": "tutor_explain",
     "play_zelda": "game_open",
+    "play_sunshine": "game_open",
     "brief": "info_brief",
     "play_brief": "brief_play",
     "next_shift": "info_next_shift",

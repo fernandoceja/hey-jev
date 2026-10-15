@@ -48,7 +48,7 @@ class TestGames(unittest.TestCase):
             self.assertNotIn(word, src.lower())
 
     def test_map_paths(self):
-        oc, mm = games.GAMES
+        oc, mm = games.GAMES[:2]
         self.assertEqual(oc["apps"], ("~/Applications/soh.app", "/Applications/soh.app"))
         self.assertEqual(mm["apps"][0], "~/Applications/2s2h.app")
 
@@ -139,3 +139,42 @@ class TestGameClose(unittest.TestCase):
         with mock.patch.object(games, "_run") as run:
             self.assertTrue(games._is_running("soh"))
         run.assert_called_once_with(["pgrep", "-x", "soh"])
+
+
+SUNSHINE = ("play mario sunshine", "play super mario sunshine", "super mario sunshine",
+            "mario sunshine", "play sunshine", "open sunshine", "hey jev, play mario sunshine",
+            "launch super mario sunshine")
+
+
+class TestDolphinGames(unittest.TestCase):
+    def test_routes(self):
+        for p in SUNSHINE:
+            self.assertEqual(commands.route_before_api(p), "game_open", p)
+            self.assertEqual(games.match_game(p)["id"], "sunshine", p)
+        self.assertIsNone(games.match_game("sunshine"))
+        self.assertEqual(games.match_game_close("close mario sunshine")["id"], "sunshine")
+
+    def test_not_on_bridge(self):
+        for p in SUNSHINE:
+            self.assertIsNone(commands.bridge_allowed(p), p)
+
+    def test_opens_dolphin_with_rom(self):
+        g = games.match_game("play mario sunshine")
+        rom = os.path.expanduser("~/Games/GameCube/Super Mario Sunshine (USA, Canada).ciso")
+        with mock.patch.object(games, "_run") as run:
+            spoken = games.open_game(g, platform="darwin", exists=lambda p: True)
+        run.assert_called_once_with(["open", "-a", "/Applications/Dolphin.app", "--args", "-e", rom])
+        self.assertEqual(spoken, "Opening Super Mario Sunshine.")
+
+    def test_missing_rom_or_not_mac(self):
+        g = games.match_game("play mario sunshine")
+        with mock.patch.object(games, "_run") as run:
+            self.assertEqual(games.open_game(g, platform="darwin", exists=lambda p: p.endswith(".app")),
+                             "Super Mario Sunshine isn't installed yet.")
+            self.assertEqual(games.open_game(g, platform="linux"), games.GAMES_NOT_MAC)
+        run.assert_not_called()
+
+    def test_data_driven_helper(self):
+        g = games.dolphin_game("x", "X", "X.iso", ("x game", "xg"))
+        self.assertEqual(g["rom"], "~/Games/GameCube/X.iso")
+        self.assertEqual(g["needs_verb"], ("xg",))
