@@ -146,6 +146,8 @@ CLIPBOARD_HISTORY_PATH = os.path.expanduser(
 )
 NOTES_PATH = os.path.join(JEV_DOCS, "notes.md")
 DUE_PATH = os.path.join(JEV_DOCS, "due.md")
+# "what do my notes say about ..." searches .md and .txt files in these folders. Add an Obsidian vault here.
+NOTES_SEARCH_DIRS = [JEV_DOCS]
 IHSS_PATH = os.path.join(JEV_DOCS, "ihss_hours.csv")
 # Optional payday anchor. Missing file uses DEFAULT_APPLE_PAY_ANCHOR and IHSS semi-monthly.
 MONEY_PATH = os.path.join(JEV_DOCS, "money.md")
