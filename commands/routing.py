@@ -10,6 +10,7 @@ from .recreate import is_recreate_phrase, is_recreate_status
 from .games import is_game_close_phrase, is_game_phrase
 from .cleanmymac import is_cleanmymac_phrase
 from .calendar_add import is_calendar_add_phrase
+from .mail_voice import mail_action
 from .shortcuts import jev_shortcut_catalog, parse_shortcut_name, resolve_shortcut
 
 def route_before_api(text):
@@ -47,6 +48,11 @@ def route_before_api(text):
     # Mac-only, not in BRIDGE_ALLOW.
     if is_calendar_add_phrase(raw):
         return "calendar_add"
+    # Before the joiner check. A dictated reply may say "and". Draft only, never delivered.
+    # Mac-only, not in BRIDGE_ALLOW.
+    mail = mail_action(raw)
+    if mail:
+        return mail
     if JOINER_RE.search(raw):
         return None
     # Game ports. Mac-only, not in BRIDGE_ALLOW.
