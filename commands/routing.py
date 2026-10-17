@@ -11,6 +11,7 @@ from .games import is_game_close_phrase, is_game_phrase
 from .cleanmymac import is_cleanmymac_phrase
 from .calendar_add import is_calendar_add_phrase
 from .mail_voice import mail_action
+from .notes_search import is_notes_question
 from .shortcuts import jev_shortcut_catalog, parse_shortcut_name, resolve_shortcut
 
 def route_before_api(text):
@@ -53,6 +54,9 @@ def route_before_api(text):
     mail = mail_action(raw)
     if mail:
         return mail
+    # Before the joiner check. "notes about Zoe and Maria" is one search. Mac-only, not in BRIDGE_ALLOW.
+    if is_notes_question(raw):
+        return "notes_ask"
     if JOINER_RE.search(raw):
         return None
     # Game ports. Mac-only, not in BRIDGE_ALLOW.

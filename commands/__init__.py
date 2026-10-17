@@ -743,3 +743,10 @@ from .mail_voice import (
     read_inbox as mail_read_inbox,
     summarize_inbox as mail_summarize_inbox,
 )
+
+# Ask your notes: local keyword search. Mac-only, not in BRIDGE_ALLOW.
+from .notes_search import (
+    answer_from_notes,
+    is_notes_question,
+    search_notes,
+)

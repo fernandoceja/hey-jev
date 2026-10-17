@@ -461,6 +461,8 @@ ACTIONS = {
     "mail_read": lambda _arg, _text: commands.mail_read_inbox(),
     "mail_summary": lambda _arg, _text: commands.mail_summarize_inbox(),
     "mail_reply_draft": lambda _arg, text: commands.mail_draft_reply(text),
+    # Keyword search over local note files. Optional LLM answer is off by default. Not bridged.
+    "notes_ask": lambda _arg, text: commands.answer_from_notes(text),
     "zoe_academy": lambda _arg, _text: commands.open_princess_academy(),
     "zoe_timer": lambda _arg, text: _start_zoe_timer(text),
     "zoe_mode_on": lambda _arg, _text: commands.enter_zoe_mode(),
