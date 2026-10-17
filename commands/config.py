@@ -153,6 +153,10 @@ MONEY_PATH = os.path.join(JEV_DOCS, "money.md")
 DUE_HORIZON_DAYS = 7
 # "remind me to ..." writes an Apple Reminders item. Blank uses the default list.
 REMINDERS_LIST = ""
+# "put X on my calendar ..." adds an Apple Calendar event. Blank uses the default calendar.
+CALENDAR_ADD_NAME = ""
+# Event length when the phrase does not say "for 2 hours".
+CALENDAR_EVENT_MINUTES = 60
 
 # Upland, CA. Open-Meteo needs no key. Hazard distance starts here too.
 UPLAND_LAT = 34.0975
