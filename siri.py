@@ -457,6 +457,10 @@ ACTIONS = {
     "remind_add": lambda _arg, text: commands.add_reminder(text),
     # Adds one Apple Calendar event and reads it back. Mac-only. Not bridged.
     "calendar_add": lambda _arg, text: commands.add_event(text),
+    # Mail.app. Reads, summarizes, and opens a reply draft. Never delivers mail. Not bridged.
+    "mail_read": lambda _arg, _text: commands.mail_read_inbox(),
+    "mail_summary": lambda _arg, _text: commands.mail_summarize_inbox(),
+    "mail_reply_draft": lambda _arg, text: commands.mail_draft_reply(text),
     "zoe_academy": lambda _arg, _text: commands.open_princess_academy(),
     "zoe_timer": lambda _arg, text: _start_zoe_timer(text),
     "zoe_mode_on": lambda _arg, _text: commands.enter_zoe_mode(),
