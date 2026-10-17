@@ -725,3 +725,12 @@ from .brief_memo import (
     start_brief_memo_thread,
     stop_brief,
 )
+
+# Mail.app by voice: read, summarize, draft a reply. Draft only. Mac-only, not in BRIDGE_ALLOW.
+from .mail_voice import (
+    MAIL_AUTOMATION,
+    draft_reply as mail_draft_reply,
+    mail_action,
+    read_inbox as mail_read_inbox,
+    summarize_inbox as mail_summarize_inbox,
+)
