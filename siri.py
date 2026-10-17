@@ -455,6 +455,8 @@ ACTIONS = {
     "ihss_hours": lambda _arg, _text: commands.speak_ihss_period(),
     "ihss_remind": lambda _arg, _text: commands.remind_timesheet(),
     "remind_add": lambda _arg, text: commands.add_reminder(text),
+    # Adds one Apple Calendar event and reads it back. Mac-only. Not bridged.
+    "calendar_add": lambda _arg, text: commands.add_event(text),
     "zoe_academy": lambda _arg, _text: commands.open_princess_academy(),
     "zoe_timer": lambda _arg, text: _start_zoe_timer(text),
     "zoe_mode_on": lambda _arg, _text: commands.enter_zoe_mode(),

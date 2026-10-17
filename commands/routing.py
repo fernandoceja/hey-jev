@@ -9,6 +9,7 @@ from .tutor import is_tutor_phrase
 from .recreate import is_recreate_phrase, is_recreate_status
 from .games import is_game_close_phrase, is_game_phrase
 from .cleanmymac import is_cleanmymac_phrase
+from .calendar_add import is_calendar_add_phrase
 from .shortcuts import jev_shortcut_catalog, parse_shortcut_name, resolve_shortcut
 
 def route_before_api(text):
@@ -42,6 +43,10 @@ def route_before_api(text):
         return "recreate_status"
     if is_recreate_phrase(raw):
         return "recreate_this"
+    # Before the joiner check. "lunch with mom and dad Friday at noon" is one event.
+    # Mac-only, not in BRIDGE_ALLOW.
+    if is_calendar_add_phrase(raw):
+        return "calendar_add"
     if JOINER_RE.search(raw):
         return None
     # Game ports. Mac-only, not in BRIDGE_ALLOW.

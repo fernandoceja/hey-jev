@@ -725,3 +725,12 @@ from .brief_memo import (
     start_brief_memo_thread,
     stop_brief,
 )
+
+# "put X on my calendar ...": one Apple Calendar event. Mac-only, not in BRIDGE_ALLOW.
+from .calendar_add import (
+    CAL_DENIED,
+    CAL_FAIL,
+    add_event,
+    is_calendar_add_phrase,
+    parse_event_request,
+)
