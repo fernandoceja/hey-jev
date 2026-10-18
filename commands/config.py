@@ -144,6 +144,10 @@ CLIPBOARD_POLL_SECONDS = 1
 CLIPBOARD_HISTORY_PATH = os.path.expanduser(
     "~/Library/Application Support/Hey Jev/clipboard-history.json"
 )
+# Static HTML test-results dashboard written by commands/dashboard.py. Mac-only. Not bridged.
+TEST_REPORT_PATH = os.path.expanduser(
+    "~/Library/Application Support/Hey Jev/test-report.html"
+)
 NOTES_PATH = os.path.join(JEV_DOCS, "notes.md")
 DUE_PATH = os.path.join(JEV_DOCS, "due.md")
 # "what do my notes say about ..." searches .md and .txt files in these folders. Add an Obsidian vault here.
@@ -939,6 +943,11 @@ STRICT_PATTERNS = (
     (re.compile(
         rf"^{_PLEASE}resume\s+(?:the\s+)?clipboard(?:\s+history)?{_TAIL}",
         re.I), "clipboard_resume"),
+    # Test results dashboard. Mac-only. Not in BRIDGE_ALLOW.
+    (re.compile(
+        rf"^{_PLEASE}(?:hey\s+jev\b\s*,?\s+)?{_PLEASE}"
+        rf"(?:show(?:\s+me)?|open)\s+(?:(?:my|the)\s+)?test\s+(?:results?|report|dashboard){_TAIL}",
+        re.I), "test_results_open"),
 )
 _NOTE_CMD_RE = re.compile(rf"^{_PLEASE}take\s+a\s+note\b\s*[:\-]?\s*(.*)$", re.I | re.S)
 _IHSS_CMD_RE = re.compile(
@@ -974,6 +983,7 @@ HELP_TEXT = (
     "I can open the captures folder, and I can look at a screenshot when you ask. "
     "I can open your Videos folder. "
     "I can open God's Eye on this Mac. "
+    "I can show your test results in the browser. "
     "I can tutor a problem. Say tutor me on a topic, or explain this problem. "
     "I can check for nearby fires and earthquakes, and turn hazard alerts on or off. "
     "I can open ChatGPT, Claude, Gemini, Siri, or Google with a capture or your last question. "

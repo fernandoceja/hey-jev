@@ -12,6 +12,7 @@ from .cleanmymac import is_cleanmymac_phrase
 from .calendar_add import is_calendar_add_phrase
 from .mail_voice import mail_action
 from .notes_search import is_notes_question
+from .dashboard import is_test_results_phrase
 from .shortcuts import jev_shortcut_catalog, parse_shortcut_name, resolve_shortcut
 
 def route_before_api(text):
@@ -68,6 +69,9 @@ def route_before_api(text):
     # Before the "clean my mac" open-app nickname, which "open CleanMyMac" keeps.
     if is_cleanmymac_phrase(raw):
         return "cleanmymac_scan"
+    # Test results dashboard. Static local HTML. Mac-only, not in BRIDGE_ALLOW.
+    if is_test_results_phrase(raw):
+        return "test_results_open"
     for pattern, key in STRICT_PATTERNS:
         if pattern.match(raw):
             return key

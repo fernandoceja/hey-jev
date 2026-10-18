@@ -80,6 +80,7 @@ from .config import (
     CLIPBOARD_SPOKEN_COUNT,
     CLIPBOARD_POLL_SECONDS,
     CLIPBOARD_HISTORY_PATH,
+    TEST_REPORT_PATH,
     NOTES_PATH,
     DUE_PATH,
     IHSS_PATH,
@@ -749,4 +750,26 @@ from .notes_search import (
     answer_from_notes,
     is_notes_question,
     search_notes,
+)
+
+# Local static HTML test-results dashboard. Mac-only, not in BRIDGE_ALLOW.
+from . import dashboard as test_dashboard
+from .dashboard import (
+    COMMAND_MODULE_MAP,
+    FAILED_TEST_RESULTS,
+    MISSING_TEST_RESULTS,
+    OPENING_TEST_RESULTS,
+    TEST_RESULTS_NOT_MAC,
+    build_test_report,
+    format_run_time,
+    is_test_results_phrase,
+    module_for_test_file,
+    open_report_args,
+    open_test_results,
+    parse_pytest_output,
+    pytest_command,
+    render_report_html,
+    report_path,
+    run_pytest,
+    write_test_report,
 )

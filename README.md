@@ -442,3 +442,8 @@ This uses Mail.app through AppleScript, so add your Gmail or Zoho account to Mai
 ## Ask your notes
 
 Say "what do my notes say about the Brea interview", "search my notes for wigs", "ask my notes when is Zoe's recital", or "what did I write about rent". Jev searches the .md and .txt files in `NOTES_SEARCH_DIRS` (the Jev folder by default; add an Obsidian vault path there) and reads the two best matches with the file name. It is local keyword search: no network, no sockets. For a one-sentence answer instead, put `on` in `~/Library/Application Support/Hey Jev/notes-llm.txt`; that sends the matching excerpts to OpenRouter with the existing Keychain key (a small per-question cost). Off by default. Mac-only: `notes_ask` is not on the iPhone bridge allowlist.
+
+## Local test-results dashboard
+
+Run `.venv/bin/python -m commands.dashboard` (or `.venv/bin/python commands/dashboard.py`) to run `pytest` and write `~/Library/Application Support/Hey Jev/test-report.html` (`TEST_REPORT_PATH`) showing pass/fail per command module and the last run time. Say "show my test results" (or "open my test results") to open the static HTML file in your default browser. Mac-only: `test_results_open` is not on the iPhone bridge allowlist, opens no listening socket or server, uses no API keys, and makes no network calls.
+

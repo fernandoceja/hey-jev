@@ -55,6 +55,7 @@ COMMAND_PROMPT = (
     "Use dramatic voice. Use normal voice. Which voice are you using. "
     "Open videos. Open my videos. Show my videos. "
     "Open God's Eye. God's eye. Gods eye. "
+    "Show my test results. "
     "Tutor me on the quadratic formula. Explain this problem. "
     "Open settings. Open business email. Run shortcut Leaving for work. What can you do."
 )
@@ -427,6 +428,8 @@ ACTIONS = {
     "folder_open": lambda _arg, text: commands.open_folder_from_text(text),
     "videos_open": lambda _arg, _text: commands.open_videos_folder(),
     "gods_eye_open": lambda _arg, _text: commands.open_gods_eye(),
+    # Opens the local static HTML test report in the default browser. Mac-only, not bridged.
+    "test_results_open": lambda _arg, _text: commands.open_test_results(),
     "game_open": lambda _arg, text: commands.open_game_from_text(text),
     "game_close": lambda _arg, text: commands.close_game_from_text(text),
     # Scan only: opens CleanMyMac and presses Scan. Never cleans. Not bridged.
