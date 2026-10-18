@@ -39,27 +39,42 @@ class NotesSearchTests(unittest.TestCase):
         self.assertEqual(route_before_api("take a note buy milk"), "note_take")
 
     def test_keyword_answer_names_the_file(self):
-        line = ns.answer_from_notes("what do my notes say about the Brea interview", dirs=self.dirs, use_llm=False)
+        line = ns.answer_from_notes("what do my notes say about the Brea interview", dirs=self.dirs, use_llm=False).text
         self.assertTrue(line.startswith("In notes: Brea interview went well"), line)
         self.assertNotIn("secret", line)
         self.assertNotIn("hidden", line)
 
     def test_subfolder_and_possessive(self):
-        line = ns.answer_from_notes("ask my notes when is Zoe's recital", dirs=self.dirs, use_llm=False)
+        line = ns.answer_from_notes("ask my notes when is Zoe's recital", dirs=self.dirs, use_llm=False).text
         self.assertIn("In zoe: Zoe's recital is Friday at 6 pm", line)
 
     def test_nothing_found(self):
-        self.assertEqual(ns.answer_from_notes("search my notes for tesla", dirs=self.dirs, use_llm=False),
+        self.assertEqual(ns.answer_from_notes("search my notes for tesla", dirs=self.dirs, use_llm=False).text,
                          ns.NOTES_NONE.format("tesla"))
 
     def test_llm_only_when_on_and_falls_back(self):
         seen = []
         line = ns.answer_from_notes("search my notes for rent", dirs=self.dirs, use_llm=True,
                                     ask=lambda q, h: seen.append((q, h)) or "Rent is due on the first.")
-        self.assertEqual(line, "Rent is due on the first.")
+        self.assertEqual(line.text, "Rent is due on the first.")
         self.assertEqual(seen[0][0], "rent")
-        line = ns.answer_from_notes("search my notes for rent", dirs=self.dirs, use_llm=True, ask=lambda q, h: None)
+        line = ns.answer_from_notes("search my notes for rent", dirs=self.dirs, use_llm=True, ask=lambda q, h: None).text
         self.assertIn("Rent is due on the 1st.", line)
+
+    def test_short_lists_split_and_markers_keep_content(self):
+        with open(os.path.join(self.tmp.name, "list.md"), "w") as f:
+            f.write("- secret item\n- cake is Friday\n\n- 6 pm recital\n- [x] x-ray appointment\n1. 2026-10-17 taxes due\n")
+        line = ns.answer_from_notes("search my notes for cake", dirs=self.dirs, use_llm=False).text
+        self.assertIn("cake is Friday", line)
+        self.assertNotIn("secret item", line)
+        self.assertEqual(ns._strip_marker("- 6 pm recital"), "6 pm recital")
+        self.assertEqual(ns._strip_marker("- [x] x-ray appointment"), "x-ray appointment")
+        self.assertEqual(ns._strip_marker("1. 2026-10-17 taxes due"), "2026-10-17 taxes due")
+        self.assertEqual(ns._strip_marker("## Rent"), "Rent")
+
+    def test_answer_is_local_speech_never_fish(self):
+        self.assertIsInstance(ns.answer_from_notes("search my notes for rent", dirs=self.dirs, use_llm=False),
+                              commands.LocalSpeech)
 
     def test_flag_file_defaults_off(self):
         self.assertFalse(ns.llm_enabled(os.path.join(self.tmp.name, "missing.txt")))
