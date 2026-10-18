@@ -71,6 +71,34 @@ class FakeFoundation(object):
 class CalendarAddTests(unittest.TestCase):
     def setUp(self):
         FakeStore.saved = []
+        cal.clear_pending()
+
+    def tearDown(self):
+        cal.clear_pending()
+
+    def test_bare_meeting_keeps_its_title_and_day(self):
+        p = cal.parse_event_request("schedule meeting Friday at 2", now=NOW)
+        self.assertEqual((p["title"], p["start"].day, p["start"].hour), ("meeting", 9, 14))
+        p = cal.parse_event_request("add an appointment tomorrow at 10 am to my calendar", now=NOW)
+        self.assertEqual((p["title"], p["start"].day), ("appointment", 8))
+        p = cal.parse_event_request("add a meeting called standup to my calendar Friday at 9", now=NOW)
+        self.assertEqual(p["title"], "standup")
+
+    def test_asks_when_then_finishes_on_the_next_turn(self):
+        calls = []
+        self.assertEqual(cal.add_event("schedule dentist", now=NOW, runner=calls.append),
+                         "When should I put dentist on your calendar?")
+        self.assertEqual(route_before_api("tomorrow at 10"), "calendar_add")
+        line = cal.add_event("tomorrow at 10", now=NOW, calendar_name="", runner=calls.append)
+        self.assertEqual(line, "Added dentist to your calendar tomorrow at 10 AM, for 1 hour.")
+        self.assertEqual(calls[0][3], "dentist")
+        self.assertNotEqual(route_before_api("tomorrow at 10"), "calendar_add")
+
+    def test_pending_expires_and_ignores_other_sentences(self):
+        cal.add_event("schedule dentist", now=NOW, runner=lambda a: None)
+        self.assertIsNone(cal._from_pending("what's the weather", now=NOW))
+        self.assertIsNone(cal._from_pending("tomorrow at 10", now=NOW, clock=lambda: 1e18))
+        self.assertIsNone(cal._from_pending("tomorrow at 10", now=NOW))
 
     def test_phrases_route_locally_and_stay_off_the_bridge(self):
         for text in (

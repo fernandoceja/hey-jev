@@ -11,6 +11,7 @@ socket or calls the network. Mac-only, and not on the iPhone bridge allowlist.
 from datetime import timedelta
 import re
 import threading
+import time
 
 from . import config
 from .calendar_shift import _wait_for
@@ -73,10 +74,47 @@ _APPLESCRIPT = """on run argv
 end run"""
 
 _access_granted = False
+# "schedule dentist" asks when. The title waits here for one answer such as "tomorrow at 10".
+PENDING_SECONDS = 60
+_pending = {}
+_WHEN_START = re.compile(
+    r"^(?:today|tomorrow|tonight|at\s|on\s|this\s|next\s|in\s|noon|midnight|"
+    r"monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b",
+    re.I,
+)
 
 
 def is_calendar_add_phrase(text):
-    return parse_event_request(text) is not None
+    if parse_event_request(text) is not None:
+        return True
+    return _from_pending(text) is not None
+
+
+def _arm_pending(parsed, clock=None):
+    _pending.clear()
+    _pending.update({"title": parsed["title"], "minutes": parsed["minutes"],
+                     "until": (clock or time.monotonic)() + PENDING_SECONDS})
+
+
+def clear_pending():
+    _pending.clear()
+
+
+def _from_pending(text, now=None, clock=None):
+    """The event when this turn answers "When should I put X on your calendar?", else None."""
+    if not _pending or (clock or time.monotonic)() > _pending["until"]:
+        _pending.clear()
+        return None
+    raw = re.sub(r"\s+", " ", _clean(text or "")).strip().rstrip(".!?")
+    if not _WHEN_START.match(raw):
+        return None
+    when = _BARE_PM.sub(lambda m: "at {0}{1} pm".format(m.group(1), ":" + m.group(2) if m.group(2) else ""), raw)
+    title, start, all_day, spoken = _peel_due("{0} {1}".format(_pending["title"], when), _as_now(now))
+    if start is None or _task_text(title) != _pending["title"]:
+        return None
+    minutes = 24 * 60 if all_day else _pending["minutes"]
+    return {"title": _pending["title"], "start": start, "all_day": all_day,
+            "minutes": minutes, "spoken_when": spoken}
 
 
 def _minutes(match):
@@ -112,7 +150,12 @@ def parse_event_request(text, now=None):
     if re.match(r"^(?:a\s+)?(?:note|reminder|timer)\b", body, re.I):
         return None
     body = _CAL_WORDS.sub(" ", body).strip()
-    body = _EVENT_LEAD.sub("", body).strip()
+    stripped = _EVENT_LEAD.sub("", body).strip()
+    if stripped and not _WHEN_START.match(stripped):
+        body = stripped
+    else:
+        # "schedule meeting Friday at 2": "meeting" is the title, not a word to drop.
+        body = re.sub(r"^(?:an?\s+)?(?:new\s+)?", "", body, flags=re.I).strip()
     minutes = int(config.CALENDAR_EVENT_MINUTES)
     dur = _DURATION.search(body)
     if dur:
@@ -267,9 +310,13 @@ def add_event(text, now=None, calendar_name=None, eventkit=None, foundation=None
     """Create the event and return the sentence to speak (the read-back)."""
     parsed = parse_event_request(text, now=now)
     if parsed is None:
-        return CAL_UNCLEAR
+        parsed = _from_pending(text, now=now)
+        if parsed is None:
+            return CAL_UNCLEAR
     if parsed["start"] is None:
+        _arm_pending(parsed)
         return "When should I put {0} on your calendar?".format(parsed["title"])
+    clear_pending()
     chosen = str(config.CALENDAR_ADD_NAME if calendar_name is None else calendar_name or "").strip()
     if eventkit is not None:
         outcome = _save_eventkit(parsed, chosen, eventkit, foundation, cache=False)

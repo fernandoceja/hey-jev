@@ -12,12 +12,14 @@ the script source. Reading content does not mark a message read.
 
 "summarize my email" sends the sender, subject, and the first part of each
 unread message to OpenRouter with the existing Keychain key. Without a key it
-falls back to reading the senders and subjects. Every command here is Mac-only
+falls back to reading the senders and subjects. Replies are LocalSpeech (macOS say), so mail
+metadata never goes to Fish. Every command here is Mac-only
 and absent from BRIDGE_ALLOW, so the iPhone bridge cannot read mail.
 """
 import re
 
 from .shell import _run
+from .messages import LocalSpeech
 from .textutil import _clean
 
 FIELD = chr(31)
@@ -90,7 +92,7 @@ _SUMMARY_RE = re.compile(
 )
 _REPLY_RE = re.compile(
     r"^(?:please\s+)?(?:draft\s+(?:a\s+)?)?(?:reply|respond)\s+to\s+(?:the\s+)?(?:(?:last|latest|newest)\s+)?"
-    r"(?:e-?mail\s+|message\s+)?(?:from\s+)?(?P<who>.+?)\s*(?:,|:|\s+saying|\s+and\s+say|\s+with|\s+that)\s+(?P<body>.+?)[.!?]*$",
+    r"(?:e-?mail\s+|message\s+)?(?:from\s+)?(?P<who>.+?)\s*(?:,|:|\s+saying|\s+and\s+say|\s+with|\s+that)\s+(?P<body>.+?)\s*$",
     re.I,
 )
 
@@ -161,6 +163,11 @@ def _count_line(total):
 
 
 def read_inbox(runner=None):
+    """LocalSpeech: senders and subjects are spoken with macOS say, never Fish, and not logged."""
+    return LocalSpeech(_read_inbox(runner))
+
+
+def _read_inbox(runner):
     try:
         total, rows = fetch_unread(READ_COUNT, 0, runner)
     except Exception as exc:
@@ -199,6 +206,11 @@ def _ask_summary(prompt, post=None, key=None):
 
 
 def summarize_inbox(runner=None, ask=None):
+    """LocalSpeech. Only the optional summary call sends text out (OpenRouter), never Fish."""
+    return LocalSpeech(_summarize_inbox(runner, ask))
+
+
+def _summarize_inbox(runner, ask):
     try:
         total, rows = fetch_unread(SUMMARY_COUNT, SUMMARY_BODY_CHARS, runner)
     except Exception as exc:
@@ -213,7 +225,11 @@ def summarize_inbox(runner=None, ask=None):
 
 
 def draft_reply(text, runner=None):
-    """Open a reply draft in Mail with the dictated text. Never delivers it."""
+    """Open a reply draft in Mail with the dictated text. Never delivers it. LocalSpeech."""
+    return LocalSpeech(_draft_reply(text, runner))
+
+
+def _draft_reply(text, runner):
     parsed = parse_reply(text)
     if parsed is None:
         return MAIL_REPLY_UNCLEAR

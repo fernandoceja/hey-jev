@@ -3,7 +3,7 @@
 "what do my notes say about the Brea interview", "search my notes for wigs",
 "ask my notes when is Zoe's recital". Files are .md and .txt under
 NOTES_SEARCH_DIRS (the Jev folder by default). The search is local keyword
-matching: no network, no socket. An optional one-sentence LLM answer uses the
+matching: no network, no socket. Replies are LocalSpeech (macOS say), never Fish. An optional one-sentence LLM answer uses the
 existing OpenRouter Keychain key, and it is off unless notes-llm.txt says "on".
 Mac-only, and not on the iPhone bridge allowlist.
 """
@@ -11,6 +11,7 @@ import os
 import re
 
 from . import config
+from .messages import LocalSpeech
 from .textutil import _clean
 
 FLAG_PATH = os.path.expanduser("~/Library/Application Support/Hey Jev/notes-llm.txt")
@@ -88,6 +89,15 @@ def note_files(dirs=None):
     return found
 
 
+_LIST_ITEM = re.compile(r"^(?:[-*+]|\d{1,3}[.)])\s+")
+_MARKER = re.compile(r"^(?:#{1,6}\s+|>\s*|(?:[-*+]|\d{1,3}[.)])\s+(?:\[[ xX]\]\s+)?)")
+
+
+def _strip_marker(chunk):
+    """Drop one Markdown heading, quote, bullet, number, or checkbox prefix. Keep the content."""
+    return _MARKER.sub("", chunk.strip(), count=1).strip()
+
+
 def _chunks(text):
     """Paragraphs, and single lines inside long list blocks."""
     out = []
@@ -95,7 +105,7 @@ def _chunks(text):
         lines = [l.strip() for l in para.splitlines() if l.strip()]
         if not lines:
             continue
-        if len(lines) > 4:
+        if len(lines) > 4 or any(_LIST_ITEM.match(l) for l in lines):
             out.extend(lines)
         else:
             out.append(" ".join(lines))
@@ -128,7 +138,7 @@ def search_notes(query, dirs=None):
         for chunk in _chunks(text):
             score = _score(chunk, words)
             if score >= need:
-                snippet = re.sub(r"^[#>*\-\s\d.\[\]x]+", "", chunk).strip()
+                snippet = _strip_marker(chunk)
                 if len(snippet) > SNIPPET_CHARS:
                     snippet = snippet[:SNIPPET_CHARS].rsplit(" ", 1)[0] + "…"
                 hits.append((score, label, snippet))
@@ -165,6 +175,11 @@ def _ask_llm(query, hits, post=None, key=None):
 
 
 def answer_from_notes(text, dirs=None, use_llm=None, ask=None):
+    """LocalSpeech, so note text is spoken with macOS say, never Fish, and is not logged."""
+    return LocalSpeech(_answer(text, dirs, use_llm, ask))
+
+
+def _answer(text, dirs, use_llm, ask):
     query = parse_notes_query(text)
     if not query:
         return NOTES_UNCLEAR

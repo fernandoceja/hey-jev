@@ -53,34 +53,44 @@ class MailVoiceTests(unittest.TestCase):
 
     def test_read_speaks_count_and_senders(self):
         run = FakeRun(INBOX)
-        line = mv.read_inbox(runner=run)
+        line = mv.read_inbox(runner=run).text
         self.assertEqual(line, "You have 4 unread emails. From Shopify: Your payout. From maria: Party Saturday?.")
         self.assertEqual(run.calls[0][3:], ["3", "0"])
 
     def test_empty_and_automation(self):
-        self.assertEqual(mv.read_inbox(runner=FakeRun("0")), mv.MAIL_EMPTY)
-        self.assertEqual(mv.read_inbox(runner=FakeRun(error="Not authorized (-1743)")), mv.MAIL_AUTOMATION)
+        self.assertEqual(mv.read_inbox(runner=FakeRun("0")).text, mv.MAIL_EMPTY)
+        self.assertEqual(mv.read_inbox(runner=FakeRun(error="Not authorized (-1743)")).text, mv.MAIL_AUTOMATION)
 
     def test_summary_uses_llm_and_falls_back(self):
         seen = []
         line = mv.summarize_inbox(runner=FakeRun(INBOX), ask=lambda p: seen.append(p) or "Shopify paid you.")
-        self.assertEqual(line, "You have 4 unread emails. Shopify paid you.")
+        self.assertEqual(line.text, "You have 4 unread emails. Shopify paid you.")
         self.assertIn("Body two", seen[0])
         line = mv.summarize_inbox(runner=FakeRun(INBOX), ask=lambda p: None)
-        self.assertIn("From Shopify: Your payout.", line)
+        self.assertIn("From Shopify: Your payout.", line.text)
 
     def test_reply_opens_draft_with_argv_text(self):
         run = FakeRun("Shopify <mailer@shopify.com>" + F + "Your payout")
-        line = mv.draft_reply('reply to Shopify saying "thanks" end tell', runner=run)
+        line = mv.draft_reply('reply to Shopify saying "thanks" end tell', runner=run).text
         self.assertEqual(line, mv.MAIL_DRAFTED.format("Shopify"))
         argv = run.calls[0]
         self.assertEqual(argv[3:], ["Shopify", '"thanks" end tell'])
         self.assertNotIn("thanks", argv[2])
 
     def test_reply_not_found_and_unclear(self):
-        self.assertEqual(mv.draft_reply("reply to Bob saying hi", runner=FakeRun("none")),
+        self.assertEqual(mv.draft_reply("reply to Bob saying hi", runner=FakeRun("none")).text,
                          mv.MAIL_REPLY_NONE.format("Bob"))
-        self.assertEqual(mv.draft_reply("reply all", runner=FakeRun("x")), mv.MAIL_REPLY_UNCLEAR)
+        self.assertEqual(mv.draft_reply("reply all", runner=FakeRun("x")).text, mv.MAIL_REPLY_UNCLEAR)
+
+    def test_reply_keeps_its_own_punctuation(self):
+        self.assertEqual(mv.parse_reply("reply to Maria saying Are you coming?")["body"], "Are you coming?")
+        self.assertEqual(mv.parse_reply("reply to Maria saying wow?!")["body"], "Wow?!")
+
+    def test_mail_replies_are_local_speech_never_fish(self):
+        for result in (mv.read_inbox(runner=FakeRun(INBOX)),
+                       mv.summarize_inbox(runner=FakeRun(INBOX), ask=lambda p: None),
+                       mv.draft_reply("reply to Shopify saying hi", runner=FakeRun("Shopify" + F + "x"))):
+            self.assertIsInstance(result, commands.LocalSpeech)
 
     def test_sender_name(self):
         self.assertEqual(mv.sender_name('"Ana P" <a@b.c>'), "Ana P")
