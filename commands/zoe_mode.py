@@ -189,6 +189,8 @@ ZOE_BLOCKED = {
         # Game ports. Still absent from BRIDGE_ALLOW.
         "game_open",
         "game_close",
+        # Local test-results HTML report. Still absent from BRIDGE_ALLOW.
+        "test_results_open",
     ),
     "llm": (),
 }
