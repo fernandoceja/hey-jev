@@ -119,6 +119,12 @@ class AgentJobsTests(unittest.TestCase):
             "have an agent spend 20 dollars on credits",
             "ask an agent to checkout my cart",
             "have an agent venmo Alex",
+            "have an agent order AirPods on Amazon",
+            "have an agent place an order for a laptop",
+            "ask an agent to reorder my vitamins",
+            "have an agent pre-order the new iPhone",
+            "ask an agent to go online and order me a pizza",
+            "have an agent donate to the Red Cross",
         )
         for phrase in refused:
             reply = aj.queue_agent_job(
@@ -128,6 +134,20 @@ class AgentJobsTests(unittest.TestCase):
             )
             self.assertEqual(reply, aj.AGENT_MONEY_REFUSED, phrase)
         self.assertFalse(os.path.exists(self.jobs_dir))
+
+    def test_order_wording_that_is_not_buying_still_queues(self):
+        allowed = (
+            "have an agent research cars in order to compare prices",
+            "ask an agent to sort my notes in date order",
+            "have an agent build an order of operations quiz",
+        )
+        for phrase in allowed:
+            self.assertFalse(aj.is_money_job(aj.parse_agent_job(phrase)), phrase)
+            self.assertEqual(
+                aj.queue_agent_job(phrase, jobs_dir=self.jobs_dir, platform="darwin"),
+                aj.AGENT_QUEUED,
+                phrase,
+            )
 
     def test_status_reads_latest_jobs_and_external_updates(self):
         self.assertEqual(

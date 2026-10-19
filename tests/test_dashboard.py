@@ -129,6 +129,50 @@ class TestDashboardTests(unittest.TestCase):
         self.assertEqual(by_name["games"]["passed"], 2)
         self.assertEqual(by_name["games"]["failed"], 1)
 
+    def test_collection_errors_are_reported_as_module_failures(self):
+        out = (
+            "collecting ... collected 1 item / 2 errors\n"
+            "\n"
+            "=========================== short test summary info ============================\n"
+            "ERROR tests/test_notes_search.py\n"
+            "ERROR tests/test_eta_home.py - ModuleNotFoundError: No module named 'nope'\n"
+            "!!!!!!!!!!!!!!!!!!!! Interrupted: 2 errors during collection !!!!!!!!!!!!!!!!!!!!\n"
+        )
+        by_name = {m["module"]: m for m in dashboard.parse_pytest_output(out)}
+        self.assertEqual(set(by_name), {"notes_search", "leave"})
+        self.assertEqual(by_name["notes_search"]["status"], "FAIL")
+        self.assertEqual(by_name["notes_search"]["failed"], 1)
+        self.assertEqual(by_name["leave"]["files"], ["test_eta_home.py"])
+        page = dashboard.render_report_html(list(by_name.values()), ran_at="now", returncode=2)
+        self.assertNotIn("No test results collected.", page)
+        self.assertIn("test_notes_search.py", page)
+
+    def test_fixture_error_summary_line_is_not_double_counted(self):
+        out = (
+            "tests/test_games.py::test_one ERROR                                       [100%]\n"
+            "ERROR tests/test_games.py::test_one - RuntimeError: boom\n"
+        )
+        by_name = {m["module"]: m for m in dashboard.parse_pytest_output(out)}
+        self.assertEqual(by_name["games"]["failed"], 1)
+
+    def test_skipped_only_modules_are_not_failures(self):
+        out = (
+            "tests/test_access.py::test_a PASSED                                      [ 33%]\n"
+            "tests/test_games.py::test_mac_only SKIPPED (needs macOS)                 [ 66%]\n"
+            "tests/test_games.py::test_other SKIPPED                                  [100%]\n"
+        )
+        by_name = {m["module"]: m for m in dashboard.parse_pytest_output(out)}
+        self.assertEqual(by_name["games"]["status"], "SKIP")
+        self.assertEqual(by_name["games"]["skipped"], 2)
+        self.assertEqual(by_name["games"]["failed"], 0)
+        page = dashboard.render_report_html(list(by_name.values()), ran_at="now", returncode=0)
+        self.assertIn('<span class="badge pass">PASS</span></div></div>', page)
+        self.assertIn('<span class="badge skip">SKIP</span>', page)
+        dots = {m["module"]: m for m in dashboard.parse_pytest_output("tests/test_games.py ss [100%]\n")}
+        self.assertEqual(dots["games"]["status"], "SKIP")
+        failed_run = dashboard.render_report_html(list(by_name.values()), ran_at="now", returncode=1)
+        self.assertIn('<span class="badge fail">FAIL</span></div></div>', failed_run)
+
     def test_renders_static_html_with_modules_and_last_run_time(self):
         modules = dashboard.parse_pytest_output(SAMPLE_PYTEST_OUTPUT)
         page = dashboard.render_report_html(

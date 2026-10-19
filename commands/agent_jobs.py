@@ -60,6 +60,7 @@ _MONEY_RE = re.compile(
     r"\b(?:pay|paying|paid|payments?|payday"
     r"|buy|buying|bought"
     r"|purchas(?:e|es|ed|ing)"
+    r"|donat(?:e|es|ed|ing|ions?)"
     r"|transfer|transferring|transferred|transfers"
     r"|wire|wiring"
     r"|spend|spending|spent"
@@ -69,6 +70,17 @@ _MONEY_RE = re.compile(
     r"|\$\s*\d"
     r"|\b(?:send|sending|move|moving|deposit|depositing|withdraw|withdrawing|sweep|sweeping)\s+"
     r"(?:money|cash|funds|\$|\d)"
+    r")",
+    re.I,
+)
+
+# Ordering is buying ("order AirPods on Amazon", "place an order for a laptop"),
+# but "in order to" and "sort in date order" are not, so only the verb is matched.
+_ORDER_RE = re.compile(
+    r"(?:"
+    r"^(?:to\s+)?(?:re|pre-?)?order(?:s|ed|ing)?\b(?!\s+of\b)"
+    r"|\bplace(?:s|d)?\s+(?:an?\s+|the\s+|my\s+|another\s+)?(?:new\s+)?orders?\b"
+    r"|\b(?:re|pre-?)?order(?:s|ed|ing)?\s+(?:me|us|him|her|them|a|an|some|more|new|another|\d)\b"
     r")",
     re.I,
 )
@@ -115,8 +127,9 @@ def parse_agent_job(text):
 
 
 def is_money_job(text):
-    """True when the text asks to pay, buy, purchase, or transfer money."""
-    return bool(_MONEY_RE.search(text or ""))
+    """True when the text asks to pay, buy, order, purchase, or transfer money."""
+    raw = _squash(text)
+    return bool(_MONEY_RE.search(raw) or _ORDER_RE.search(raw))
 
 
 def _timestamp(now=None):

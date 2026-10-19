@@ -60,7 +60,12 @@ COMMAND_MODULE_MAP = {
 
 _VERBOSE_LINE_RE = re.compile(
     r"^\s*(?:[\w./\\-]+/)?(?P<file>test_[A-Za-z0-9_]+\.py)::.+?\s+"
-    r"(?P<status>PASSED|FAILED|ERROR|SKIPPED|XFAIL|XPASS)(?:\s+\[\s*\d+%\])?\s*$"
+    r"(?P<status>PASSED|FAILED|ERROR|SKIPPED|XFAIL|XPASS)(?:\s+\(.*\))?(?:\s+\[\s*\d+%\])?\s*$"
+)
+# Collection errors (import or syntax error in a test file) abort before any
+# per-test lines, e.g. "ERROR tests/test_bad.py" or "ERROR tests/test_bad.py - ...".
+_COLLECT_ERROR_RE = re.compile(
+    r"^\s*ERROR\s+(?:[\w./\\-]+/)?(?P<file>test_[A-Za-z0-9_]+\.py)(?:\s+-\s+.*)?\s*$"
 )
 _DOT_LINE_RE = re.compile(
     r"^\s*(?:[\w./\\-]+/)?(?P<file>test_[A-Za-z0-9_]+\.py)\s+"
@@ -144,6 +149,10 @@ def parse_pytest_output(output):
             elif status == "SKIPPED":
                 _record(test_file, skipped=1)
             continue
+        c = _COLLECT_ERROR_RE.match(line)
+        if c:
+            _record(c.group("file"), failed=1)
+            continue
         d = _DOT_LINE_RE.match(line)
         if d:
             test_file = d.group("file")
@@ -157,7 +166,14 @@ def parse_pytest_output(output):
     for mod in sorted(by_module):
         item = by_module[mod]
         item["files"] = sorted(item["files"])
-        item["status"] = "PASS" if item["failed"] == 0 and item["passed"] > 0 else "FAIL"
+        if item["failed"] > 0:
+            item["status"] = "FAIL"
+        elif item["passed"] > 0:
+            item["status"] = "PASS"
+        elif item["skipped"] > 0:
+            item["status"] = "SKIP"
+        else:
+            item["status"] = "FAIL"
         results.append(item)
     return results
 
@@ -182,7 +198,7 @@ def render_report_html(modules, ran_at=None, returncode=0):
     stamp = format_run_time(ran_at)
     total_passed = sum(int(m.get("passed", 0)) for m in items)
     total_failed = sum(int(m.get("failed", 0)) for m in items)
-    all_ok = (returncode == 0) and bool(items) and all(m.get("status") == "PASS" for m in items)
+    all_ok = (returncode == 0) and bool(items) and all(m.get("status") in ("PASS", "SKIP") for m in items)
     overall = "PASS" if all_ok else "FAIL"
     overall_class = "pass" if all_ok else "fail"
 
@@ -192,8 +208,8 @@ def render_report_html(modules, ran_at=None, returncode=0):
         files = ", ".join(m.get("files") or ())
         passed = int(m.get("passed", 0))
         failed = int(m.get("failed", 0))
-        status = "PASS" if m.get("status") == "PASS" else "FAIL"
-        cls = "pass" if status == "PASS" else "fail"
+        status = m.get("status") if m.get("status") in ("PASS", "SKIP") else "FAIL"
+        cls = status.lower()
         rows.append(
             "<tr class=\"row-{cls}\">"
             "<td><code>{mod}</code></td>"
@@ -276,6 +292,7 @@ td.num, th.num {{ text-align: right; font-variant-numeric: tabular-nums; }}
 }}
 .badge.pass, .value.pass {{ background: #e3f5e8; color: #166534; }}
 .badge.fail, .value.fail {{ background: #fde8e8; color: #991b1b; }}
+.badge.skip, .value.skip {{ background: #efede8; color: #57534e; }}
 </style>
 </head>
 <body>
