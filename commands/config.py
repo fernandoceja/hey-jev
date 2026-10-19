@@ -163,6 +163,10 @@ REMINDERS_LIST = ""
 CALENDAR_ADD_NAME = ""
 # Event length when the phrase does not say "for 2 hours".
 CALENDAR_EVENT_MINUTES = 60
+# "have an agent build X" / "agent status" reads and writes JSON job files here. Mac-only.
+AGENT_JOBS_DIR = os.path.expanduser(
+    "~/Library/Application Support/Hey Jev/agent-jobs"
+)
 
 # Upland, CA. Open-Meteo needs no key. Hazard distance starts here too.
 UPLAND_LAT = 34.0975

@@ -13,6 +13,8 @@ from .calendar_add import is_calendar_add_phrase
 from .mail_voice import mail_action
 from .notes_search import is_notes_question
 from .dashboard import is_test_results_phrase
+
+from .agent_jobs import is_agent_job_phrase, is_agent_status_phrase
 from .shortcuts import jev_shortcut_catalog, parse_shortcut_name, resolve_shortcut
 
 def route_before_api(text):
@@ -46,6 +48,12 @@ def route_before_api(text):
         return "recreate_status"
     if is_recreate_phrase(raw):
         return "recreate_this"
+    # Before the joiner check. "have an agent build X and Y" is one job.
+    # Mac-only, not in BRIDGE_ALLOW.
+    if is_agent_status_phrase(raw):
+        return "agent_status"
+    if is_agent_job_phrase(raw):
+        return "agent_job"
     # Before the joiner check. "lunch with mom and dad Friday at noon" is one event.
     # Mac-only, not in BRIDGE_ALLOW.
     if is_calendar_add_phrase(raw):

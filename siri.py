@@ -466,6 +466,9 @@ ACTIONS = {
     "mail_reply_draft": lambda _arg, text: commands.mail_draft_reply(text),
     # Keyword search over local note files. Optional LLM answer is off by default. Not bridged.
     "notes_ask": lambda _arg, text: commands.answer_from_notes(text),
+    # Local agent job queue in ~/Library/Application Support/Hey Jev/agent-jobs/. Mac-only. Not bridged.
+    "agent_job": lambda _arg, text: commands.queue_agent_job(text),
+    "agent_status": lambda _arg, _text: commands.speak_agent_status(),
     "zoe_academy": lambda _arg, _text: commands.open_princess_academy(),
     "zoe_timer": lambda _arg, text: _start_zoe_timer(text),
     "zoe_mode_on": lambda _arg, _text: commands.enter_zoe_mode(),

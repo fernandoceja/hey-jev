@@ -87,6 +87,7 @@ from .config import (
     MONEY_PATH,
     DUE_HORIZON_DAYS,
     REMINDERS_LIST,
+    AGENT_JOBS_DIR,
     UPLAND_LAT,
     UPLAND_LON,
     WEATHER_TIMEOUT,
@@ -773,3 +774,21 @@ from .dashboard import (
     run_pytest,
     write_test_report,
 )
+
+# Local agent job queue in ~/Library/Application Support/Hey Jev/agent-jobs/. Mac-only, not in BRIDGE_ALLOW.
+from .agent_jobs import (
+    AGENT_EMPTY,
+    AGENT_MONEY_REFUSED,
+    AGENT_NOT_MAC,
+    AGENT_QUEUED,
+    AGENT_UNCLEAR,
+    agent_jobs_dir,
+    is_agent_job_phrase,
+    is_agent_status_phrase,
+    is_money_job,
+    parse_agent_job,
+    queue_agent_job,
+    read_agent_jobs,
+    speak_agent_status,
+)
+
