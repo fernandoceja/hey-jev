@@ -81,6 +81,11 @@ _ORDER_RE = re.compile(
     r"^(?:to\s+)?(?:re|pre-?)?order(?:s|ed|ing)?\b(?!\s+of\b)"
     r"|\bplace(?:s|d)?\s+(?:an?\s+|the\s+|my\s+|another\s+)?(?:new\s+)?orders?\b"
     r"|\b(?:re|pre-?)?order(?:s|ed|ing)?\s+(?:me|us|him|her|them|a|an|some|more|new|another|\d)\b"
+    # An order verb after another action ("research options and order AirPods",
+    # "compare them, then order the cheapest") followed by any object. Noun uses
+    # like "in date order" or "order of operations" are not preceded by these.
+    r"|(?:\b(?:and|then|also|just|please|go|to)\s+|[,;:]\s*)(?:re|pre-?)?order(?:s|ed|ing)?\s+"
+    r"(?!(?:of|by|in|from|is|was|and|or|matters?|status|number|history)\b)\w"
     r")",
     re.I,
 )

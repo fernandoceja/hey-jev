@@ -125,6 +125,9 @@ class AgentJobsTests(unittest.TestCase):
             "have an agent pre-order the new iPhone",
             "ask an agent to go online and order me a pizza",
             "have an agent donate to the Red Cross",
+            "ask an agent to research options and order AirPods",
+            "have an agent compare laptops, then order the cheapest one",
+            "ask an agent to find a good charger and reorder batteries",
         )
         for phrase in refused:
             reply = aj.queue_agent_job(
@@ -140,6 +143,9 @@ class AgentJobsTests(unittest.TestCase):
             "have an agent research cars in order to compare prices",
             "ask an agent to sort my notes in date order",
             "have an agent build an order of operations quiz",
+            "ask an agent to research tools and order of operations",
+            "have an agent list my files and order by date",
+            "ask an agent to research cars and sort them in price order",
         )
         for phrase in allowed:
             self.assertFalse(aj.is_money_job(aj.parse_agent_job(phrase)), phrase)
