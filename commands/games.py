@@ -75,13 +75,67 @@ GAMES = (
     },
 ) + DOLPHIN_GAMES
 
+
+def emulator(emu_id, name, app, bundle_id, process, aliases):
+    """A whole console emulator. Every alias needs a verb ("play switch"),
+    so a bare "switch" or "smash" in conversation never opens anything.
+    Closing is an AppleScript quit only, never a forced kill, so a save
+    prompt is never lost.
+    """
+    return {
+        "id": emu_id,
+        "name": name,
+        "aliases": tuple(aliases),
+        "needs_verb": tuple(aliases),
+        "apps": (app, "~" + app),
+        "bundle_id": bundle_id,
+        "process": process,
+        "graceful_only": True,
+        "emulator": True,
+    }
+
+
+# Bundle names, ids, and executables checked on Fernando's Mac.
+EMULATORS = (
+    emulator(
+        "switch", "the Switch", "/Applications/Ryujinx.app",
+        "org.ryujinx.Ryujinx", "Ryujinx",
+        ("switch", "the switch", "my switch", "nintendo switch", "the nintendo switch",
+         "switch games", "swich", "swiss", "twitch switch"),
+    ),
+    emulator(
+        "wiiu", "the Wii U", "/Applications/Cemu.app", "info.cemu.Cemu", "Cemu",
+        ("wii u", "wiiu", "the wii u", "nintendo wii u", "we you", "wee you", "we u",
+         "wii you", "we yu", "wee u", "the we you", "wi u", "why you"),
+    ),
+    emulator(
+        "gamecube", "the GameCube", "/Applications/Dolphin.app",
+        DOLPHIN_BUNDLE_ID, "Dolphin",
+        ("gamecube", "game cube", "the gamecube", "the game cube", "nintendo gamecube",
+         "nintendo game cube", "game q", "gamecubes", "game cubes"),
+    ),
+    emulator(
+        "melee", "Melee", "/Applications/Slippi Launcher.app",
+        "com.github.projectslippi.slippidesktopapp", "Slippi Launcher",
+        ("melee", "smash", "smash bros", "smash brothers", "super smash bros",
+         "super smash bros melee", "smash melee", "slippi", "mele", "mellie", "melly",
+         "mealy", "may lay"),
+    ),
+)
+
+GAMES = GAMES + EMULATORS
+OPENING_EMULATOR = "Firing up {name}. Have fun!"
+EMULATOR_NOT_INSTALLED = "{name} emulator isn't installed on this Mac."
+CLOSING_EMULATOR = "Okay, turning off {name}."
+EMULATOR_STILL_OPEN = "I asked {name} to quit, but it's still open. It may be waiting on you to save."
+
 GAMES_NOT_MAC = "Games open on this Mac."
 GAME_FAILED = "I couldn't open {name}."
 OPENING_GAME = "Opening {name}."
 GAME_NOT_INSTALLED = "{name} isn't installed yet."
 GAME_UNKNOWN = "I don't know that game yet."
 
-_VERB = r"(?:play|open|launch|start|run|load)"
+_VERB = r"(?:play|open|launch|start|run|load|turn\s+on|fire\s+up|boot\s+up)"
 _LEAD = r"^(?:(?:hey\s+)?jev\b[\s,]*)?(?:(?:please|can\s+you|could\s+you|let'?s|i\s+want\s+to)\s+)*"
 
 
@@ -106,7 +160,7 @@ def match_game(text):
     t = _strip(text)
     if not t:
         return None
-    m = re.match(_VERB + r"\s+(?:the\s+)?(?:game\s+)?(.+)$", t)
+    m = re.match(_VERB + r"\s+(?:the\s+)?(?:game\s+(?!cubes?$|q$))?(.+)$", t)
     body = m.group(1).strip() if m else t
     body = re.sub(r"\s+(?:game|on (?:the|my) mac)$", "", body).strip()
     for game in GAMES:
@@ -138,6 +192,8 @@ def open_game(game, platform=None, exists=os.path.exists):
         return GAMES_NOT_MAC
     path = game_app_path(game, exists)
     if not path:
+        if game.get("emulator"):
+            return _cap(EMULATOR_NOT_INSTALLED.format(name=name))
         return GAME_NOT_INSTALLED.format(name=name)
     argv = ["open", path]
     if game.get("rom"):
@@ -149,7 +205,13 @@ def open_game(game, platform=None, exists=os.path.exists):
         _run(argv)
     except Exception:
         return GAME_FAILED.format(name=name)
+    if game.get("emulator"):
+        return OPENING_EMULATOR.format(name=name)
     return OPENING_GAME.format(name=name)
+
+
+def _cap(line):
+    return line[:1].upper() + line[1:]
 
 
 def open_game_from_text(text, platform=None, exists=os.path.exists):
@@ -162,13 +224,13 @@ def open_game_from_text(text, platform=None, exists=os.path.exists):
 CLOSING_GAME = "Closing {name}."
 GAME_NOT_RUNNING = "{name} isn't running."
 GAME_CLOSE_FAILED = "I couldn't close {name}."
-_CLOSE_VERB = r"(?:close|quit|exit|stop|kill|end)"
+_CLOSE_VERB = r"(?:close|quit|exit|stop|kill|end|turn\s+off|shut\s+down|shut\s+off)"
 
 
 def match_game_close(text):
     """The GAMES entry a close phrase names ("close zelda"), or None."""
     t = _strip(text)
-    m = re.match(_CLOSE_VERB + r"\s+(?:out\s+of\s+)?(?:the\s+)?(?:game\s+)?(.+)$", t)
+    m = re.match(_CLOSE_VERB + r"\s+(?:out\s+of\s+)?(?:the\s+)?(?:game\s+(?!cubes?$|q$))?(.+)$", t)
     if not m:
         return None
     body = re.sub(r"\s+(?:game|app)$", "", m.group(1).strip()).strip()
@@ -219,7 +281,7 @@ def close_game(game, platform=None, running=None, sleep=None, wait=CLOSE_WAIT_SE
     nap = sleep or time.sleep
     process = game.get("process", "")
     if not process or not check(process):
-        return GAME_NOT_RUNNING.format(name=name)
+        return _cap(GAME_NOT_RUNNING.format(name=name))
     bundle = game.get("bundle_id", "")
     if bundle:
         try:
@@ -227,7 +289,11 @@ def close_game(game, platform=None, running=None, sleep=None, wait=CLOSE_WAIT_SE
         except Exception:
             pass  # e.g. -128 on a clean quit; the poll below decides.
         if _wait_gone(process, check, nap, wait):
+            if game.get("emulator"):
+                return CLOSING_EMULATOR.format(name=name)
             return CLOSING_GAME.format(name=name)
+    if game.get("graceful_only"):
+        return EMULATOR_STILL_OPEN.format(name=name)
     try:
         _run(["pkill", "-x", process])
     except Exception:
