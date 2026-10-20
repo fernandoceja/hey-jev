@@ -32,7 +32,10 @@ HAIKU_EFFORT = "low"
 # before any answer text. These leave room for both.
 MAX_TOKENS_URL = 256
 MAX_TOKENS_REMINDER = 512
-MAX_TOKENS_ANSWER = 256
+MAX_TOKENS_ANSWER = 768
+# Retry for an answer that came back empty: no thinking, small cap.
+MAX_TOKENS_ANSWER_RETRY = 160
+NO_ANSWER = "Sorry, I didn't catch an answer, try again."
 MAX_TOKENS_VISION = 1024
 
 # Haiku 5.5 is a Claude 4.7-and-later model, so images use the high-resolution
@@ -123,6 +126,37 @@ def message_text(payload):
             elif isinstance(block, dict) and block.get("type") in (None, "text"):
                 parts.append(str(block.get("text") or ""))
     return " ".join(part.strip() for part in parts if part and str(part).strip()).strip()
+
+
+def no_reasoning_body(body, max_tokens=None):
+    """Copy of a chat body with thinking turned off and a smaller cap."""
+    retry = dict(body)
+    retry["reasoning"] = {"enabled": False}
+    retry["max_tokens"] = int(max_tokens if max_tokens is not None else MAX_TOKENS_ANSWER_RETRY)
+    return retry
+
+
+def answer_with_retry(body, post):
+    """Spoken answer for a question body. `post(body)` returns the JSON payload.
+
+    Thinking can spend the whole cap and leave no text. Then retry once with
+    reasoning off. Still empty speaks NO_ANSWER. Returns (line, cost).
+    """
+    payload = post(body)
+    cost = usage_cost(payload.get("usage") if isinstance(payload, dict) else None)
+    line = message_text(payload)
+    if line:
+        return line, cost
+    if refused(payload):
+        return REFUSAL, cost
+    payload = post(no_reasoning_body(body))
+    cost += usage_cost(payload.get("usage") if isinstance(payload, dict) else None)
+    line = message_text(payload)
+    if line:
+        return line, cost
+    if refused(payload):
+        return REFUSAL, cost
+    return NO_ANSWER, cost
 
 
 def refused(payload):
