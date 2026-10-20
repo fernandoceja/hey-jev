@@ -15,6 +15,7 @@ from commands.model import (
     MAX_TOKENS_URL,
     REFUSAL,
     active_model,
+    answer_with_retry,
     chat_body,
     message_text,
     openrouter_model,
@@ -789,15 +790,15 @@ def ask_llm(text):
          "You are a voice assistant. Answer in one short spoken sentence, no markdown. "
          "You may start with exactly one tag from: [chuckling] [laughing] [sighing] [cheerful], or none."},
         {"role": "user", "content": text}], usage=True)
-    r = requests.post("https://openrouter.ai/api/v1/chat/completions",
-                      headers={"Authorization": f"Bearer {OR_KEY}"},
-                      json=body, timeout=30)
-    r.raise_for_status()
-    j = r.json()
-    line = message_text(j)
-    if not line and refused(j):
-        line = REFUSAL
-    return line, int((time.time() - t) * 1000), usage_cost(j.get("usage"))
+    def post(payload):
+        r = requests.post("https://openrouter.ai/api/v1/chat/completions",
+                          headers={"Authorization": f"Bearer {OR_KEY}"},
+                          json=payload, timeout=30)
+        r.raise_for_status()
+        return r.json()
+
+    line, cost = answer_with_retry(body, post)
+    return line, int((time.time() - t) * 1000), cost
 
 
 # --------------------------------------------------------------------------- Decision
