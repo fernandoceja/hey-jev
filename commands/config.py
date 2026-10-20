@@ -192,6 +192,22 @@ HAZARD_CACHE_PATH = os.path.expanduser(
 HAZARD_ALERTS_PATH = os.path.expanduser(
     "~/Library/Application Support/Hey Jev/hazard-alerts.json"
 )
+# Heads-up alerts (commands/heads_up.py). Mac-only, off until turned on,
+# not in BRIDGE_ALLOW. Quiet hours are 10 PM to 7 AM.
+HEADS_UP_ENABLED = False
+HEADS_UP_POLL_SECONDS = 5 * 60
+HEADS_UP_MIN_GAP_MINUTES = 20
+HEADS_UP_QUIET_START_HOUR = 22
+HEADS_UP_QUIET_END_HOUR = 7
+HEADS_UP_EVENT_MINUTES = 45
+HEADS_UP_TRAFFIC_MINUTES = 10
+HEADS_UP_HOME_WINDOW_MINUTES = 30
+HEADS_UP_STATE_PATH = os.path.expanduser(
+    "~/Library/Application Support/Hey Jev/heads-up.json"
+)
+HEADS_UP_LOG_PATH = os.path.expanduser(
+    "~/Library/Application Support/Hey Jev/heads-up-log.jsonl"
+)
 # Keychain account for the free NASA FIRMS MAP_KEY. The key is not stored here.
 FIRMS_MAP_KEY_ACCOUNT = "FIRMS_MAP_KEY"
 USGS_DAY_FEED = "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/2.5_day.geojson"
@@ -622,6 +638,19 @@ STRICT_PATTERNS = (
         rf"|hazard\s+alerts\s+off"
         rf"){_TAIL}",
         re.I), "hazard_alerts_off"),
+    # Heads-up alerts toggle. Mac-only. Not in BRIDGE_ALLOW.
+    (re.compile(
+        rf"^{_PLEASE}(?:hey\s+jev\b\s*,?\s+)?{_PLEASE}(?:"
+        rf"(?:turn\s+on|enable)\s+heads[\s-]?up(?:\s+alerts)?"
+        rf"|heads[\s-]?up(?:\s+alerts)?\s+on"
+        rf"){_TAIL}",
+        re.I), "heads_up_on"),
+    (re.compile(
+        rf"^{_PLEASE}(?:hey\s+jev\b\s*,?\s+)?{_PLEASE}(?:"
+        rf"(?:turn\s+off|disable)\s+heads[\s-]?up(?:\s+alerts)?"
+        rf"|heads[\s-]?up(?:\s+alerts)?\s+off"
+        rf"){_TAIL}",
+        re.I), "heads_up_off"),
     # God's Eye. Mac-only. Not in BRIDGE_ALLOW. A local Vite app.
     # "open god's eye", "god's eye", and "gods eye". Zoe mode refuses it.
     (re.compile(

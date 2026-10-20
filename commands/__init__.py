@@ -327,6 +327,15 @@ from .weather import (
     _gmail_stub_noted,
 )
 
+from .heads_up import (
+    heads_up_enabled,
+    in_quiet_hours,
+    mentions_money,
+    run_heads_up_once,
+    set_heads_up,
+    start_heads_up_thread,
+)
+
 from .hazards import (
     alert_line,
     collect_hazards,
