@@ -488,6 +488,8 @@ ACTIONS = {
     "info_hazards_quakes": lambda _arg, _text: commands.speak_quakes(),
     "hazard_alerts_on": lambda _arg, _text: commands.set_hazard_alerts(True),
     "hazard_alerts_off": lambda _arg, _text: commands.set_hazard_alerts(False),
+    "heads_up_on": lambda _arg, _text: commands.set_heads_up(True),
+    "heads_up_off": lambda _arg, _text: commands.set_heads_up(False),
     "info_today": lambda _arg, _text: commands.speak_today(),
     "info_brief": lambda _arg, _text: commands.speak_brief(),
     "brief_play": lambda _arg, _text: commands.request_brief(),
@@ -1764,6 +1766,25 @@ def run_voice_assistant(notify=None, controls=None, mode="ptt", mic=""):
         return posted or spoken
 
     commands.start_hazard_thread(_hazard_deliver, quiet_check=_leave_quiet)
+
+    def _heads_up_deliver(line):
+        # Dictation already owns the speaker. Leave the alert unmarked.
+        if rec.dictating:
+            return False
+        posted = False
+        try:
+            posted = commands.post_leave_notification(line)
+        except Exception as exc:
+            print(f"  heads-up: {type(exc).__name__}")
+        spoken = False
+        try:
+            say(line, notify)
+            spoken = True
+        except Exception as exc:
+            print(f"  heads-up: {type(exc).__name__}")
+        return posted or spoken
+
+    commands.start_heads_up_thread(_heads_up_deliver, quiet_check=_leave_quiet)
     commands.start_location_keeper()
     threading.Thread(target=warm_cache, daemon=True).start()
     threading.Thread(target=wake_loop, daemon=True).start()

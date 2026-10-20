@@ -129,6 +129,9 @@ ZOE_BLOCKED = {
         "info_hazards_quakes",
         "hazard_alerts_on",
         "hazard_alerts_off",
+        # Heads-up alerts toggle. Still not on the bridge.
+        "heads_up_on",
+        "heads_up_off",
     ),
     "dictation": ("dictation_scribe", "dictation_openai"),
     "shell": (),
