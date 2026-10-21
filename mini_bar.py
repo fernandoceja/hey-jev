@@ -825,7 +825,6 @@ CONSOLE_MENUS = (
     ("switch", "Nintendo Switch", "Ryujinx", "play switch", "turn off switch"),
     ("wiiu", "Wii U", "Cemu", "play wii u", "turn off wii u"),
     ("gamecube", "GameCube", "Dolphin", "play gamecube", "turn off gamecube"),
-    ("melee", "Melee", "Slippi", "play melee", "turn off melee"),
 )
 
 

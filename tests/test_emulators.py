@@ -15,21 +15,16 @@ OPEN = {
     "wiiu": ("play wii u", "play wiiu", "play Wii-U", "play we you", "open wee you",
              "play nintendo wii u", "play wii you"),
     "gamecube": ("play gamecube", "play game cube", "open the gamecube", "play nintendo gamecube"),
-    "melee": ("play melee", "play smash", "play smash bros", "open slippi",
-              "play super smash bros melee", "play mele"),
 }
 CLOSE = {
     "switch": ("turn off switch", "close switch", "quit switch", "shut down the switch"),
     "wiiu": ("turn off wii u", "close we you", "quit wiiu"),
     "gamecube": ("turn off gamecube", "close game cube", "quit gamecube"),
-    "melee": ("turn off melee", "close smash", "quit melee"),
 }
 APPS = {
     "switch": ("/Applications/Ryujinx.app", "org.ryujinx.Ryujinx", "Ryujinx"),
     "wiiu": ("/Applications/Cemu.app", "info.cemu.Cemu", "Cemu"),
     "gamecube": ("/Applications/Dolphin.app", "org.dolphin-emu.dolphin", "Dolphin"),
-    "melee": ("/Applications/Slippi Launcher.app",
-              "com.github.projectslippi.slippidesktopapp", "Slippi Launcher"),
 }
 
 
@@ -78,7 +73,7 @@ class RoutingTests(unittest.TestCase):
             commands.set_zoe_mode_path(os.path.join(tmp, "zoe-mode.txt"))
             try:
                 commands.enter_zoe_mode()
-                for p in ("play switch", "turn off melee", "play wii u", "play gamecube"):
+                for p in ("play switch", "turn off gamecube", "play wii u", "play gamecube"):
                     guard = commands.zoe_guard(p)
                     self.assertEqual(guard["kind"], "speak", p)
                     self.assertNotIn("action", guard)
@@ -99,12 +94,13 @@ class ActionTests(unittest.TestCase):
         run.assert_called_once_with(["open", "/Applications/Ryujinx.app"])
         self.assertEqual(spoken, "Firing up the Switch. Have fun!")
 
-    def test_open_melee(self):
-        with mock.patch.object(games, "_run") as run:
-            spoken = games.open_game_from_text("play smash", platform="darwin",
-                                               exists=lambda p: p == "/Applications/Slippi Launcher.app")
-        run.assert_called_once_with(["open", "/Applications/Slippi Launcher.app"])
-        self.assertEqual(spoken, "Firing up Melee. Have fun!")
+    def test_melee_and_slippi_are_gone(self):
+        self.assertFalse(any(g["id"] == "melee" for g in games.GAMES))
+        for p in ("play melee", "play smash", "open slippi", "turn off melee"):
+            self.assertIsNone(games.match_game(p), p)
+            self.assertIsNone(games.match_game_close(p), p)
+        src = open(os.path.join(ROOT, "commands", "games.py"), encoding="utf-8").read()
+        self.assertNotIn("Slippi", src)
 
     def test_not_installed(self):
         with mock.patch.object(games, "_run") as run:
@@ -142,7 +138,7 @@ class ActionTests(unittest.TestCase):
 
     def test_close_not_running(self):
         with mock.patch.object(games, "_run") as run:
-            spoken = games.close_game_from_text("turn off melee", platform="darwin",
+            spoken = games.close_game_from_text("turn off gamecube", platform="darwin",
                                                 running=lambda p: False)
         run.assert_not_called()
-        self.assertEqual(spoken, "Melee isn't running.")
+        self.assertEqual(spoken, "The GameCube isn't running.")

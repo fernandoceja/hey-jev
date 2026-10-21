@@ -37,8 +37,9 @@ class ScanTests(unittest.TestCase):
         titles = {c: [g["title"] for g in found[c]] for c in found}
         self.assertEqual(titles["switch"], ["High On Life", "Sonic Frontiers"])
         self.assertEqual(titles["wiiu"], ["Mario Kart 8", "Zelda BotW"])
-        self.assertEqual(titles["gamecube"], ["Super Mario Sunshine", "The Legend of Zelda - The Wind Waker"])
-        self.assertEqual(titles["melee"], ["Super Smash Bros. Melee"])
+        self.assertEqual(titles["gamecube"], ["Super Mario Sunshine", "Super Smash Bros. Melee",
+                                              "The Legend of Zelda - The Wind Waker"])
+        self.assertNotIn("melee", titles)
         rpx = [g for g in found["wiiu"] if g["title"] == "Zelda BotW"][0]
         self.assertTrue(rpx["path"].endswith("U-King.rpx"))
 
@@ -92,11 +93,11 @@ class ScanTests(unittest.TestCase):
 
 class MenuTests(unittest.TestCase):
     GAMES = {"switch": [{"id": "game_switch_abc", "title": "High On Life", "path": "/r/hol.nsp"}],
-             "wiiu": [], "gamecube": [], "melee": []}
+             "wiiu": [], "gamecube": []}
 
     def test_console_submenus_shape(self):
         menus = mini_bar.console_menus(self.GAMES)
-        self.assertEqual([m["title"] for m in menus], ["Nintendo Switch", "Wii U", "GameCube", "Melee"])
+        self.assertEqual([m["title"] for m in menus], ["Nintendo Switch", "Wii U", "GameCube"])
         sw = menus[0]["items"]
         self.assertEqual(sw[0]["title"], "Open Ryujinx")
         self.assertEqual(sw[0]["phrase"], "play switch")
@@ -106,7 +107,6 @@ class MenuTests(unittest.TestCase):
         self.assertEqual([i["title"] for i in menus[1]["items"] if i.get("kind") != "separator"],
                          ["Open Cemu", "No games found", "Turn Off"])
         self.assertEqual(menus[2]["items"][0]["title"], "Open Dolphin")
-        self.assertEqual(menus[3]["items"][0]["title"], "Open Slippi")
 
     def test_flat_play_items_are_gone_and_game_rows_are_findable(self):
         items = mini_bar.plus_menu(can_attach=False, game_library=self.GAMES)
@@ -138,7 +138,7 @@ class LaunchTests(unittest.TestCase):
         self.assertEqual(self.run_launch("wiiu", "/r/mk8.wua")[1],
                          ["open", "-a", "/Applications/Cemu.app", "--args", "-g", "/r/mk8.wua"])
         self.assertEqual(self.run_launch("gamecube", "/r/sms.ciso")[1][-2:], ["-e", "/r/sms.ciso"])
-        self.assertEqual(self.run_launch("melee", "/r/melee.iso")[1], ["open", "/Applications/Slippi Launcher.app"])
+        self.assertEqual(self.run_launch("melee", "/r/melee.iso"), (games.GAME_UNKNOWN, None))
 
     def test_missing_rom_emulator_and_non_mac(self):
         run = mock.Mock()

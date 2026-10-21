@@ -240,14 +240,14 @@ class EmulatorQuickCommandTests(unittest.TestCase):
         from commands.games import match_game
         items = self._items()
         for item_id, emu in (("play_switch", "switch"), ("play_wiiu", "wiiu"),
-                             ("play_gamecube", "gamecube"), ("play_melee", "melee")):
+                             ("play_gamecube", "gamecube")):
             self.assertEqual(match_game(items[item_id]["phrase"])["id"], emu)
 
     def test_each_console_submenu_turns_off_its_emulator(self):
         import mini_bar
         from commands.games import match_game_close
         menus = {m["id"]: m for m in mini_bar.console_menus({})}
-        for console in ("switch", "wiiu", "gamecube", "melee"):
+        for console in ("switch", "wiiu", "gamecube"):
             last = menus["console_" + console]["items"][-1]
             self.assertEqual(last["title"], "Turn Off")
             self.assertEqual(match_game_close(last["phrase"])["id"], console)
