@@ -220,3 +220,35 @@ class TestDolphinGames(unittest.TestCase):
         g = games.dolphin_game("x", "X", "X.iso", ("x game", "xg"))
         self.assertEqual(g["rom"], "~/Games/GameCube/X.iso")
         self.assertEqual(g["needs_verb"], ("xg",))
+
+
+class EmulatorQuickCommandTests(unittest.TestCase):
+    """Quick Commands type the same phrases as voice, so they hit the same emulator handlers."""
+
+    def _items(self):
+        import mini_bar
+        flat = []
+        def walk(items):
+            for it in items:
+                if it.get("kind") == "submenu":
+                    walk(it["items"])
+                flat.append(it)
+        walk(mini_bar.plus_menu(can_attach=False))
+        return {it.get("id"): it for it in flat}
+
+    def test_play_items_open_the_right_emulator(self):
+        from commands.games import match_game
+        items = self._items()
+        for item_id, emu in (("play_switch", "switch"), ("play_wiiu", "wiiu"),
+                             ("play_gamecube", "gamecube"), ("play_melee", "melee")):
+            self.assertEqual(match_game(items[item_id]["phrase"])["id"], emu)
+
+    def test_turn_off_submenu_closes_the_right_emulator(self):
+        from commands.games import match_game_close
+        items = self._items()
+        sub = items["emulators_off"]
+        self.assertEqual(sub["title"], "Turn Off Emulators")
+        self.assertEqual([i["id"] for i in sub["items"]],
+                         ["switch_off", "wiiu_off", "gamecube_off", "melee_off"])
+        for item, emu in zip(sub["items"], ("switch", "wiiu", "gamecube", "melee")):
+            self.assertEqual(match_game_close(item["phrase"])["id"], emu)
