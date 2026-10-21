@@ -114,13 +114,6 @@ EMULATORS = (
         ("gamecube", "game cube", "the gamecube", "the game cube", "nintendo gamecube",
          "nintendo game cube", "game q", "gamecubes", "game cubes"),
     ),
-    emulator(
-        "melee", "Melee", "/Applications/Slippi Launcher.app",
-        "com.github.projectslippi.slippidesktopapp", "Slippi Launcher",
-        ("melee", "smash", "smash bros", "smash brothers", "super smash bros",
-         "super smash bros melee", "smash melee", "slippi", "mele", "mellie", "melly",
-         "mealy", "may lay"),
-    ),
 )
 
 GAMES = GAMES + EMULATORS
@@ -311,8 +304,7 @@ def close_game_from_text(text, platform=None, running=None, sleep=None, wait=CLO
 
 
 # Quick Commands game rows. Each console's emulator gets the ROM path as an
-# argument list (never a shell string). Melee goes through Slippi's own
-# launcher, which already knows the Melee ISO.
+# argument list (never a shell string).
 ROM_ARGS = {"switch": (), "wiiu": ("-g",), "gamecube": ("-e",)}
 LAUNCHING_ROM = "Starting {title}."
 ROM_MISSING = "I can't find {title} anymore."
@@ -337,12 +329,9 @@ def launch_rom(console, path, title="", platform=None, exists=os.path.exists, ru
     app = game_app_path(emu, exists)
     if not app:
         return _cap(EMULATOR_NOT_INSTALLED.format(name=emu["name"]))
-    if console == "melee":
-        argv = ["open", app]
-    else:
-        if not path or not exists(path):
-            return ROM_MISSING.format(title=title)
-        argv = ["open", "-a", app, "--args"] + list(ROM_ARGS[console]) + [path]
+    if not path or not exists(path):
+        return ROM_MISSING.format(title=title)
+    argv = ["open", "-a", app, "--args"] + list(ROM_ARGS[console]) + [path]
     try:
         run(argv)
     except Exception:

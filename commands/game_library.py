@@ -12,13 +12,12 @@ import re
 import time
 import xml.etree.ElementTree as ET
 
-CONSOLES = ("switch", "wiiu", "gamecube", "melee")
+CONSOLES = ("switch", "wiiu", "gamecube")
 SWITCH_EXTS = (".nsp", ".xci")
 WIIU_EXTS = (".wua", ".wux", ".wud")
 GC_ONLY_EXTS = (".rvz", ".ciso")    # Dolphin formats; safe anywhere
 GC_SHARED_EXTS = (".iso", ".gcm")   # .iso is also PS1/PSP/PS3, so only in GameCube-looking folders
 GC_FOLDER_HINT = re.compile(r"gamecube|game cube|dolphin|(^|[^a-z])gc([^a-z]|$)|wii(?! ?u)", re.I)
-MELEE_HINT = re.compile(r"melee|GALE01", re.I)
 TITLE_ID = re.compile(r"\b(0100[0-9A-Fa-f]{12})\b")
 MAX_DEPTH = 5
 CACHE_SECONDS = 30.0
@@ -97,7 +96,7 @@ def _console_for(path, ext):
     if ext in WIIU_EXTS or ext == ".rpx":
         return "wiiu"
     if ext in GC_ONLY_EXTS or (ext in GC_SHARED_EXTS and GC_FOLDER_HINT.search(os.path.dirname(path))):
-        return "melee" if MELEE_HINT.search(os.path.basename(path)) else "gamecube"
+        return "gamecube"
     return ""
 
 
