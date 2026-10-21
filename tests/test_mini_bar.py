@@ -466,7 +466,6 @@ class TestSize(unittest.TestCase):
 _MENU_ROUTES = {
     "tutor": "tutor_explain",
     "play_zelda": "game_open",
-    "play_sunshine": "game_open",
     "play_switch": "game_open",
     "play_wiiu": "game_open",
     "play_gamecube": "game_open",
@@ -631,7 +630,9 @@ class TestGlass(unittest.TestCase):
                     self.assertNotIn(key, commands.BRIDGE_ALLOW)
                 routed[item["id"]] = key
             else:
-                if item["id"] in _MENU_ACTIONS:
+                if item["kind"] in ("game_launch", "games_empty"):
+                    pass
+                elif item["id"] in _MENU_ACTIONS:
                     self.assertEqual(item["kind"], _MENU_ACTIONS[item["id"]])
                 else:
                     self.assertEqual(item["kind"], item["id"])

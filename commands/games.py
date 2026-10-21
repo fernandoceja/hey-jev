@@ -308,3 +308,43 @@ def close_game_from_text(text, platform=None, running=None, sleep=None, wait=CLO
     if game is None:
         return GAME_UNKNOWN
     return close_game(game, platform=platform, running=running, sleep=sleep, wait=wait)
+
+
+# Quick Commands game rows. Each console's emulator gets the ROM path as an
+# argument list (never a shell string). Melee goes through Slippi's own
+# launcher, which already knows the Melee ISO.
+ROM_ARGS = {"switch": (), "wiiu": ("-g",), "gamecube": ("-e",)}
+LAUNCHING_ROM = "Starting {title}."
+ROM_MISSING = "I can't find {title} anymore."
+
+
+def emulator_for(console):
+    for game in EMULATORS:
+        if game["id"] == console:
+            return game
+    return None
+
+
+def launch_rom(console, path, title="", platform=None, exists=os.path.exists, run=None):
+    """Open one scanned game in its console's emulator. Returns a short line to show."""
+    run = run or _run
+    title = title or os.path.basename(path)
+    if (sys.platform if platform is None else platform) != "darwin":
+        return GAMES_NOT_MAC
+    emu = emulator_for(console)
+    if emu is None:
+        return GAME_UNKNOWN
+    app = game_app_path(emu, exists)
+    if not app:
+        return _cap(EMULATOR_NOT_INSTALLED.format(name=emu["name"]))
+    if console == "melee":
+        argv = ["open", app]
+    else:
+        if not path or not exists(path):
+            return ROM_MISSING.format(title=title)
+        argv = ["open", "-a", app, "--args"] + list(ROM_ARGS[console]) + [path]
+    try:
+        run(argv)
+    except Exception:
+        return GAME_FAILED.format(name=title)
+    return LAUNCHING_ROM.format(title=title)
