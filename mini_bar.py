@@ -820,8 +820,52 @@ def clipboard_menu(entries=None, paused=False):
     }
 
 
+# (console id, submenu title, emulator name, open phrase, turn-off phrase)
+CONSOLE_MENUS = (
+    ("switch", "Nintendo Switch", "Ryujinx", "play switch", "turn off switch"),
+    ("wiiu", "Wii U", "Cemu", "play wii u", "turn off wii u"),
+    ("gamecube", "GameCube", "Dolphin", "play gamecube", "turn off gamecube"),
+    ("melee", "Melee", "Slippi", "play melee", "turn off melee"),
+)
+
+
+def _game_library(games):
+    if games is not None:
+        return games
+    try:
+        from commands.game_library import library
+        return library()
+    except Exception:
+        return {}
+
+
+def console_menus(games=None):
+    """One submenu per console: Open <emulator>, games found on disk, Turn Off.
+
+    Open and Turn Off type the voice phrases. A game row is kind game_launch
+    and carries its path; the app opens it with commands.games.launch_rom.
+    """
+    games = _game_library(games)
+    menus = []
+    for console, title, emu, open_phrase, off_phrase in CONSOLE_MENUS:
+        rows = [_menu_text("play_" + console, "Open " + emu, open_phrase, "play.fill"),
+                {"kind": "separator"}]
+        found = list(games.get(console) or ())
+        for g in found:
+            rows.append({"id": g["id"], "title": g["title"], "kind": "game_launch", "phrase": "",
+                         "symbol": "gamecontroller", "key": "", "console": console, "path": g["path"]})
+        if not found:
+            rows.append({"id": "games_none_" + console, "title": "No games found", "kind": "games_empty",
+                         "phrase": "", "symbol": "questionmark.folder", "key": ""})
+        rows.append({"kind": "separator"})
+        rows.append(_menu_text(console + "_off", "Turn Off", off_phrase, "power"))
+        menus.append({"id": "console_" + console, "title": title, "kind": "submenu",
+                      "symbol": "gamecontroller", "items": tuple(rows)})
+    return tuple(menus)
+
+
 def plus_menu(can_attach=None, recording=False, clipboard_entries=None,
-              clipboard_paused=False, zoe_mode=False, hazard_alerts=False):
+              clipboard_paused=False, zoe_mode=False, hazard_alerts=False, game_library=None):
     """Items for the + button. Only commands the app already runs.
 
     `can_attach` defaults to attachments_supported(). Attach File is included
@@ -849,20 +893,7 @@ def plus_menu(can_attach=None, recording=False, clipboard_entries=None,
     quick = (
         _menu_text("tutor", "Tutor", "tutor me", "graduationcap"),
         _menu_text("play_zelda", "Play Zelda", "play zelda", "gamecontroller"),
-        _menu_text("play_sunshine", "Play Mario Sunshine", "play mario sunshine", "gamecontroller"),
-        _menu_text("play_switch", "Play Switch", "play switch", "gamecontroller"),
-        _menu_text("play_wiiu", "Play Wii U", "play wii u", "gamecontroller"),
-        _menu_text("play_gamecube", "Play GameCube", "play gamecube", "gamecontroller"),
-        _menu_text("play_melee", "Play Melee", "play melee", "gamecontroller"),
-        {
-            "id": "emulators_off", "title": "Turn Off Emulators", "kind": "submenu", "symbol": "power",
-            "items": (
-                _menu_text("switch_off", "Turn Off Switch", "turn off switch", "power"),
-                _menu_text("wiiu_off", "Turn Off Wii U", "turn off wii u", "power"),
-                _menu_text("gamecube_off", "Turn Off GameCube", "turn off gamecube", "power"),
-                _menu_text("melee_off", "Turn Off Melee", "turn off melee", "power"),
-            ),
-        },
+        *console_menus(game_library),
         _menu_text("cleanmymac_scan", "CleanMyMac Scan", "cleanmymac scan", "sparkles"),
         _menu_text("brief", "Brief Me", "brief me", "newspaper"),
         _menu_text("play_brief", "Play My Brief", "play my brief", "play.circle"),

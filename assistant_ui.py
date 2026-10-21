@@ -2630,7 +2630,7 @@ class AppDelegate(NSObject):
             item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
                 title, "miniPlusItem:", spec.get("key") or "")
             item.setTarget_(self)
-            item.setEnabled_(kind != "clipboard_empty")
+            item.setEnabled_(kind not in ("clipboard_empty", "games_empty"))
             item.setRepresentedObject_(spec.get("id") or "")
             item.setState_(1 if spec.get("checked") else 0)
             image = self._menu_symbol(spec.get("symbol") or "", title)
@@ -2675,6 +2675,9 @@ class AppDelegate(NSObject):
             return
         if kind == "text":
             self._queue_bar_phrase(spec.get("phrase") or "")
+            return
+        if kind == "game_launch":
+            threading.Thread(target=self._run_game_launch, args=(dict(spec),), daemon=True).start()
             return
         if kind == "zoe_mode":
             self._toggle_zoe_mode()
@@ -2784,6 +2787,16 @@ class AppDelegate(NSObject):
         except Exception as exc:
             sentence = "Couldn't do that."
             print(f"  mini bar capture failed: {exc}")
+        self.performSelectorOnMainThread_withObject_waitUntilDone_("showCaptureResult:", str(sentence or ""), False)
+
+    def _run_game_launch(self, spec):
+        """Open a scanned game in its emulator, then show the short result."""
+        try:
+            from commands.games import launch_rom
+            sentence = launch_rom(spec.get("console") or "", spec.get("path") or "", spec.get("title") or "")
+        except Exception as exc:
+            sentence = "Couldn't open that game."
+            print(f"  mini bar game launch failed: {exc}")
         self.performSelectorOnMainThread_withObject_waitUntilDone_("showCaptureResult:", str(sentence or ""), False)
 
     def _run_video_kind(self, kind):
