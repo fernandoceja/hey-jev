@@ -797,7 +797,18 @@ def ask_llm(text):
         r.raise_for_status()
         return r.json()
 
-    line, cost = answer_with_retry(body, post)
+    try:
+        line, cost = answer_with_retry(body, post)
+    except Exception as e:
+        # Offline / OpenRouter down: try Apple's on-device fm server if it's already running.
+        from commands import local_fallback
+        if not (local_fallback.is_network_failure(e) and local_fallback.allowed(text)):
+            raise
+        line = local_fallback.ask_fm(body["messages"])
+        if not line:
+            raise
+        print("  llm fallback: on-device fm")
+        cost = 0.0
     return line, int((time.time() - t) * 1000), cost
 
 
