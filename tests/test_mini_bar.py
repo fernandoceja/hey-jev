@@ -464,6 +464,16 @@ class TestSize(unittest.TestCase):
 
 # Phrases the + menu types, and the local command each one already routes to.
 _MENU_ROUTES = {
+    "site_starlight": "web_site_open",
+    "site_barnaby": "web_site_open",
+    "site_calculus": "web_site_open",
+    "site_tetris3d": "web_site_open",
+    "site_tetris": "web_site_open",
+    "site_academy": "web_site_open",
+    "site_chores": "web_site_open",
+    "site_interview": "web_site_open",
+    "site_typer": "web_site_open",
+    "site_business": "web_site_open",
     "tutor": "tutor_explain",
     "play_zelda": "game_open",
     "play_switch": "game_open",
@@ -666,7 +676,8 @@ class TestGlass(unittest.TestCase):
         self.assertEqual(off_ids[payday + 1], "hazard")
         self.assertEqual(off_ids[payday + 2], "gods_eye")
         self.assertEqual(off_ids[payday + 3], "hazard_alerts")
-        self.assertEqual(off_rows[payday + 4]["kind"], "separator")
+        self.assertEqual(off_ids[payday + 4], "websites")
+        self.assertEqual(off_rows[payday + 5]["kind"], "separator")
         self.assertEqual(off_rows[off_ids.index("blue_pill")]["title"], "Blue Pill")
 
         check = plus_item("hazard")
