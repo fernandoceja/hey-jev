@@ -198,7 +198,12 @@ try
   tell application "System Events"
     tell process "Terminal"
       set frontmost to true
-      set value of attribute "AXFullScreen" of (first window whose name contains "{MARKER}") to true
+      delay 0.3
+      try
+        set value of attribute "AXFullScreen" of (first window whose name contains "{MARKER}") to true
+      on error
+        set value of attribute "AXFullScreen" of window 1 to true
+      end try
     end tell
   end tell
 on error errMsg
@@ -529,6 +534,23 @@ def start_matrix(runner=None, which=None, isfile=None, shell=None, id_path=None)
     return "Matrix is on."
 
 
+def _matrix_still_open(run):
+    """After a close error, look again: the tab often closes itself when cmatrix exits."""
+    import time
+    time.sleep(0.5)
+    try:
+        rows = parse_report(run(("osascript", "-e", report_script())))
+    except Exception:
+        return True
+    if not rows:
+        return False
+    try:
+        ps_text = run(("ps", "-ax", "-o", "pid=,tty=,comm="))
+    except Exception:
+        ps_text = ""
+    return bool(plan_close(rows, ps_text, launched_by_jev=False)["running"])
+
+
 def stop_matrix(runner=None, id_path=None):
     """Quit cmatrix and close the Terminal session Jev opened for it.
 
@@ -572,8 +594,9 @@ def stop_matrix(runner=None, id_path=None):
             out = run(("osascript", "-e", script))
         except Exception as exc:
             _log(f"close failed: {exc}")
-            return "I couldn't close the Matrix window."
-        if not _close_succeeded(out):
+            if _matrix_still_open(run):
+                return "I couldn't close the Matrix window."
+        if not _close_succeeded(out) and _matrix_still_open(run):
             _log(str(out or "").strip() or "close returned nothing")
             return "I couldn't close the Matrix window."
     _clear_id(id_file)
