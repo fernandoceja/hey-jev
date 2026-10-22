@@ -838,6 +838,45 @@ def _game_library(games):
         return {}
 
 
+# (WEB_SITES key, menu title). URLs live only in commands/web_sites.py.
+WEB_SITE_MENU = (
+    ("starlight", "Starlight Quest"),
+    ("barnaby", "Barnaby & Pip"),
+    ("calculus", "Calculus 3"),
+    ("tetris3d", "3D Tetris"),
+    ("tetris", "Tetris"),
+    ("academy", "Princess Academy"),
+    ("chores", "Princess Chores"),
+    ("interview", "STAR Interview Coach"),
+    ("typer", "Kinetic Typer"),
+    ("business", "80s Obsession Store"),
+)
+
+
+def _web_site_phrase(entry):
+    """A phrase that commands.web_sites.match_web_site maps back to `entry`.
+
+    "open princess academy" belongs to the zoe_academy command, so the menu
+    uses "launch" for every site; it reaches the same web_site_open handler.
+    """
+    return "launch " + entry["names"][0]
+
+
+def websites_menu():
+    """Websites submenu. Each row types a phrase routed to web_site_open
+    (default browser, hardcoded https URLs in commands/web_sites.py). Mac-only."""
+    from commands.web_sites import WEB_SITES
+    by_key = {e["key"]: e for e in WEB_SITES}
+    rows = []
+    for key, title in WEB_SITE_MENU:
+        entry = by_key.get(key)
+        if entry is None:
+            continue
+        rows.append(_menu_text("site_" + key, title, _web_site_phrase(entry), "globe"))
+    return {"id": "websites", "title": "Websites", "kind": "submenu", "symbol": "globe",
+            "items": tuple(rows)}
+
+
 def console_menus(games=None):
     """One submenu per console: Open <emulator>, games found on disk, Turn Off.
 
@@ -906,6 +945,7 @@ def plus_menu(can_attach=None, recording=False, clipboard_entries=None,
         _menu_text("hazard", "Hazard Check", "hazard check", "exclamationmark.triangle"),
         _menu_text("gods_eye", "Open God's Eye", "open god's eye", "eye"),
         _hazard_alerts_item(bool(hazard_alerts)),
+        websites_menu(),
         {"kind": "separator"},
         _menu_text("blue_pill", "Blue Pill", "blue pill", "play.rectangle"),
         _menu_text("red_pill", "Red Pill", "red pill", "stop.rectangle"),
