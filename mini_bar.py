@@ -929,6 +929,7 @@ def plus_menu(can_attach=None, recording=False, clipboard_entries=None,
     else:
         record = _menu_action("record_start", "Start Screen Recording", "record_start", "record.circle")
     quick = (
+        websites_menu(),
         _menu_text("tutor", "Tutor", "tutor me", "graduationcap"),
         _menu_text("play_zelda", "Play Zelda", "play zelda", "gamecontroller"),
         *console_menus(game_library),
@@ -945,7 +946,6 @@ def plus_menu(can_attach=None, recording=False, clipboard_entries=None,
         _menu_text("hazard", "Hazard Check", "hazard check", "exclamationmark.triangle"),
         _menu_text("gods_eye", "Open God's Eye", "open god's eye", "eye"),
         _hazard_alerts_item(bool(hazard_alerts)),
-        websites_menu(),
         {"kind": "separator"},
         _menu_text("blue_pill", "Blue Pill", "blue pill", "play.rectangle"),
         _menu_text("red_pill", "Red Pill", "red pill", "stop.rectangle"),

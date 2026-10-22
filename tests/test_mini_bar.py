@@ -676,8 +676,8 @@ class TestGlass(unittest.TestCase):
         self.assertEqual(off_ids[payday + 1], "hazard")
         self.assertEqual(off_ids[payday + 2], "gods_eye")
         self.assertEqual(off_ids[payday + 3], "hazard_alerts")
-        self.assertEqual(off_ids[payday + 4], "websites")
-        self.assertEqual(off_rows[payday + 5]["kind"], "separator")
+        self.assertEqual(off_rows[payday + 4]["kind"], "separator")
+        self.assertEqual(off_ids[0], "websites")
         self.assertEqual(off_rows[off_ids.index("blue_pill")]["title"], "Blue Pill")
 
         check = plus_item("hazard")
