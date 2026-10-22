@@ -51,7 +51,7 @@ class FmFallbackTests(unittest.TestCase):
             seen.append(url)
             return ok(" Lima. ")
         self.assertEqual(lf.ask_fm([{"role": "user", "content": "q"}], post), "Lima.")
-        self.assertTrue(seen[0].startswith("http://127.0.0.1"))
+        self.assertEqual(seen[0], "http://127.0.0.1:1976/v1/chat/completions")
         def down(url, body):
             raise ConnectionError()
         self.assertIsNone(lf.ask_fm([{"role": "user", "content": "q"}], down))

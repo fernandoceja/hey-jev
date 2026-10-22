@@ -13,7 +13,7 @@ import os
 import sys
 
 # Override with JEV_FM_URL if `fm serve` listens elsewhere. Localhost only.
-DEFAULT_FM_URL = "http://127.0.0.1:8080/v1"
+DEFAULT_FM_URL = "http://127.0.0.1:1976/v1"
 FM_TIMEOUT = 20
 FM_MAX_TOKENS = 200
 # Short context on the on-device model: keep the prompt small.
