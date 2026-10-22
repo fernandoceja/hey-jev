@@ -418,6 +418,17 @@ Below 0.65 confidence it asks you to say it again, twice in a row and it gives u
 
 `VOICE_ID` at the top of `siri.py`. Find voices at [https://fish.audio/?fpr=henryk](https://fish.audio/?fpr=henryk) open one and copy its ID from the page link. Her replies re-render in the new voice automatically on the next launch.
 
+## Offline brain (Mac-only, on command)
+
+Say "start offline brain", "stop offline brain", or "offline brain status", or
+use **Start Offline Brain** / **Stop Offline Brain** in Quick Commands. Jev runs
+`fm serve --host 127.0.0.1 --port 1976` (Apple's macOS 27 Foundation Models CLI)
+detached, logs to `~/Library/Logs/Hey Jev/fm-serve.log`, and checks it with
+`GET /health`. Stop sends SIGTERM only to the `fm serve` process Jev started.
+This is the one approved exception to the no-listening-sockets rule: localhost
+only, never started automatically. Jev never runs sudo or `fm license`; accept
+the license once yourself in Terminal. Not on the iPhone bridge.
+
 ## CleanMyMac scan (Mac-only, scan only)
 
 Say "run CleanMyMac", "CleanMyMac scan", "scan my Mac", or "clean my Mac"

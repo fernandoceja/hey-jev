@@ -709,6 +709,13 @@ from .cleanmymac import (
     start_scan_from_text as cleanmymac_scan_from_text,
 )
 
+from .fm_serve import (
+    offline_brain_action,
+    start as fm_serve_start,
+    stop as fm_serve_stop,
+    status as fm_serve_status,
+)
+
 from .gods_eye import (
     GODS_EYE_FAILED,
     GODS_EYE_MISSING,

@@ -3,9 +3,10 @@
 Used only when the OpenRouter call for a plain question fails with a network
 or OpenRouter error. Mac-only. Plain text, no tools, small prompt.
 
-Jev never starts `fm serve` and never opens a socket of its own. It only
-connects, as a client, to a server that is already running on localhost.
-If nothing is listening, the fallback is skipped.
+This module never starts `fm serve`; it only connects, as a client, to a
+server already running on localhost. If nothing is listening, the fallback
+is skipped. Fernando can start it on command ("start offline brain"), see
+commands/fm_serve.py (127.0.0.1:1976 only).
 
 Never used for money-moving commands or My Love.
 """
