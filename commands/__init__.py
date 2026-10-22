@@ -716,6 +716,13 @@ from .fm_serve import (
     status as fm_serve_status,
 )
 
+from .web_sites import (
+    WEB_SITES,
+    is_web_site_phrase,
+    match_web_site,
+    open_web_site_from_text,
+)
+
 from .gods_eye import (
     GODS_EYE_FAILED,
     GODS_EYE_MISSING,

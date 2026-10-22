@@ -418,6 +418,27 @@ Below 0.65 confidence it asks you to say it again, twice in a row and it gives u
 
 `VOICE_ID` at the top of `siri.py`. Find voices at [https://fish.audio/?fpr=henryk](https://fish.audio/?fpr=henryk) open one and copy its ID from the page link. Her replies re-render in the new voice automatically on the next launch.
 
+## Web games and sites (Mac-only)
+
+Say "open" or "play" plus the name. Jev runs `open <url>` so the page opens in
+your default browser. Only these hardcoded https URLs are opened:
+
+- Starlight Quest: "open Starlight Quest"
+- Barnaby & Pip: "play Barnaby"
+- Calculus 3 visualization: "open Calculus 3", "open the math site"
+- 3D Tetris: "play 3D Tetris"
+- Tetris (classic): "play Tetris", "play classic Tetris"
+- Zoe's Princess Academy: "play Princess Academy", "open Zoe's academy"
+  ("open Princess Academy" still runs the existing Shortcut-first command)
+- Zoe's Princess Chores: "open Zoe's chores", "open the chore chart"
+- STAR Interview Coach: "open interview coach", "start interview practice"
+- Kinetic Typer: "open Kinetic Typer"
+- 80s Obsession Company (80sobsessioncompany.com): "open my business website",
+  "open my store", "open 80s obsession", "open the shop site". "open the store",
+  "open Shopify", and "any new orders" keep their existing Chrome commands.
+
+URLs live in `commands/web_sites.py`. Not on the iPhone bridge.
+
 ## Offline brain (Mac-only, on command)
 
 Say "start offline brain", "stop offline brain", or "offline brain status", or

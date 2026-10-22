@@ -439,6 +439,8 @@ ACTIONS = {
     "fm_serve_start": lambda _arg, _text: commands.fm_serve_start(),
     "fm_serve_stop": lambda _arg, _text: commands.fm_serve_stop(),
     "fm_serve_status": lambda _arg, _text: commands.fm_serve_status(),
+    # Fernando's web games/sites in the default browser. Hardcoded https only. Not bridged.
+    "web_site_open": lambda _arg, text: commands.open_web_site_from_text(text),
     "tutor_explain": lambda _arg, text: commands.explain_from_text(text),
     "site_open": lambda _arg, text: commands.open_site_from_text(text),
     "continue_chatgpt": lambda _arg, _text: commands.continue_chatgpt(),
