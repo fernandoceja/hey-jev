@@ -10,6 +10,7 @@ from .recreate import is_recreate_phrase, is_recreate_status
 from .games import is_game_close_phrase, is_game_phrase
 from .cleanmymac import is_cleanmymac_phrase
 from .fm_serve import offline_brain_action
+from .web_sites import is_web_site_phrase
 from .calendar_add import is_calendar_add_phrase
 from .mail_voice import mail_action
 from .notes_search import is_notes_question
@@ -67,6 +68,11 @@ def route_before_api(text):
     # Before the joiner check. "notes about Zoe and Maria" is one search. Mac-only, not in BRIDGE_ALLOW.
     if is_notes_question(raw):
         return "notes_ask"
+    # Fernando's web games/sites, default browser. Hardcoded https only.
+    # Mac-only, not in BRIDGE_ALLOW. Before the generic open-app/site routes and the joiner
+    # check ("barnaby and pip").
+    if is_web_site_phrase(raw):
+        return "web_site_open"
     if JOINER_RE.search(raw):
         return None
     # Game ports. Mac-only, not in BRIDGE_ALLOW.

@@ -418,6 +418,16 @@ Below 0.65 confidence it asks you to say it again, twice in a row and it gives u
 
 `VOICE_ID` at the top of `siri.py`. Find voices at [https://fish.audio/?fpr=henryk](https://fish.audio/?fpr=henryk) open one and copy its ID from the page link. Her replies re-render in the new voice automatically on the next launch.
 
+## Web games and sites (Mac-only)
+
+Say "open Starlight Quest", "play Barnaby", "open Calculus 3", or "open the math
+site". Jev runs `open <url>` so the page opens in your default browser. Only
+these hardcoded https URLs are opened: Starlight Quest
+(fernandoceja.github.io/Zoe-s-Princess-Academy/starlight-quest/), Barnaby & Pip
+(barnaby-pip-rainbow-crayon.fernando-ceja.chatgpt.site), and the Calculus 3
+visualization (fernandoceja.github.io/calculus-3-visualization/). Not on the
+iPhone bridge.
+
 ## Offline brain (Mac-only, on command)
 
 Say "start offline brain", "stop offline brain", or "offline brain status", or
