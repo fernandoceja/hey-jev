@@ -978,6 +978,8 @@ def plus_menu(can_attach=None, recording=False, clipboard_entries=None,
     if zoe_mode:
         zoe_item["checked"] = True
     items = [
+        {"id": "quick", "title": "Quick Commands", "kind": "submenu", "symbol": "bolt.fill", "items": quick},
+        {"kind": "separator"},
         clipboard_menu(clipboard_entries, clipboard_paused),
         zoe_item,
         {"kind": "separator"},
@@ -997,8 +999,6 @@ def plus_menu(can_attach=None, recording=False, clipboard_entries=None,
     if can_attach:
         items.append(_menu_action("attach", "Attach File\u2026", "attach", "paperclip"))
     items.extend((
-        {"kind": "separator"},
-        {"id": "quick", "title": "Quick Commands", "kind": "submenu", "symbol": "bolt.fill", "items": quick},
         {"kind": "separator"},
         _menu_action("window", "Open Jev Window", "window", "macwindow", "1"),
         _menu_action("updates", "Check for Updates\u2026", "updates", "arrow.clockwise"),
