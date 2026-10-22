@@ -9,6 +9,7 @@ from .tutor import is_tutor_phrase
 from .recreate import is_recreate_phrase, is_recreate_status
 from .games import is_game_close_phrase, is_game_phrase
 from .cleanmymac import is_cleanmymac_phrase
+from .fm_serve import offline_brain_action
 from .calendar_add import is_calendar_add_phrase
 from .mail_voice import mail_action
 from .notes_search import is_notes_question
@@ -77,6 +78,11 @@ def route_before_api(text):
     # Before the "clean my mac" open-app nickname, which "open CleanMyMac" keeps.
     if is_cleanmymac_phrase(raw):
         return "cleanmymac_scan"
+    # Offline brain: start/stop/status of `fm serve` on 127.0.0.1:1976 only.
+    # Mac-only, not in BRIDGE_ALLOW. Never started automatically.
+    fm_action = offline_brain_action(raw)
+    if fm_action:
+        return fm_action
     # Test results dashboard. Static local HTML. Mac-only, not in BRIDGE_ALLOW.
     if is_test_results_phrase(raw):
         return "test_results_open"

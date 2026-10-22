@@ -435,6 +435,10 @@ ACTIONS = {
     "game_close": lambda _arg, text: commands.close_game_from_text(text),
     # Scan only: opens CleanMyMac and presses Scan. Never cleans. Not bridged.
     "cleanmymac_scan": lambda _arg, text: commands.cleanmymac_scan_from_text(text),
+    # Offline brain: fm serve on 127.0.0.1:1976 only, on command. Not bridged.
+    "fm_serve_start": lambda _arg, _text: commands.fm_serve_start(),
+    "fm_serve_stop": lambda _arg, _text: commands.fm_serve_stop(),
+    "fm_serve_status": lambda _arg, _text: commands.fm_serve_status(),
     "tutor_explain": lambda _arg, text: commands.explain_from_text(text),
     "site_open": lambda _arg, text: commands.open_site_from_text(text),
     "continue_chatgpt": lambda _arg, _text: commands.continue_chatgpt(),

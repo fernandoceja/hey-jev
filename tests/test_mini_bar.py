@@ -473,6 +473,8 @@ _MENU_ROUTES = {
     "wiiu_off": "game_close",
     "gamecube_off": "game_close",
     "cleanmymac_scan": "cleanmymac_scan",
+    "offline_brain_on": "fm_serve_start",
+    "offline_brain_off": "fm_serve_stop",
     "brief": "info_brief",
     "play_brief": "brief_play",
     "next_shift": "info_next_shift",
