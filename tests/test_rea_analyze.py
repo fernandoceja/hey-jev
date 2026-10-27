@@ -634,6 +634,107 @@ class FailClosedTests(Base):
             self.assertNotIn(front["name"], raw)
 
 
+# Salted digests of public product bundle-id prefixes and domains.
+# Plaintext ids are not stored in this file. "venmo" and "mint" elsewhere
+# in these tests are the generic whole-word tokens, not account ids.
+_PUBLIC_BRAND_DIGESTS = (
+    "0183768b8e1e1a9e3cf424794c05ab7f52c4115df848f1f6768f3dcc697b48f8",
+    "1356190768b423f11b517322e21663f1570f2fa65fc00a4adc8d914604b35481",
+    "153667959c97e9e7462784f809ea3fecd09d6e66b0a5502d58c4c6e2a8a096e8",
+    "2b864a1c1f218d2e14482b7385fa3af7e42f517173990f82daf699d3c4f1bcf4",
+    "34d52bc4b943ca5517140273052d0c0532798fac694c6a48817a186f3f66b092",
+    "3a1ca9fc54010756b842895992810ee8d74a4501d085e3dffcabddc32092e825",
+    "40321f8934083a281f40ae1b0387bdd208b654b11e1da63d2ac9d11ec68bcfe1",
+    "42aaf5dbd0c03ddc4804e907bc83757e26ec69eb112d5b3fbfe84771e0733052",
+    "4d992c331ef42e2bf50a505fb2669b33f04c2f8bcd07213efd6a337b51dc881a",
+    "565b646bf568d96b62e50b614e10b88e5562e594568d83509df2e1a6323f0379",
+    "5976dce32a8539fca9a10801d1dfa83fec6a9fe67455ed81f6e14be25fec6fa2",
+    "66b615b9d4779f417b499417a3da279d945abd2314b5ce68f9294b82e66bf225",
+    "75ccaa01b4307f1d7fae3c48972a7cb6edd0779188e5bacdb63cbd1d36a74238",
+    "7a0bda9bd96e1915464cc76b012ba95a2f7c2f1703d21ba25b6fcee01e6e18aa",
+    "7a496384bed25bfa8d534bdef4980756194be2061144d35871cafe94dc8223a4",
+    "92b02d8612d12d245f50b04c1dcaf55c7b44891e56d2beeb47071d1799aac4a4",
+    "92dd1206a7ac383094600ddb98e3b6334aed893bd57615cf1d617e7c98e911a8",
+    "a683daa722ea930da63fae56c030eab0b96563fcd5903ccbb2b012dbb9c0e74b",
+    "aedef76c172727cc84e07fbd7d1f8ef6e2947c0ad987dc1a1b0a9ea05ff369d2",
+    "bbfd2271db26ad3794fd428388e66e340732a30b6c08647dd7f567bc8e50aa6b",
+    "d51d08cb68b2f9f1ca9918eddad2c4976fbaaf13cc24d9c89ce2c8b5dd10ffe7",
+    "e07e78b2e5eb57859b45f25eb850845aacc7c99cbb149bc5f48ce736e5c38242",
+    "e0b0da41f424e74e23ea3c777954f90b906a62f58896fc15f9a97d03408b9578",
+    "e2f8f857a5a76a8df5aab259671da80783b7d67bc977a5efb92e1277a9684c14",
+    "edf1ef8b51fb265318faf1750d8f6d08307e3da9ec2651f2d74246627ad17b9a",
+    "ef20cf7e1294bdfef7565e6130b29139a966ead1d33b31a4d15b3a5958249e24",
+    "f0952c14d88abbd3c096ae2b3b63f28b0cd44348d4a67cc54f6dc4000a7c27e5",
+    "f155f927ca3d90ac4670acb62452a8b8634415321dfcc083a13c72175bbae109",
+    "f27deeb7ece53fe007f1f4d7e0c9633dfded65756873af5626df631ee04f1128",
+)
+
+
+class MoneyTokenTests(Base):
+    def test_money_words_and_plurals_are_refused(self):
+        refused = (
+            {"name": "Budget"},
+            {"name": "Crypto"},
+            {"name": "Stocks"},
+            {"name": "Tax"},
+            {"name": "Money"},
+            {"name": "Coins"},
+            {"name": "Taxes"},
+            {"name": "Bitcoin"},
+            {"name": "Cash"},
+            {"name": "Trade"},
+            {"name": "Venmo"},
+            {"name": "Mint"},
+            {"name": "Family Budget"},
+            {"name": "Crypto Tracker"},
+            {"name": "BudgetApp"},
+            {"name": "MyMoney"},
+            {"name": "CryptoTracker"},
+            {"bundle_id": "com.example.budget"},
+            {"bundle_id": "com.example.my-stocks"},
+            {"bundle_id": "com.example.my_coins"},
+            {"bundle_id": "com.example.TaxHelper"},
+            {"path": "/Applications/Tax.app"},
+            {"path": "/Applications/My Money.app"},
+            {"site": "https://budget.example/home"},
+            {"site": "crypto.example"},
+        )
+        for front in refused:
+            for path in self.log_files():
+                os.remove(path)
+            runner = Runner()
+            spoken = self.run_app(runner, front=self.front(
+                name=front.get("name", "Desk"),
+                bundle_id=front.get("bundle_id", "com.example.desk"),
+                path=front.get("path", "/Applications/Desk.app"),
+                site=front.get("site", ""),
+            ))
+            self.assertEqual(spoken.text, rea.REFUSAL, front)
+            self.assertEqual(runner.calls, [], front)
+            _path, raw, body = self.read_logs()[0]
+            self.assertEqual(set(body.keys()), {"timestamp", "refused"}, front)
+            self.assertNotIn("Desk", raw)
+            for value in front.values():
+                self.assertNotIn(value, raw, front)
+
+    def test_words_that_only_contain_the_letters_are_analyzed(self):
+        # Whole token only. "mint" does not match "mintty".
+        allowed = (
+            {"name": "Mintty", "bundle_id": "com.example.mintty", "path": "/Applications/Mintty.app"},
+            {"name": "Taxi", "bundle_id": "com.example.taxi", "path": "/Applications/Taxi.app"},
+            {"name": "Stockade", "bundle_id": "com.example.stockade", "path": "/Applications/Stockade.app"},
+            {"name": "Trademark", "bundle_id": "com.example.trademark", "path": "/Applications/Trademark.app"},
+            {"name": "Budgeting", "bundle_id": "com.example.budgeting", "path": "/Applications/Budgeting.app"},
+            {"name": "Taxonomy", "bundle_id": "com.example.taxonomy", "path": "/Applications/Taxonomy.app"},
+            {"name": "Notes", "bundle_id": "com.example.notes", "path": "/Applications/Notes.app"},
+        )
+        for front in allowed:
+            runner = Runner(stdout='{"modules": ["core"]}')
+            spoken = self.run_app(runner, front=self.front(**front))
+            self.assertIn('modules: ["core"]', spoken.text, front)
+            self.assertEqual(runner.calls[1][0][2], "analyze", front)
+
+
 class MoneyHashTests(Base):
     def test_a_hashed_fixture_matches_a_prefix_and_a_domain(self):
         salt = "ab" * 16
@@ -690,6 +791,10 @@ class MoneyHashTests(Base):
         for item in data["hashes"]:
             self.assertRegex(item, r"^[0-9a-f]{64}$")
         self.assertNotIn(".", raw)
+        shipped = set(data["hashes"])
+        self.assertEqual(len(shipped), 65)
+        for digest in _PUBLIC_BRAND_DIGESTS:
+            self.assertIn(digest, shipped, digest)
         self.assertFalse(rea.is_builtin_money({
             "name": "Notes",
             "bundle_id": "com.example.notes",

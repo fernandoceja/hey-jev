@@ -57,10 +57,17 @@ _PHRASE = re.compile(
     re.I,
 )
 _IDENTITY = ("name", "bundle_id", "path", "site")
-# Generic categories only. Real bundle ids and domains are salted hashes.
-_MONEY_WORDS = (
+# Fragments that still match inside a longer token (banking, loanapp, payroll).
+_MONEY_SUBSTRINGS = (
     "bank", "credit", "invest", "brokerage", "finance", "loan", "pay", "wallet",
 )
+# Whole tokens only. "mint" matches Mint and Mints, not mintty.
+_MONEY_TOKENS = (
+    "budget", "tax", "crypto", "coin", "bitcoin", "stock", "trade",
+    "money", "cash", "venmo", "mint",
+)
+_CAMEL_BOUNDARY = re.compile(r"([a-z0-9])([A-Z])")
+_CAMEL_ACRONYM = re.compile(r"([A-Z]+)([A-Z][a-z])")
 # Two-label public suffixes. A hash of one of these would match too widely.
 _PUBLIC_SUFFIXES = frozenset({
     "ca.gov", "co.uk", "org.uk", "ac.uk", "gov.uk", "com.au", "net.au",
@@ -269,12 +276,29 @@ def load_blocklist(path):
 
 
 def is_finance(identity):
-    """True when a bundle id, name, site, or path contains a money word."""
+    """True when a bundle id, name, site, or path is a money app.
+
+    ``budget``, ``tax``, ``crypto``, ``coin``, ``bitcoin``, ``stock``,
+    ``trade``, ``money``, ``cash``, ``venmo``, and ``mint`` match a whole
+    token, or that token plus ``s`` or ``es`` (``Stocks``, ``Coins``,
+    ``Taxes``). Tokens split on dots, dashes, underscores, spaces, and
+    camelCase. ``mint`` does not match ``mintty``: that is a different word
+    that only contains the letters. The same rule leaves ``taxi``,
+    ``stockade``, ``trademark``, and ``budgeting`` alone. Older fragments
+    such as ``bank`` and ``pay`` still match inside a longer token, so
+    ``banking`` stays refused.
+    """
     parts = []
     for key in ("bundle_id", "name", "site", "path"):
         parts.append(identity.get(key) or "")
     blob = " ".join(parts).lower()
-    return any(word in blob for word in _MONEY_WORDS)
+    if any(word in blob for word in _MONEY_SUBSTRINGS):
+        return True
+    for key in ("bundle_id", "name", "site", "path"):
+        for token in _money_tokens(identity.get(key)):
+            if _is_money_token(token):
+                return True
+    return False
 
 
 def is_browser(identity):
@@ -835,6 +859,23 @@ def _absolute_tool(path):
 
 def _tokens(text):
     return [part for part in re.split(r"[^A-Za-z0-9]+", (text or "").lower()) if part]
+
+
+def _money_tokens(text):
+    """Words split on punctuation and camelCase. The case split happens first."""
+    if not text:
+        return []
+    spaced = _CAMEL_BOUNDARY.sub(r"\1 \2", str(text))
+    spaced = _CAMEL_ACRONYM.sub(r"\1 \2", spaced)
+    return [part.lower() for part in re.split(r"[^A-Za-z0-9]+", spaced) if part]
+
+
+def _is_money_token(token):
+    """Exact token, or a simple plural (word + s, or word + es)."""
+    for word in _MONEY_TOKENS:
+        if token == word or token == word + "s" or token == word + "es":
+            return True
+    return False
 
 
 def _normalize_host(value):
