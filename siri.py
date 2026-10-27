@@ -435,6 +435,8 @@ ACTIONS = {
     "game_close": lambda _arg, text: commands.close_game_from_text(text),
     # Scan only: opens CleanMyMac and presses Scan. Never cleans. Not bridged.
     "cleanmymac_scan": lambda _arg, text: commands.cleanmymac_scan_from_text(text),
+    # REA analyze of the front app. Read-only. LocalSpeech, so no paid API. Not bridged.
+    "rea_analyze": lambda _arg, text: commands.analyze_front_app(text),
     # Offline brain: fm serve on 127.0.0.1:1976 only, on command. Not bridged.
     "fm_serve_start": lambda _arg, _text: commands.fm_serve_start(),
     "fm_serve_stop": lambda _arg, _text: commands.fm_serve_stop(),

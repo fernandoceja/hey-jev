@@ -1,0 +1,18 @@
+{
+  "blocked_bundle_ids": [
+    "com.example.bank",
+    "com.example.work",
+    "com.example.child.device"
+  ],
+  "blocked_names": [
+    "Example Work App",
+    "Example Child App"
+  ],
+  "blocked_sites": [
+    "bank.example",
+    "work.example"
+  ],
+  "kids_app_ids": [
+    "com.example.kids.learning"
+  ]
+}

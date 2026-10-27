@@ -194,6 +194,8 @@ ZOE_BLOCKED = {
         "game_close",
         # Local test-results HTML report. Still absent from BRIDGE_ALLOW.
         "test_results_open",
+        # REA analyze. Still absent from BRIDGE_ALLOW.
+        "rea_analyze",
     ),
     "llm": (),
 }
