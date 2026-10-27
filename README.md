@@ -247,6 +247,8 @@ To fix words it gets wrong, open the **Dictionary** tab in the window: add a wor
 
 Anything that isn't a command ("who wrote Hamlet") goes to Claude Haiku 5.5 via OpenRouter and gets spoken back. The Claude API id is `claude-haiku-5-5`. Settings can replace that id. Haiku is told the current local date and time, so "tomorrow" in a reminder lines up with today.
 
+`commands/model_router.py` can pick a tier for a brief or a triage-style command before that call: cheap, mid, or heavy. It asks TypeSafe (`jev-latest`) three questions in one request, then applies the gates in code. A manual tier wins. A task under 300 characters stays cheap and skips the request. If TypeSafe cannot be reached, the tier stays mid. Model ids live in `commands/model_tiers.json`. Nothing calls the router yet, it is not on the iPhone bridge, and it does not add a Keychain item. The existing TypeSafe key is the one it would read.
+
 ## What you need
 
 - A Mac
