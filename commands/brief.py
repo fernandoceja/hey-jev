@@ -36,7 +36,8 @@ def speak_brief(today=None):
     """Date, weather, today's events, next shift, due items, and a payday sweep when one is due.
 
     `today` is only for the sweep line. Pass a date in tests. The other parts
-    still describe the real current day.
+    still describe the real current day. After the line is built, shadow mode
+    may record a router tier. The spoken line stays the same.
     """
     parts = [
         speak_date(),
@@ -51,4 +52,14 @@ def speak_brief(today=None):
     mail = gmail_brief_line()
     if mail:
         parts.append(mail)
-    return " ".join(part.strip() for part in parts if part and part.strip())
+    spoken = " ".join(part.strip() for part in parts if part and part.strip())
+    _shadow_brief(spoken)
+    return spoken
+
+
+def _shadow_brief(spoken):
+    try:
+        from .router_shadow import observe_command
+        observe_command(spoken, "brief")
+    except Exception:
+        return

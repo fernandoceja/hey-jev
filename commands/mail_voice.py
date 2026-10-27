@@ -12,7 +12,10 @@ the script source. Reading content does not mark a message read.
 
 "summarize my email" sends the sender, subject, and the first part of each
 unread message to OpenRouter with the existing Keychain key. Without a key it
-falls back to reading the senders and subjects. Replies are LocalSpeech (macOS say), so mail
+falls back to reading the senders and subjects. That summary is the
+triage-style command: shadow mode may record a router tier, and the
+OpenRouter model and the spoken text stay the same. A router failure still
+returns the summary. Replies are LocalSpeech (macOS say), so mail
 metadata never goes to Fish. Every command here is Mac-only
 and absent from BRIDGE_ALLOW, so the iPhone bridge cannot read mail.
 """
@@ -210,18 +213,33 @@ def summarize_inbox(runner=None, ask=None):
     return LocalSpeech(_summarize_inbox(runner, ask))
 
 
+def _shadow_triage(task):
+    try:
+        from .router_shadow import observe_command
+        observe_command(task, "triage")
+    except Exception:
+        return
+
+
 def _summarize_inbox(runner, ask):
     try:
         total, rows = fetch_unread(SUMMARY_COUNT, SUMMARY_BODY_CHARS, runner)
     except Exception as exc:
-        return _outcome_error(exc) or MAIL_FAIL
+        spoken = _outcome_error(exc) or MAIL_FAIL
+        _shadow_triage(spoken)
+        return spoken
     if not total:
+        _shadow_triage(MAIL_EMPTY)
         return MAIL_EMPTY
-    summary = (ask or _ask_summary)(_summary_prompt(rows))
+    prompt = _summary_prompt(rows)
+    summary = (ask or _ask_summary)(prompt)
     if not summary:
         heads = ["From {0}: {1}.".format(sender_name(s), subj or "no subject") for s, subj, _ in rows]
-        return " ".join([_count_line(total)] + heads)
-    return "{0} {1}".format(_count_line(total), summary.strip())
+        spoken = " ".join([_count_line(total)] + heads)
+    else:
+        spoken = "{0} {1}".format(_count_line(total), summary.strip())
+    _shadow_triage(prompt)
+    return spoken
 
 
 def draft_reply(text, runner=None):

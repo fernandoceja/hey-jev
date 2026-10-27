@@ -88,6 +88,9 @@ VOICE_MODE_PATH = os.path.expanduser(
 BRIEF_MEMO_DIR = os.path.expanduser("~/Documents/Daily Brief")
 BRIEF_MEMO_TIME = "07:10"
 BRIEF_MEMO_ENABLED = True
+# Shadow log for the model router. JEV_ROUTER_SHADOW=0 turns the log off.
+# The brief and the mail summary still use the same model either way.
+ROUTER_SHADOW_ENABLED = True
 BRIEF_MEMO_RETRIES = 2
 BRIEF_MEMO_WINDOW_MINUTES = 20
 BRIEF_MEMO_POLL_SECONDS = 30

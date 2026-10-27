@@ -15,3 +15,5 @@ dist/
 .eggs/
 assets/icon.iconset/
 handoff/
+# Local model-router shadow log. Decisions only. Never commit.
+logs/
