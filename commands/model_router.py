@@ -1,7 +1,8 @@
 """Pick a model tier for a brief or a triage-style command.
 
-Nothing in the app calls this yet. It only returns a decision. It does not
-run the task, speak, open a listening socket, or touch the iPhone bridge.
+A shadow record can call this and store the decision. The model that runs
+the task stays the one the command already used. This module does not speak,
+open a listening socket, or touch the iPhone bridge.
 
 The decision is a dict: tier, model (the id from model_tiers.json), reasons,
 and usage (input_tokens and output_tokens). Gates, applied in code after one
