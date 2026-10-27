@@ -249,6 +249,8 @@ Anything that isn't a command ("who wrote Hamlet") goes to Claude Haiku 5.5 via 
 
 `commands/model_router.py` can pick a tier for a brief or a triage-style command before that call: cheap, mid, or heavy. It asks TypeSafe (`jev-latest`) three questions in one request, then applies the gates in code. A manual tier wins. A task under 300 characters stays cheap and skips the request. If TypeSafe cannot be reached, the tier stays mid. Model ids live in `commands/model_tiers.json`. Nothing calls the router yet, it is not on the iPhone bridge, and it does not add a Keychain item. The existing TypeSafe key is the one it would read.
 
+`python -m commands.router_eval` scores a synthetic golden set (`commands/router_golden.json`) on recorded answers. It prints agreement, the share of hard tasks sent to cheap, the share routed above the label, and an estimated token cost per tier. CI runs that offline. `--live` is a later manual TypeSafe call and is not used in CI.
+
 ## What you need
 
 - A Mac

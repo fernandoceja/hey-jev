@@ -1,0 +1,741 @@
+[
+  {
+    "id": "g01",
+    "command": "brief",
+    "kind": "short",
+    "hard": false,
+    "expected": "cheap",
+    "task": "Give the weekday in one word.",
+    "recorded": null
+  },
+  {
+    "id": "g02",
+    "command": "brief",
+    "kind": "short",
+    "hard": false,
+    "expected": "cheap",
+    "task": "One line: the sample sky is clear.",
+    "recorded": null
+  },
+  {
+    "id": "g03",
+    "command": "triage",
+    "kind": "short",
+    "hard": false,
+    "expected": "cheap",
+    "task": "Sort this card into the blue pile.",
+    "recorded": null
+  },
+  {
+    "id": "g04",
+    "command": "triage",
+    "kind": "short",
+    "hard": false,
+    "expected": "cheap",
+    "task": "Mark the sample card done.",
+    "recorded": null
+  },
+  {
+    "id": "g05",
+    "command": "brief",
+    "kind": "short",
+    "hard": false,
+    "expected": "cheap",
+    "task": "Short sample note about blue blocks........................................................................................................................................................................................................................................................................",
+    "recorded": {
+      "choice": "heavy",
+      "confidence": 0.99,
+      "needs_tools_or_code": 0.1,
+      "high_stakes": 0.9,
+      "input_tokens": 40,
+      "output_tokens": 8
+    }
+  },
+  {
+    "id": "g06",
+    "command": "triage",
+    "kind": "short",
+    "hard": false,
+    "expected": "cheap",
+    "task": "Label the jar blue and stop.",
+    "recorded": null
+  },
+  {
+    "id": "g07",
+    "command": "brief",
+    "kind": "short",
+    "hard": false,
+    "expected": "cheap",
+    "task": "Stack three blocks.",
+    "recorded": null
+  },
+  {
+    "id": "g08",
+    "command": "triage",
+    "kind": "short",
+    "hard": false,
+    "expected": "cheap",
+    "task": "File the note under misc.",
+    "recorded": null
+  },
+  {
+    "id": "g09",
+    "command": "brief",
+    "kind": "boundary",
+    "hard": true,
+    "expected": "heavy",
+    "task": "Review the synthetic safety drill and list the checks a person must finish before a restart.................................................................................................................................................................................................................",
+    "recorded": {
+      "choice": "heavy",
+      "confidence": 0.9,
+      "needs_tools_or_code": 0.2,
+      "high_stakes": 0.1,
+      "input_tokens": 80,
+      "output_tokens": 12
+    }
+  },
+  {
+    "id": "g10",
+    "command": "brief",
+    "kind": "cheap",
+    "hard": false,
+    "expected": "cheap",
+    "task": "Summarize this calm synthetic day. Reading, then a walk, then stacking colored cups. End with one plain sentence. BLUEBLOCKMARKER Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only.",
+    "recorded": {
+      "choice": "cheap",
+      "confidence": 0.9,
+      "needs_tools_or_code": 0.05,
+      "high_stakes": 0.05,
+      "input_tokens": 140,
+      "output_tokens": 20
+    }
+  },
+  {
+    "id": "g11",
+    "command": "triage",
+    "kind": "cheap",
+    "hard": false,
+    "expected": "cheap",
+    "task": "Sort these sample cards by color. Blue with blue. Red with red. Leave the blank card aside. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only.",
+    "recorded": {
+      "choice": "cheap",
+      "confidence": 0.8,
+      "needs_tools_or_code": 0.1,
+      "high_stakes": 0.0,
+      "input_tokens": 150,
+      "output_tokens": 18
+    }
+  },
+  {
+    "id": "g12",
+    "command": "brief",
+    "kind": "cheap",
+    "hard": false,
+    "expected": "cheap",
+    "task": "Give a one-paragraph brief of a quiet practice day spent labeling jars. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only.",
+    "recorded": {
+      "choice": "cheap",
+      "confidence": 0.7,
+      "needs_tools_or_code": 0.1,
+      "high_stakes": 0.2,
+      "input_tokens": 160,
+      "output_tokens": 16
+    }
+  },
+  {
+    "id": "g13",
+    "command": "triage",
+    "kind": "cheap",
+    "hard": false,
+    "expected": "cheap",
+    "task": "Put this sample note in the routine pile. It only asks which color folder to use. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only.",
+    "recorded": {
+      "choice": "cheap",
+      "confidence": 0.55,
+      "needs_tools_or_code": 0.0,
+      "high_stakes": 0.1,
+      "input_tokens": 170,
+      "output_tokens": 14
+    }
+  },
+  {
+    "id": "g14",
+    "command": "brief",
+    "kind": "cheap",
+    "hard": false,
+    "expected": "cheap",
+    "task": "Brief the sample afternoon. Two calm blocks, then a stop. No follow-up is required. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only.",
+    "recorded": {
+      "choice": "cheap",
+      "confidence": 0.99,
+      "needs_tools_or_code": 0.2,
+      "high_stakes": 0.29,
+      "input_tokens": 180,
+      "output_tokens": 22
+    }
+  },
+  {
+    "id": "g15",
+    "command": "triage",
+    "kind": "cheap",
+    "hard": false,
+    "expected": "cheap",
+    "task": "Triage a sample request to rename a color swatch. A plain label change is enough. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only.",
+    "recorded": {
+      "choice": "cheap",
+      "confidence": 0.88,
+      "needs_tools_or_code": 0.99,
+      "high_stakes": 0.1,
+      "input_tokens": 190,
+      "output_tokens": 15
+    }
+  },
+  {
+    "id": "g16",
+    "command": "brief",
+    "kind": "cheap",
+    "hard": false,
+    "expected": "cheap",
+    "task": "Write a short brief that says the sample board is clear and the next block is free. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only.",
+    "recorded": {
+      "choice": "cheap",
+      "confidence": 0.75,
+      "needs_tools_or_code": 0.05,
+      "high_stakes": 0.15,
+      "input_tokens": 130,
+      "output_tokens": 12
+    }
+  },
+  {
+    "id": "g17",
+    "command": "triage",
+    "kind": "cheap",
+    "hard": false,
+    "expected": "cheap",
+    "task": "Choose a pile for a sample card that says hello and nothing else. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only.",
+    "recorded": {
+      "choice": "cheap",
+      "confidence": 0.66,
+      "needs_tools_or_code": 0.3,
+      "high_stakes": 0.25,
+      "input_tokens": 145,
+      "output_tokens": 11
+    }
+  },
+  {
+    "id": "g18",
+    "command": "brief",
+    "kind": "cheap",
+    "hard": false,
+    "expected": "cheap",
+    "task": "Summarize a synthetic checklist that is already finished. Say that it is finished. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only.",
+    "recorded": {
+      "choice": "cheap",
+      "confidence": 0.82,
+      "needs_tools_or_code": 0.0,
+      "high_stakes": 0.02,
+      "input_tokens": 155,
+      "output_tokens": 13
+    }
+  },
+  {
+    "id": "g19",
+    "command": "triage",
+    "kind": "cheap",
+    "hard": false,
+    "expected": "cheap",
+    "task": "Route this sample ticket to the general pile. It asks for a synonym of the word calm. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only.",
+    "recorded": {
+      "choice": "cheap",
+      "confidence": 0.77,
+      "needs_tools_or_code": 0.4,
+      "high_stakes": 0.12,
+      "input_tokens": 165,
+      "output_tokens": 17
+    }
+  },
+  {
+    "id": "g20",
+    "command": "brief",
+    "kind": "borderline",
+    "hard": false,
+    "expected": "mid",
+    "task": "The sample note is vague. Give a brief if you can tell what the colored blocks were for. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only.",
+    "recorded": {
+      "choice": "cheap",
+      "confidence": 0.54,
+      "needs_tools_or_code": 0.1,
+      "high_stakes": 0.0,
+      "input_tokens": 200,
+      "output_tokens": 20
+    }
+  },
+  {
+    "id": "g21",
+    "command": "triage",
+    "kind": "borderline",
+    "hard": false,
+    "expected": "cheap",
+    "task": "The sample card almost fits the blue pile. Say which pile, if it is clear enough. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only.",
+    "recorded": {
+      "choice": "cheap",
+      "confidence": 0.55,
+      "needs_tools_or_code": 0.05,
+      "high_stakes": 0.05,
+      "input_tokens": 210,
+      "output_tokens": 19
+    }
+  },
+  {
+    "id": "g22",
+    "command": "brief",
+    "kind": "borderline",
+    "hard": true,
+    "expected": "heavy",
+    "task": "Brief this synthetic multi-step drill. The steps conflict, and a wrong order would be costly to undo. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only.",
+    "recorded": {
+      "choice": "mid",
+      "confidence": 0.54,
+      "needs_tools_or_code": 0.4,
+      "high_stakes": 0.1,
+      "input_tokens": 240,
+      "output_tokens": 30
+    }
+  },
+  {
+    "id": "g23",
+    "command": "triage",
+    "kind": "borderline",
+    "hard": false,
+    "expected": "mid",
+    "task": "Two piles could fit this sample card. Pick the routine one if the note stays ordinary. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only.",
+    "recorded": {
+      "choice": "mid",
+      "confidence": 0.55,
+      "needs_tools_or_code": 0.15,
+      "high_stakes": 0.2,
+      "input_tokens": 220,
+      "output_tokens": 18
+    }
+  },
+  {
+    "id": "g24",
+    "command": "brief",
+    "kind": "borderline",
+    "hard": true,
+    "expected": "heavy",
+    "task": "Prepare a careful brief of a synthetic case file that needs the longest review you can give. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only.",
+    "recorded": {
+      "choice": "heavy",
+      "confidence": 0.1,
+      "needs_tools_or_code": 0.2,
+      "high_stakes": 0.0,
+      "input_tokens": 260,
+      "output_tokens": 40
+    }
+  },
+  {
+    "id": "g25",
+    "command": "triage",
+    "kind": "borderline",
+    "hard": true,
+    "expected": "mid",
+    "task": "Sort these sample notes. One mentions a commitment that is hard to undo. Keep the wording plain. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only.",
+    "recorded": {
+      "choice": "cheap",
+      "confidence": 0.9,
+      "needs_tools_or_code": 0.1,
+      "high_stakes": 0.3,
+      "input_tokens": 230,
+      "output_tokens": 21
+    }
+  },
+  {
+    "id": "g26",
+    "command": "brief",
+    "kind": "borderline",
+    "hard": true,
+    "expected": "mid",
+    "task": "The synthetic brief is unsure and the stakes are raised. Say what a second look should cover. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only.",
+    "recorded": {
+      "choice": "cheap",
+      "confidence": 0.2,
+      "needs_tools_or_code": 0.25,
+      "high_stakes": 0.4,
+      "input_tokens": 235,
+      "output_tokens": 24
+    }
+  },
+  {
+    "id": "g27",
+    "command": "triage",
+    "kind": "borderline",
+    "hard": true,
+    "expected": "heavy",
+    "task": "Triage a synthetic dispute note. It asks for an escalation plan a person must approve before any change. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only.",
+    "recorded": {
+      "choice": "cheap",
+      "confidence": 0.2,
+      "needs_tools_or_code": 0.35,
+      "high_stakes": 0.6,
+      "input_tokens": 250,
+      "output_tokens": 28
+    }
+  },
+  {
+    "id": "g28",
+    "command": "brief",
+    "kind": "borderline",
+    "hard": true,
+    "expected": "heavy",
+    "task": "Brief a synthetic review where most of the note is ordinary but one line says the decision is nearly final. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only.",
+    "recorded": {
+      "choice": "mid",
+      "confidence": 0.5,
+      "needs_tools_or_code": 0.45,
+      "high_stakes": 0.59,
+      "input_tokens": 255,
+      "output_tokens": 32
+    }
+  },
+  {
+    "id": "g29",
+    "command": "triage",
+    "kind": "borderline",
+    "hard": false,
+    "expected": "mid",
+    "task": "The sample pile is unclear. The note itself is still a routine color sort. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only.",
+    "recorded": {
+      "choice": "cheap",
+      "confidence": 0.54,
+      "needs_tools_or_code": 0.05,
+      "high_stakes": 0.29,
+      "input_tokens": 205,
+      "output_tokens": 16
+    }
+  },
+  {
+    "id": "g30",
+    "command": "brief",
+    "kind": "hard",
+    "hard": true,
+    "expected": "mid",
+    "task": "Turn this synthetic checklist into a morning brief. Include which queue to look at first and what to skip. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only.",
+    "recorded": {
+      "choice": "mid",
+      "confidence": 0.8,
+      "needs_tools_or_code": 0.4,
+      "high_stakes": 0.1,
+      "input_tokens": 300,
+      "output_tokens": 40
+    }
+  },
+  {
+    "id": "g31",
+    "command": "triage",
+    "kind": "hard",
+    "hard": true,
+    "expected": "mid",
+    "task": "Triage a stack of synthetic tickets. Several need a second pass before they can be closed. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only.",
+    "recorded": {
+      "choice": "mid",
+      "confidence": 0.7,
+      "needs_tools_or_code": 0.8,
+      "high_stakes": 0.4,
+      "input_tokens": 310,
+      "output_tokens": 42
+    }
+  },
+  {
+    "id": "g32",
+    "command": "brief",
+    "kind": "hard",
+    "hard": true,
+    "expected": "mid",
+    "task": "A sample ticket asks for a small program that merges two lists of color names. Explain the steps a careful pass would take. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only.",
+    "recorded": {
+      "choice": "mid",
+      "confidence": 0.95,
+      "needs_tools_or_code": 0.95,
+      "high_stakes": 0.0,
+      "input_tokens": 320,
+      "output_tokens": 50
+    }
+  },
+  {
+    "id": "g33",
+    "command": "triage",
+    "kind": "hard",
+    "hard": true,
+    "expected": "mid",
+    "task": "Decide the queue for a synthetic incident note. The drill was skipped and a reviewer must confirm the restart checks. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only.",
+    "recorded": {
+      "choice": "mid",
+      "confidence": 0.6,
+      "needs_tools_or_code": 0.5,
+      "high_stakes": 0.55,
+      "input_tokens": 330,
+      "output_tokens": 36
+    }
+  },
+  {
+    "id": "g34",
+    "command": "brief",
+    "kind": "hard",
+    "hard": true,
+    "expected": "mid",
+    "task": "Write a brief that reconciles three synthetic status notes that disagree about which block comes next. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only.",
+    "recorded": {
+      "choice": "mid",
+      "confidence": 0.85,
+      "needs_tools_or_code": 0.3,
+      "high_stakes": 0.2,
+      "input_tokens": 280,
+      "output_tokens": 34
+    }
+  },
+  {
+    "id": "g35",
+    "command": "triage",
+    "kind": "hard",
+    "hard": true,
+    "expected": "mid",
+    "task": "Triage a long synthetic thread. Pull out the open questions and the order a person should answer them. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only.",
+    "recorded": {
+      "choice": "mid",
+      "confidence": 0.72,
+      "needs_tools_or_code": 0.55,
+      "high_stakes": 0.45,
+      "input_tokens": 340,
+      "output_tokens": 45
+    }
+  },
+  {
+    "id": "g36",
+    "command": "brief",
+    "kind": "hard",
+    "hard": true,
+    "expected": "mid",
+    "task": "Summarize a synthetic code review. Name the risky change in words and the check that should happen before it lands. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only.",
+    "recorded": {
+      "choice": "mid",
+      "confidence": 0.66,
+      "needs_tools_or_code": 0.7,
+      "high_stakes": 0.05,
+      "input_tokens": 290,
+      "output_tokens": 38
+    }
+  },
+  {
+    "id": "g37",
+    "command": "triage",
+    "kind": "hard",
+    "hard": true,
+    "expected": "mid",
+    "task": "Split this synthetic packet into what is routine and what needs a careful reader. Do not drop the careful part. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only.",
+    "recorded": {
+      "choice": "mid",
+      "confidence": 0.91,
+      "needs_tools_or_code": 0.6,
+      "high_stakes": 0.35,
+      "input_tokens": 305,
+      "output_tokens": 33
+    }
+  },
+  {
+    "id": "g38",
+    "command": "brief",
+    "kind": "hard",
+    "hard": true,
+    "expected": "heavy",
+    "task": "Write the full brief for a synthetic safety case. Cover what failed, what to verify, and what must wait. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only.",
+    "recorded": {
+      "choice": "heavy",
+      "confidence": 0.9,
+      "needs_tools_or_code": 0.4,
+      "high_stakes": 0.1,
+      "input_tokens": 400,
+      "output_tokens": 80
+    }
+  },
+  {
+    "id": "g39",
+    "command": "triage",
+    "kind": "hard",
+    "hard": true,
+    "expected": "heavy",
+    "task": "This sample case needs the deepest triage you can do. Lay out the branches and the one you would not take. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only.",
+    "recorded": {
+      "choice": "heavy",
+      "confidence": 0.6,
+      "needs_tools_or_code": 0.2,
+      "high_stakes": 0.0,
+      "input_tokens": 380,
+      "output_tokens": 70
+    }
+  },
+  {
+    "id": "g40",
+    "command": "brief",
+    "kind": "hard",
+    "hard": true,
+    "expected": "heavy",
+    "task": "Prepare a heavy brief of a synthetic multi-part plan. Keep every dependency in order. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only.",
+    "recorded": {
+      "choice": "heavy",
+      "confidence": 0.55,
+      "needs_tools_or_code": 0.35,
+      "high_stakes": 0.2,
+      "input_tokens": 360,
+      "output_tokens": 60
+    }
+  },
+  {
+    "id": "g41",
+    "command": "triage",
+    "kind": "hard",
+    "hard": true,
+    "expected": "heavy",
+    "task": "Triage a synthetic escalation. A wrong close would be costly, so say who must confirm it first. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only.",
+    "recorded": {
+      "choice": "cheap",
+      "confidence": 0.99,
+      "needs_tools_or_code": 0.15,
+      "high_stakes": 0.6,
+      "input_tokens": 370,
+      "output_tokens": 44
+    }
+  },
+  {
+    "id": "g42",
+    "command": "brief",
+    "kind": "hard",
+    "hard": true,
+    "expected": "heavy",
+    "task": "The synthetic note says a public message would be hard to undo. Brief the checks required before it is sent. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only.",
+    "recorded": {
+      "choice": "cheap",
+      "confidence": 0.99,
+      "needs_tools_or_code": 0.1,
+      "high_stakes": 0.9,
+      "input_tokens": 390,
+      "output_tokens": 55
+    }
+  },
+  {
+    "id": "g43",
+    "command": "triage",
+    "kind": "hard",
+    "hard": true,
+    "expected": "heavy",
+    "task": "A synthetic legal-style question is in the pile. Triage it as something a person must review before any reply. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only.",
+    "recorded": {
+      "choice": "mid",
+      "confidence": 0.8,
+      "needs_tools_or_code": 0.25,
+      "high_stakes": 0.6,
+      "input_tokens": 410,
+      "output_tokens": 48
+    }
+  },
+  {
+    "id": "g44",
+    "command": "brief",
+    "kind": "hard",
+    "hard": true,
+    "expected": "heavy",
+    "task": "Brief a synthetic health-drill log. Say which lines a reviewer has to read twice before the drill can resume. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only.",
+    "recorded": {
+      "choice": "mid",
+      "confidence": 0.99,
+      "needs_tools_or_code": 0.3,
+      "high_stakes": 0.75,
+      "input_tokens": 420,
+      "output_tokens": 66
+    }
+  },
+  {
+    "id": "g45",
+    "command": "triage",
+    "kind": "hard",
+    "hard": true,
+    "expected": "heavy",
+    "task": "The sample file is long and the right queue is not obvious. Give the careful triage anyway. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only.",
+    "recorded": {
+      "choice": "heavy",
+      "confidence": 0.4,
+      "needs_tools_or_code": 0.5,
+      "high_stakes": 0.1,
+      "input_tokens": 350,
+      "output_tokens": 40
+    }
+  },
+  {
+    "id": "g46",
+    "command": "brief",
+    "kind": "hard",
+    "hard": true,
+    "expected": "heavy",
+    "task": "This synthetic packet mixes a routine list with a high-stakes decision. Brief both, and do not bury the decision. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only.",
+    "recorded": {
+      "choice": "cheap",
+      "confidence": 0.1,
+      "needs_tools_or_code": 0.45,
+      "high_stakes": 0.8,
+      "input_tokens": 430,
+      "output_tokens": 72
+    }
+  },
+  {
+    "id": "g47",
+    "command": "triage",
+    "kind": "hard",
+    "hard": true,
+    "expected": "heavy",
+    "task": "Triage a synthetic plan that asks for code and for a final call a person cannot easily reverse. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only.",
+    "recorded": {
+      "choice": "mid",
+      "confidence": 0.1,
+      "needs_tools_or_code": 0.85,
+      "high_stakes": 0.7,
+      "input_tokens": 440,
+      "output_tokens": 77
+    }
+  },
+  {
+    "id": "g48",
+    "command": "brief",
+    "kind": "unavailable",
+    "hard": false,
+    "expected": "mid",
+    "task": "Summarize a routine synthetic day plan of reading and a walk. The scorer has no recorded answer. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only.",
+    "recorded": null
+  },
+  {
+    "id": "g49",
+    "command": "triage",
+    "kind": "unavailable",
+    "hard": true,
+    "expected": "mid",
+    "task": "Triage a synthetic safety packet. The recorded answer is missing, so the fallback tier applies. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only.",
+    "recorded": {
+      "error": true
+    }
+  },
+  {
+    "id": "g50",
+    "command": "brief",
+    "kind": "hard",
+    "hard": true,
+    "expected": "heavy",
+    "task": "Write the longest careful brief of a synthetic investigation. Include the open risks and the order to close them. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only. Synthetic filler follows. Painted blocks sit on a plain table. This sentence adds length only.",
+    "recorded": {
+      "choice": "heavy",
+      "confidence": 0.85,
+      "needs_tools_or_code": 0.6,
+      "high_stakes": 0.4,
+      "input_tokens": 450,
+      "output_tokens": 90
+    }
+  }
+]
