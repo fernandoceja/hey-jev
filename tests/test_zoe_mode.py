@@ -95,6 +95,7 @@ BLOCKED_PHRASES = (
     ("system", "turn on voiceover", "voiceover_on"),
     ("system", "open god's eye", "gods_eye_open"),
     ("system", "show my test results", "test_results_open"),
+    ("system", "analyze this app", "rea_analyze"),
     ("system", "tutor me on gravity", "tutor_explain"),
     ("system", "explain this problem", "tutor_explain"),
     ("llm", "why is the sky blue", None),

@@ -135,6 +135,33 @@ GODS_EYE_WAIT_SECONDS = 15
 GODS_EYE_POLL_SECONDS = 0.25
 GODS_EYE_CONNECT_TIMEOUT = 0.4
 GODS_EYE_LOG_NAME = ".dev.log"
+# REA analyze of the front app. Mac-only. Not on the iPhone bridge.
+# JEV_REA_NODE and JEV_REA_SCRIPT override the paths. Versions are pins:
+# a mismatch stops the command before analyze runs. No paid API.
+REA_NODE_PATH = os.environ.get("JEV_REA_NODE") or "/opt/homebrew/opt/node@24/bin/node"
+REA_SCRIPT_PATH = os.path.expanduser(
+    os.environ.get("JEV_REA_SCRIPT") or "~/Developer/rea/scripts/rea.mjs"
+)
+# Node 24 line named by REA's engines (24.22.1). Exact match required.
+REA_NODE_VERSION = "24.22.1"
+# fernandoceja/rea package.json version this command was checked against.
+REA_VERSION = "6.8.0"
+# Whole seconds. The command rejects a value outside this range.
+REA_TIMEOUT_SECONDS = 60
+REA_TIMEOUT_MIN = 30
+REA_TIMEOUT_MAX = 60
+# Characters kept from REA output and from the spoken answer.
+REA_OUTPUT_CAP = 4000
+# Fixed. Cleanup runs on every command. Not an external schedule.
+REA_LOG_RETENTION_DAYS = 7
+# Real bundle ids live in this file on the Mac. It is gitignored. The
+# committed example uses placeholders only.
+REA_BLOCKLIST_PATH = os.path.expanduser(
+    "~/Library/Application Support/Hey Jev/rea-blocklist.json"
+)
+REA_LOG_DIR = os.path.expanduser(
+    "~/Library/Application Support/Hey Jev/rea-logs"
+)
 # Screenshots and screen recordings. Set JEV_CAPTURES_DIR to use another folder.
 CAPTURES_DIR = os.path.expanduser("~/Pictures/Jev Captures")
 # Recent plain-text copies. In memory unless something calls save_clipboard.
@@ -1019,6 +1046,7 @@ HELP_TEXT = (
     "I can open the captures folder, and I can look at a screenshot when you ask. "
     "I can open your Videos folder. "
     "I can open God's Eye on this Mac. "
+    "I can analyze the front app with REA on this Mac. "
     "I can show your test results in the browser. "
     "I can tutor a problem. Say tutor me on a topic, or explain this problem. "
     "I can check for nearby fires and earthquakes, and turn hazard alerts on or off. "

@@ -17,3 +17,6 @@ assets/icon.iconset/
 handoff/
 # Local model-router shadow log. Decisions only. Never commit.
 logs/
+# Local REA blocklist and logs. Real app names stay on this Mac.
+rea-blocklist.json
+rea-logs/
