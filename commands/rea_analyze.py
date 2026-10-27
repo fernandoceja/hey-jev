@@ -64,7 +64,7 @@ _MONEY_SUBSTRINGS = (
 # Whole tokens only. "mint" matches Mint and Mints, not mintty.
 _MONEY_TOKENS = (
     "budget", "tax", "crypto", "coin", "bitcoin", "stock", "trade",
-    "money", "cash", "venmo", "mint",
+    "money", "cash", "venmo", "mint", "robinhood",
 )
 _CAMEL_BOUNDARY = re.compile(r"([a-z0-9])([A-Z])")
 _CAMEL_ACRONYM = re.compile(r"([A-Z]+)([A-Z][a-z])")
@@ -279,12 +279,14 @@ def is_finance(identity):
     """True when a bundle id, name, site, or path is a money app.
 
     ``budget``, ``tax``, ``crypto``, ``coin``, ``bitcoin``, ``stock``,
-    ``trade``, ``money``, ``cash``, ``venmo``, and ``mint`` match a whole
-    token, or that token plus ``s`` or ``es`` (``Stocks``, ``Coins``,
-    ``Taxes``). Tokens split on dots, dashes, underscores, spaces, and
-    camelCase. ``mint`` does not match ``mintty``: that is a different word
-    that only contains the letters. The same rule leaves ``taxi``,
-    ``stockade``, ``trademark``, and ``budgeting`` alone. Older fragments
+    ``trade``, ``money``, ``cash``, ``venmo``, ``mint``, and ``robinhood``
+    match a whole token, that token plus ``s`` or ``es`` (``Stocks``, ``Coins``,
+    ``Taxes``), or that token plus ``ing`` (``Budgeting``, ``stocking``).
+    A word that ends in ``e`` also matches with that ``e`` dropped, so
+    ``trade`` matches ``trading``. Tokens split on dots, dashes,
+    underscores, spaces, and camelCase. ``mint`` does not match ``mintty``:
+    that is a different word that only contains the letters. The same rule
+    leaves ``taxi``, ``stockade``, and ``trademark`` alone. Older fragments
     such as ``bank`` and ``pay`` still match inside a longer token, so
     ``banking`` stays refused.
     """
@@ -871,9 +873,18 @@ def _money_tokens(text):
 
 
 def _is_money_token(token):
-    """Exact token, or a simple plural (word + s, or word + es)."""
+    """Exact token, a simple plural (s or es), or an ``-ing`` form.
+
+    ``budget`` matches ``budgeting``. ``trade`` matches ``trading`` because
+    a trailing ``e`` is dropped before ``ing``. ``stocking`` matches
+    ``stock``. A longer word such as ``mintty`` does not match.
+    """
     for word in _MONEY_TOKENS:
         if token == word or token == word + "s" or token == word + "es":
+            return True
+        if token == word + "ing":
+            return True
+        if word.endswith("e") and token == word[:-1] + "ing":
             return True
     return False
 
