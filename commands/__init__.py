@@ -9,8 +9,9 @@ not on the bridge allowlist. Opening God's Eye connects as a client to
 127.0.0.1 and does not listen. That command is not on the bridge allowlist.
 The tutor writes a local HTML file and shows it in a web view. It does not
 listen, and it is not on the bridge allowlist.
-REA analyze runs one read-only command in a subprocess. It does not listen,
-and it is not on the bridge allowlist.
+REA analyze runs one read-only command in a subprocess. A missing local
+blocklist refuses the run. It does not listen, and it is not on the bridge
+allowlist.
 The iPhone bridge only polls an
 iCloud Drive folder. Password lookup only opens the Passwords app and writes
 a site name into its search field. It is not on the bridge allowlist.

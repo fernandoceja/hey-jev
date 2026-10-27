@@ -150,8 +150,10 @@ REA_VERSION = "6.8.0"
 REA_TIMEOUT_SECONDS = 60
 REA_TIMEOUT_MIN = 30
 REA_TIMEOUT_MAX = 60
-# Characters kept from REA output and from the spoken answer.
+# Characters kept in the local log.
 REA_OUTPUT_CAP = 4000
+# Spoken answers stay short. The local log keeps the longer redacted text.
+REA_SPOKEN_CAP = 300
 # Fixed. Cleanup runs on every command. Not an external schedule.
 REA_LOG_RETENTION_DAYS = 7
 # Real bundle ids live in this file on the Mac. It is gitignored. The

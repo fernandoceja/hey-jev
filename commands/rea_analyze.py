@@ -4,17 +4,22 @@ The only command that may be spawned is ``analyze``. The app path is its own
 argv element. Node and the REA script are configurable; their versions are
 pinned and checked before analyze runs. Anything else is refused first.
 
-Money apps are refused by a generic banking or finance rule. Work apps, Apple
-apps, and a child's other apps and devices are refused from a local file that
-is not in this public repo. A configured kids learning app is analyzed as
-structure only: progress and user fields are dropped.
+A missing, unreadable, or invalid local blocklist refuses every run. Money
+apps are also refused by generic words and by salted hashes of bundle-id
+prefixes and domains. Browsers are refused, because this version does not
+know the site. Every com.apple bundle is refused. Work apps and a child's
+other apps come from the local file, which is not in this public repo. A
+configured kids learning app is analyzed as structure only: progress and
+user fields are dropped.
 
-Output is redacted and trimmed before it is spoken or logged. Logs stay on
-this Mac for 7 days. A refused run logs a timestamp and the word refused.
+Output is redacted before it is spoken or logged. The spoken line is short.
+The local log keeps the longer text. Logs stay on this Mac for 7 days. A
+refused run logs a timestamp and the word refused.
 This module does not listen, and it does not call a paid API. A screenshot
 is used only to name the app. Its pixels are never read.
 """
 import errno
+import hashlib
 import json
 import os
 import re
@@ -52,10 +57,40 @@ _PHRASE = re.compile(
     re.I,
 )
 _IDENTITY = ("name", "bundle_id", "path", "site")
-# Generic categories only. Institution names stay in the local file.
-_FINANCE_WORDS = frozenset({
-    "bank", "banking", "finance", "financial", "credit", "wallet", "brokerage", "payment",
+# Generic categories only. Real bundle ids and domains are salted hashes.
+_MONEY_WORDS = (
+    "bank", "credit", "invest", "brokerage", "finance", "loan", "pay", "wallet",
+)
+# Two-label public suffixes. A hash of one of these would match too widely.
+_PUBLIC_SUFFIXES = frozenset({
+    "ca.gov", "co.uk", "org.uk", "ac.uk", "gov.uk", "com.au", "net.au",
+    "co.jp", "com.br", "co.nz", "com.mx", "gov.au",
 })
+_BROWSER_LABELS = frozenset({
+    "safari", "chrome", "chromium", "firefox", "edge", "edgemac", "arc",
+    "brave", "opera", "vivaldi", "orion", "duckduckgo", "waterfox",
+    "librewolf", "torbrowser", "browser", "sigmaos", "palemoon", "floorp",
+})
+_BROWSER_PREFIXES = (
+    "com.apple.safari",
+    "com.google.chrome",
+    "org.mozilla.firefox",
+    "org.mozilla.nightly",
+    "com.microsoft.edgemac",
+    "com.microsoft.edge",
+    "company.thebrowser.browser",
+    "company.thebrowser.dia",
+    "com.brave.browser",
+    "com.operasoftware.opera",
+    "com.vivaldi.vivaldi",
+    "org.chromium.chromium",
+    "com.kagi.kagimacos",
+    "org.torproject.torbrowser",
+    "com.duckduckgo.macos.browser",
+    "org.waterfoxproject.waterfox",
+    "org.mozilla.librewolf",
+    "com.sigmaos.sigmaos",
+)
 _USER_DATA_WORDS = frozenset({
     "progress", "user", "users", "profile", "profiles", "account", "accounts",
     "email", "emails", "phone", "phones", "score", "scores", "level", "levels",
@@ -143,8 +178,21 @@ def resolve_timeout(value=None):
     return seconds
 
 
+def resolve_spoken_cap(value=None):
+    """Character cap for the line that is spoken. The log can be longer."""
+    if value is None:
+        return config.REA_SPOKEN_CAP
+    try:
+        cap = int(value)
+    except (TypeError, ValueError):
+        return config.REA_SPOKEN_CAP
+    if cap < 1:
+        return config.REA_SPOKEN_CAP
+    return cap
+
+
 def resolve_output_cap(value=None):
-    """Character cap for text that leaves this process toward a model or a log."""
+    """Character cap for text kept in the local log."""
     if value is None:
         raw = os.environ.get("JEV_REA_OUTPUT_CAP")
         value = config.REA_OUTPUT_CAP if raw in (None, "") else raw
@@ -177,8 +225,17 @@ def identify_app(front=None, screenshot=None):
     return found
 
 
+def money_hash_path():
+    """Shipped salt and digests. The file has no plaintext ids."""
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "rea_money_hashes.json")
+
+
 def load_blocklist(path):
-    """Local rules. A missing or broken file means no extra names, not a crash."""
+    """Local rules, or None when the file is missing, unreadable, or invalid.
+
+    None fails closed: the command refuses every run. A JSON object that
+    omits a list is valid and incomplete. Built-in rules still apply.
+    """
     rules = {
         "blocked_bundle_ids": [],
         "blocked_names": [],
@@ -186,26 +243,194 @@ def load_blocklist(path):
         "kids_app_ids": [],
     }
     if not path or not os.path.isfile(path):
-        return rules
+        return None
     try:
         with open(path, encoding="utf-8") as handle:
             data = json.load(handle)
-    except (OSError, ValueError):
-        return rules
+    except (OSError, ValueError, UnicodeError):
+        return None
     if not isinstance(data, dict):
-        return rules
+        return None
     for key in rules:
-        value = data.get(key) or []
-        if not isinstance(value, list):
+        if key not in data or data[key] is None:
             continue
-        rules[key] = [str(item).strip() for item in value if str(item).strip()]
+        value = data[key]
+        if not isinstance(value, list):
+            return None
+        cleaned = []
+        for item in value:
+            if not isinstance(item, str):
+                return None
+            text = item.strip()
+            if text:
+                cleaned.append(text)
+        rules[key] = cleaned
     return rules
 
 
 def is_finance(identity):
-    """True when a bundle id, name, or site uses a banking or finance word."""
-    for key in ("bundle_id", "name", "site"):
-        if any(part in _FINANCE_WORDS for part in _tokens(identity.get(key))):
+    """True when a bundle id, name, site, or path contains a money word."""
+    parts = []
+    for key in ("bundle_id", "name", "site", "path"):
+        parts.append(identity.get(key) or "")
+    blob = " ".join(parts).lower()
+    return any(word in blob for word in _MONEY_WORDS)
+
+
+def is_browser(identity):
+    """True for Safari, Chrome, Firefox, Edge, Arc, Brave, and similar apps."""
+    bundle = (identity.get("bundle_id") or "").strip().lower()
+    if bundle:
+        for prefix in _BROWSER_PREFIXES:
+            if bundle == prefix or bundle.startswith(prefix + "."):
+                return True
+        if any(label in _BROWSER_LABELS for label in bundle.split(".")):
+            return True
+    for key in ("name", "path"):
+        if any(part in _BROWSER_LABELS for part in _tokens(identity.get(key))):
+            return True
+    return False
+
+
+def is_apple_bundle(identity):
+    """True for every com.apple bundle id."""
+    bundle = (identity.get("bundle_id") or "").strip().lower()
+    return bundle == "com.apple" or bundle.startswith("com.apple.")
+
+
+def hash_money_value(text, salt):
+    """Salted SHA-256 hex of one normalized prefix or domain. Empty when unusable."""
+    if not isinstance(text, str) or not text:
+        return ""
+    if not isinstance(salt, str) or not re.fullmatch(r"[0-9a-fA-F]{16,}", salt) or len(salt) % 2:
+        return ""
+    digest = hashlib.sha256(bytes.fromhex(salt) + b"\0" + text.encode("utf-8"))
+    return digest.hexdigest()
+
+
+def money_forms(value):
+    """Dot prefixes and suffixes with at least two labels.
+
+    A single label such as ``com`` is never returned. Public suffixes such as
+    ``ca.gov`` are never returned, so a state portal does not match every
+    government host.
+    """
+    text = _normalize_host(value)
+    labels = [part for part in text.split(".") if part]
+    found = []
+    seen = set()
+    for end in range(2, len(labels) + 1):
+        _add_form(found, seen, ".".join(labels[:end]))
+    for start in range(0, len(labels) - 1):
+        _add_form(found, seen, ".".join(labels[start:]))
+    return found
+
+
+def candidate_forms(identity):
+    """Forms of the front app's bundle id and site."""
+    found = []
+    seen = set()
+    bundle = (identity.get("bundle_id") or "").strip().lower()
+    for form in money_forms(bundle):
+        _add_form(found, seen, form)
+    for form in money_forms(_normalize_host(identity.get("site"))):
+        _add_form(found, seen, form)
+    return found
+
+
+def hash_money_ids(bundle_ids, domains, salt):
+    """Sorted unique digests for bundle-id prefixes and domains."""
+    forms = []
+    seen = set()
+    for bundle in bundle_ids or []:
+        for form in money_forms(bundle):
+            _add_form(forms, seen, form)
+    for domain in domains or []:
+        for form in money_forms(domain):
+            _add_form(forms, seen, form)
+    hashes = []
+    used = set()
+    for form in forms:
+        digest = hash_money_value(form, salt)
+        if digest and digest not in used:
+            used.add(digest)
+            hashes.append(digest)
+    hashes.sort()
+    return hashes
+
+
+def hashes_for_id_file(path, salt=None):
+    """Read a local id file and return ``{"salt", "hashes"}``.
+
+    The id file is not copied into the result. A broken file raises ValueError.
+    """
+    try:
+        with open(path, encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, ValueError, UnicodeError):
+        raise ValueError("unreadable")
+    if not isinstance(data, dict):
+        raise ValueError("shape")
+    bundles = _string_list(data.get("bundle_ids"))
+    domains = _string_list(data.get("domains"))
+    if bundles is None or domains is None:
+        raise ValueError("shape")
+    if salt is None:
+        table = load_money_table(money_hash_path())
+        salt = table.get("salt") or ""
+    if not salt:
+        raise ValueError("salt")
+    return {"salt": salt.lower(), "hashes": hash_money_ids(bundles, domains, salt)}
+
+
+def load_money_table(path=None):
+    """Salt and digests. A broken file yields an empty table, not a crash."""
+    empty = {"salt": "", "hashes": frozenset()}
+    target = path or money_hash_path()
+    try:
+        with open(target, encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, ValueError, UnicodeError):
+        return empty
+    if not isinstance(data, dict):
+        return empty
+    salt = data.get("salt")
+    hashes = data.get("hashes")
+    if not isinstance(salt, str) or not isinstance(hashes, list):
+        return empty
+    salt = salt.strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{16,}", salt) or len(salt) % 2:
+        return empty
+    clean = []
+    for item in hashes:
+        if isinstance(item, str) and re.fullmatch(r"[0-9a-fA-F]{64}", item):
+            clean.append(item.lower())
+    return {"salt": salt, "hashes": frozenset(clean)}
+
+
+def builtin_money_table():
+    """The shipped table. Loaded once."""
+    cached = getattr(builtin_money_table, "_cache", None)
+    if cached is None:
+        cached = load_money_table(money_hash_path())
+        builtin_money_table._cache = cached
+    return cached
+
+
+def is_builtin_money(identity, table=None):
+    """True for a money word or a salted hash of a bundle prefix or domain."""
+    if is_finance(identity):
+        return True
+    chosen = builtin_money_table() if table is None else table
+    if not isinstance(chosen, dict):
+        return False
+    salt = chosen.get("salt") or ""
+    hashes = chosen.get("hashes") or ()
+    if not salt or not hashes:
+        return False
+    for form in candidate_forms(identity):
+        digest = hash_money_value(form, salt)
+        if digest and digest in hashes:
             return True
     return False
 
@@ -239,9 +464,9 @@ def is_listed(identity, rules):
     return False
 
 
-def access_decision(identity, rules):
-    """``refuse``, ``structure``, or ``analyze``. Finance is never analyzed."""
-    if is_finance(identity):
+def access_decision(identity, rules, money=None):
+    """``refuse``, ``structure``, or ``analyze``. Money apps are never analyzed."""
+    if is_browser(identity) or is_apple_bundle(identity) or is_builtin_money(identity, money):
         return "refuse"
     if is_kids_app(identity, rules):
         return "structure"
@@ -342,18 +567,20 @@ def log_refused(log_dir, now=None):
 def analyze_front_app(text, front=None, screenshot=None, run=None, platform=None,
                       blocklist_path=None, log_dir=None, now=None, timeout=None,
                       output_cap=None, node_path=None, script_path=None,
-                      exists=None, front_reader=None):
+                      exists=None, front_reader=None, spoken_cap=None, money=None):
     """Speak one local answer. REA is spawned only after the blocklist says yes.
 
     The return value is LocalSpeech so the words stay on the Mac ``say``
     command. Cleanup of logs older than 7 days runs on every Mac invocation.
+    A missing or invalid blocklist refuses the run before any app is read.
     """
     if (platform or sys.platform) != "darwin":
         return LocalSpeech(NOT_MAC)
     try:
         return _analyze(
             text, front, screenshot, run, blocklist_path, log_dir, now, timeout,
-            output_cap, node_path, script_path, exists, front_reader,
+            output_cap, node_path, script_path, exists, front_reader, spoken_cap,
+            money,
         )
     except Exception as exc:
         if isinstance(exc, AssertionError):
@@ -362,16 +589,21 @@ def analyze_front_app(text, front=None, screenshot=None, run=None, platform=None
 
 
 def _analyze(text, front, screenshot, run, blocklist_path, log_dir, now, timeout,
-             output_cap, node_path, script_path, exists, front_reader):
+             output_cap, node_path, script_path, exists, front_reader, spoken_cap,
+             money):
     moment = _as_utc(now)
     folder = log_dir or config.REA_LOG_DIR
     cap = resolve_output_cap(output_cap)
+    spoken_limit = min(resolve_spoken_cap(spoken_cap), cap)
     cleanup_logs(folder, moment)
+    rules = load_blocklist(blocklist_path if blocklist_path is not None else config.REA_BLOCKLIST_PATH)
+    if rules is None:
+        log_refused(folder, moment)
+        return LocalSpeech(REFUSAL)
     identity = _identity(front, screenshot, front_reader)
     if not identity:
         return LocalSpeech(NO_APP)
-    rules = load_blocklist(blocklist_path if blocklist_path is not None else config.REA_BLOCKLIST_PATH)
-    decision = access_decision(identity, rules)
+    decision = access_decision(identity, rules, money)
     if decision == "refuse":
         log_refused(folder, moment)
         return LocalSpeech(REFUSAL)
@@ -416,7 +648,7 @@ def _analyze(text, front, screenshot, run, blocklist_path, log_dir, now, timeout
     rendered = _dump(data)
     _log_attempt(folder, moment, path, identity.get("bundle_id") or "", field,
                  "analyze", rendered, answer, cap)
-    return LocalSpeech(trim_text(redact(answer), cap))
+    return LocalSpeech(trim_text(redact(answer), spoken_limit))
 
 
 def _run_analyze(node, script, path, seconds, spawn):
@@ -603,6 +835,42 @@ def _absolute_tool(path):
 
 def _tokens(text):
     return [part for part in re.split(r"[^A-Za-z0-9]+", (text or "").lower()) if part]
+
+
+def _normalize_host(value):
+    text = (value or "").strip().lower()
+    text = re.sub(r"^[a-z][a-z0-9+.-]*://", "", text)
+    text = text.split("/")[0].split("?")[0].split("#")[0]
+    if "@" in text:
+        text = text.rsplit("@", 1)[-1]
+    if text.count(":") == 1:
+        text = text.split(":", 1)[0]
+    if text.startswith("www."):
+        text = text[4:]
+    return text.strip(".")
+
+
+def _add_form(found, seen, form):
+    if not form or form in seen or form in _PUBLIC_SUFFIXES:
+        return
+    if form.count(".") < 1:
+        return
+    seen.add(form)
+    found.append(form)
+
+
+def _string_list(value):
+    """A list of strings, an empty list when the key is absent, or None."""
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        return None
+    cleaned = []
+    for item in value:
+        if not isinstance(item, str) or not item.strip():
+            return None
+        cleaned.append(item.strip())
+    return cleaned
 
 
 def _is_user_data_key(key):

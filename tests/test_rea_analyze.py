@@ -14,9 +14,11 @@ import commands
 import commands.rea_analyze as rea
 from commands.config import (
     BRIDGE_ALLOW,
+    REA_BLOCKLIST_PATH,
     REA_LOG_RETENTION_DAYS,
     REA_NODE_VERSION,
     REA_OUTPUT_CAP,
+    REA_SPOKEN_CAP,
     REA_TIMEOUT_MAX,
     REA_TIMEOUT_MIN,
     REA_VERSION,
@@ -109,20 +111,21 @@ class Base(unittest.TestCase):
         return found
 
     def run_app(self, runner, text="analyze this app", front=None, timeout=60, output_cap=None,
-                platform="darwin", screenshot=None):
+                platform="darwin", screenshot=None, blocklist_path=None, money=None):
         return rea.analyze_front_app(
             text,
             front=self.front() if front is None else front,
             screenshot=screenshot,
             run=runner,
             platform=platform,
-            blocklist_path=self.block,
+            blocklist_path=self.block if blocklist_path is None else blocklist_path,
             log_dir=self.logs,
             now=NOW,
             timeout=timeout,
             output_cap=output_cap,
             node_path=self.node,
             script_path=self.script,
+            money=money,
         )
 
     def log_files(self):
@@ -258,6 +261,7 @@ class BlocklistTests(Base):
             self.assertRegex(name, r"^Example(?: [A-Za-z]+){1,4}$")
         gitignore = open(os.path.join(ROOT, ".gitignore"), encoding="utf-8").read()
         self.assertIn("rea-blocklist.json", gitignore)
+        self.assertIn("rea-money-ids.local.json", gitignore)
         self.assertIn("rea-logs/", gitignore)
 
     def test_a_normal_app_is_analyzed(self):
@@ -526,3 +530,256 @@ class RetentionTests(Base):
         self.assertEqual(body["timestamp"], "2026-10-27T12:00:00Z")
         for secret in (SECRET_NAME, SECRET_BUNDLE, SECRET_PATH, SECRET_SITE, "output", "input", "answer", "modules"):
             self.assertNotIn(secret, raw, secret)
+
+
+class FailClosedTests(Base):
+    def test_a_missing_file_refuses_every_run(self):
+        missing = os.path.join(self.root, "missing-blocklist.json")
+        runner = Runner()
+        spoken = self.run_app(runner, blocklist_path=missing, front=self.front(
+            name=SECRET_NAME,
+            bundle_id=SECRET_BUNDLE,
+            path=SECRET_PATH,
+            site=SECRET_SITE,
+        ))
+        self.assertEqual(spoken.text, rea.REFUSAL)
+        self.assertEqual(runner.calls, [])
+        _path, raw, body = self.read_logs()[0]
+        self.assertEqual(set(body.keys()), {"timestamp", "refused"})
+        self.assertEqual(body["refused"], "refused")
+        for secret in (SECRET_NAME, SECRET_BUNDLE, SECRET_PATH, SECRET_SITE):
+            self.assertNotIn(secret, raw)
+
+    def test_invalid_files_refuse_before_spawn(self):
+        samples = (
+            "",
+            "{",
+            "[]",
+            "null",
+            '"nope"',
+            '{"blocked_bundle_ids": "UNIQUE_INVALID_TOKEN"}',
+            '{"blocked_bundle_ids": [1]}',
+            '{"kids_app_ids": {"id": "com.example.kids"}}',
+        )
+        for sample in samples:
+            for path in self.log_files():
+                os.remove(path)
+            with open(self.block, "w", encoding="utf-8") as handle:
+                handle.write(sample)
+            runner = Runner()
+            spoken = self.run_app(runner, front=self.front(
+                name=SECRET_NAME,
+                bundle_id=SECRET_BUNDLE,
+                path=SECRET_PATH,
+            ))
+            self.assertEqual(spoken.text, rea.REFUSAL, sample)
+            self.assertEqual(runner.calls, [], sample)
+            _path, raw, body = self.read_logs()[0]
+            self.assertEqual(set(body.keys()), {"timestamp", "refused"}, sample)
+            self.assertNotIn("UNIQUE_INVALID_TOKEN", raw, sample)
+            self.assertNotIn(SECRET_BUNDLE, raw, sample)
+
+    def test_an_unreadable_file_refuses(self):
+        from unittest import mock
+        real_open = open
+
+        def guarded(path, *args, **kwargs):
+            if path == self.block:
+                raise OSError("denied")
+            return real_open(path, *args, **kwargs)
+
+        runner = Runner()
+        with mock.patch("builtins.open", guarded):
+            spoken = self.run_app(runner, front=self.front(
+                name=SECRET_NAME,
+                bundle_id=SECRET_BUNDLE,
+                path=SECRET_PATH,
+            ))
+        self.assertEqual(spoken.text, rea.REFUSAL)
+        self.assertEqual(runner.calls, [])
+        _path, raw, body = self.read_logs()[0]
+        self.assertEqual(set(body.keys()), {"timestamp", "refused"})
+        self.assertNotIn(SECRET_NAME, raw)
+
+    def test_an_incomplete_file_still_applies_builtin_rules(self):
+        self.write_blocklist({})
+        runner = Runner(stdout='{"modules": ["core"]}')
+        spoken = self.run_app(runner)
+        self.assertIn('modules: ["core"]', spoken.text)
+        self.assertEqual(len(runner.calls), 2)
+        for front in (
+            {"bundle_id": "com.example.loanapp", "name": "Desk", "path": "/Applications/Desk.app"},
+            {"bundle_id": "com.example.credittool", "name": "Desk", "path": "/Applications/Desk.app"},
+            {"bundle_id": "com.example.investing", "name": "Desk", "path": "/Applications/Desk.app"},
+            {"bundle_id": "com.example.brokerage", "name": "Desk", "path": "/Applications/Desk.app"},
+            {"bundle_id": "com.example.payroll", "name": "Desk", "path": "/Applications/Desk.app"},
+            {"name": "Safari", "bundle_id": "com.apple.Safari", "path": "/Applications/Safari.app"},
+            {"name": "Google Chrome", "bundle_id": "com.google.Chrome", "path": "/Applications/Google Chrome.app", "site": "notes.example"},
+            {"name": "Firefox", "bundle_id": "org.mozilla.firefox", "path": "/Applications/Firefox.app"},
+            {"name": "Microsoft Edge", "bundle_id": "com.microsoft.edgemac", "path": "/Applications/Microsoft Edge.app"},
+            {"name": "Arc", "bundle_id": "company.thebrowser.Browser", "path": "/Applications/Arc.app"},
+            {"name": "Brave", "bundle_id": "com.brave.Browser", "path": "/Applications/Brave Browser.app"},
+            {"name": "TextEdit", "bundle_id": "com.apple.TextEdit", "path": "/Applications/TextEdit.app"},
+            {"name": "Messages", "bundle_id": "COM.APPLE.MobileSMS", "path": "/Applications/Messages.app"},
+        ):
+            for path in self.log_files():
+                os.remove(path)
+            runner = Runner()
+            spoken = self.run_app(runner, front=self.front(**front))
+            self.assertEqual(spoken.text, rea.REFUSAL, front["bundle_id"])
+            self.assertEqual(runner.calls, [], front["bundle_id"])
+            _path, raw, body = self.read_logs()[0]
+            self.assertEqual(set(body.keys()), {"timestamp", "refused"}, front["bundle_id"])
+            self.assertNotIn(front["bundle_id"], raw)
+            self.assertNotIn(front["name"], raw)
+
+
+class MoneyHashTests(Base):
+    def test_a_hashed_fixture_matches_a_prefix_and_a_domain(self):
+        salt = "ab" * 16
+        hashes = rea.hash_money_ids(
+            ["com.fixturevendor.app"],
+            ["fixture-money.example"],
+            salt,
+        )
+        table = {"salt": salt, "hashes": hashes}
+        self.assertNotIn("fixturevendor", "".join(hashes))
+        self.assertNotIn("ca.gov", rea.money_forms("timesheet.benefits.ca.gov"))
+        self.assertIn("benefits.ca.gov", rea.money_forms("timesheet.benefits.ca.gov"))
+        runner = Runner()
+        spoken = self.run_app(runner, money=table, front=self.front(
+            name="Desk",
+            bundle_id="com.fixturevendor.desktop",
+            path="/Applications/Desk.app",
+        ))
+        self.assertEqual(spoken.text, rea.REFUSAL)
+        self.assertEqual(runner.calls, [])
+        runner = Runner()
+        spoken = self.run_app(runner, money=table, front=self.front(
+            name="Notes",
+            bundle_id="com.example.notes",
+            path="/Applications/Notes.app",
+            site="https://login.fixture-money.example/start",
+        ))
+        self.assertEqual(spoken.text, rea.REFUSAL)
+        self.assertEqual(runner.calls, [])
+        state = {"salt": salt, "hashes": [rea.hash_money_value("benefits.ca.gov", salt)]}
+        self.assertTrue(rea.is_builtin_money({
+            "bundle_id": "com.example.notes",
+            "name": "Notes",
+            "site": "https://portal.benefits.ca.gov/login",
+        }, state))
+        self.assertFalse(rea.is_builtin_money({
+            "bundle_id": "com.example.notes",
+            "name": "Notes",
+            "site": "https://other.ca.gov/",
+        }, state))
+        runner = Runner(stdout='{"modules": ["core"]}')
+        spoken = self.run_app(runner, money=table)
+        self.assertIn('modules: ["core"]', spoken.text)
+        self.assertEqual(runner.calls[1][0][2], "analyze")
+
+    def test_shipped_hashes_are_digests_and_do_not_block_notes(self):
+        path = rea.money_hash_path()
+        with open(path, encoding="utf-8") as handle:
+            raw = handle.read()
+        data = json.loads(raw)
+        self.assertEqual(set(data), {"salt", "hashes"})
+        self.assertRegex(data["salt"], r"^[0-9a-f]{32}$")
+        self.assertGreaterEqual(len(data["hashes"]), 1)
+        for item in data["hashes"]:
+            self.assertRegex(item, r"^[0-9a-f]{64}$")
+        self.assertNotIn(".", raw)
+        self.assertFalse(rea.is_builtin_money({
+            "name": "Notes",
+            "bundle_id": "com.example.notes",
+            "path": "/Applications/Notes.app",
+            "site": "notes.example",
+        }))
+
+    def test_the_hash_script_prints_digests_without_ids(self):
+        import importlib.util
+        import io
+        import sys
+        path = os.path.join(self.root, "ids.json")
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump({
+                "bundle_ids": ["com.fixturevendor.app"],
+                "domains": ["fixture-money.example"],
+            }, handle)
+        spec = importlib.util.spec_from_file_location(
+            "rea_money_hashes_script",
+            os.path.join(ROOT, "scripts", "rea_money_hashes.py"),
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        stdout = io.StringIO()
+        old = sys.stdout
+        try:
+            sys.stdout = stdout
+            code = module.main(["rea_money_hashes.py", path])
+        finally:
+            sys.stdout = old
+        self.assertEqual(code, 0)
+        text = stdout.getvalue()
+        self.assertNotIn("fixturevendor", text)
+        self.assertNotIn("fixture-money", text)
+        payload = json.loads(text)
+        self.assertEqual(set(payload), {"salt", "hashes"})
+        self.assertTrue(payload["hashes"])
+        self.assertRegex(payload["hashes"][0], r"^[0-9a-f]{64}$")
+
+    def test_spoken_answer_is_short_and_the_log_keeps_the_rest(self):
+        self.assertEqual(REA_SPOKEN_CAP, 300)
+        payload = {"modules": ["m" * 800]}
+        runner = Runner(stdout=json.dumps(payload))
+        spoken = self.run_app(runner)
+        self.assertLessEqual(len(spoken.text), 300)
+        self.assertGreater(len(spoken.text), 200)
+        self.assertIn("[trimmed]", spoken.text)
+        _path, _raw, body = self.read_logs()[0]
+        self.assertGreater(len(body["answer"]), len(spoken.text))
+        self.assertIn("m" * 400, body["answer"])
+        self.assertNotIn("m" * 400, spoken.text)
+
+
+class LocalBlocklistTests(Base):
+    def test_each_local_blocklist_entry_is_refused(self):
+        if not os.path.isfile(REA_BLOCKLIST_PATH):
+            self.skipTest("local blocklist is not on this machine")
+        rules = rea.load_blocklist(REA_BLOCKLIST_PATH)
+        self.assertIsNotNone(rules, "local blocklist is invalid")
+        kids = {item.lower() for item in rules["kids_app_ids"]}
+        fronts = []
+        for bundle in rules["blocked_bundle_ids"]:
+            if bundle.lower() in kids:
+                continue
+            fronts.append(self.front(
+                name="Desk",
+                bundle_id=bundle,
+                path="/Applications/Desk.app",
+                site="",
+            ))
+        for name in rules["blocked_names"]:
+            fronts.append(self.front(
+                name=name,
+                bundle_id="com.example.desk",
+                path="/Applications/Desk.app",
+                site="",
+            ))
+        for site in rules["blocked_sites"]:
+            fronts.append(self.front(
+                name="Desk",
+                bundle_id="com.example.desk",
+                path="/Applications/Desk.app",
+                site=site,
+            ))
+        for front in fronts:
+            for path in self.log_files():
+                os.remove(path)
+            runner = Runner()
+            spoken = self.run_app(runner, blocklist_path=REA_BLOCKLIST_PATH, front=front)
+            self.assertEqual(spoken.text, rea.REFUSAL)
+            self.assertEqual(runner.calls, [])
+            _path, _raw, body = self.read_logs()[0]
+            self.assertEqual(set(body.keys()), {"timestamp", "refused"})
