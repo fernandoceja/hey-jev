@@ -730,10 +730,12 @@ class TestGlass(unittest.TestCase):
         self.assertIn("Hazard Check", readme)
         self.assertIn("Turn On Hazard Alerts or Turn Off Hazard Alerts", readme)
 
-    def test_the_pill_source_uses_glass_or_the_hud_fallback(self):
+    def test_the_orb_popover_uses_hud_vibrancy_not_glass(self):
         ui = open(os.path.join(ROOT, "assistant_ui.py"), encoding="utf-8").read()
         flags = _func(ui, "_pill_flags")
-        self.assertIn('lookUpClass("NSGlassEffectView")', flags)
+        # Glass refracted the orb into pixel blobs; the popover is vibrancy.
+        self.assertNotIn('lookUpClass("NSGlassEffectView")', flags)
+        self.assertIn("setMaskImage_(_corner_mask(", _func(ui, "_make_vibrancy_backing"))
         self.assertIn("pill_chrome(", flags)
         self.assertIn("accessibilityDisplayShouldReduceTransparency", flags)
         self.assertIn("accessibilityDisplayShouldIncreaseContrast", flags)

@@ -8,6 +8,7 @@ from mini_bar import (
     BAR_W,
     ORB_PANEL,
     POPOVER_GAP,
+    POPOVER_PANEL_PAD,
     PillPresentation,
     greeting_text,
     home_draft_from_popover,
@@ -62,7 +63,10 @@ class TestPopoverLayout(unittest.TestCase):
         self.assertEqual(layout["side"], "left")
         ox, oy, ow, oh = layout["orb"]
         cx, _cy, cw, _ch = layout["composer"]
-        self.assertAlmostEqual(cx + cw + POPOVER_GAP, ox, delta=1.0)
+        self.assertAlmostEqual(cx + cw + POPOVER_PANEL_PAD + POPOVER_GAP, ox, delta=1.0)
+        px, py, pw, ph = layout["panel"]
+        self.assertAlmostEqual(px + pw + POPOVER_GAP, ox, delta=1.0)
+        self.assertLessEqual(py, layout["footer"]["footer_bottom"])
         frame = window_frame_for_presentation(composer, True, AIR)
         self.assertGreater(frame[2], ORB_PANEL)
         self.assertTrue(all(math.isfinite(v) for v in frame))

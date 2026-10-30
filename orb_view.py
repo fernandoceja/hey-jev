@@ -4,6 +4,7 @@ import time
 
 ORB_SIZE = 56.0
 PANEL_SIZE = 72.0
+ORB_DESIGN_EXTENT = 70.0  # orb + listening ring, with a hair of margin
 
 
 def orb_frame(expanded):
@@ -56,7 +57,7 @@ def make_orb_view(frame):
     global _ORB_CLASS
     if _ORB_CLASS is None:
         import objc
-        from AppKit import NSView, NSColor, NSBezierPath, NSGradient, NSMakeRect, NSMakePoint
+        from AppKit import NSView, NSColor, NSBezierPath, NSGradient, NSMakeRect, NSMakePoint, NSAffineTransform, NSGraphicsContext
         from Foundation import NSTimer
 
         class JevOrbView(NSView):
@@ -116,20 +117,41 @@ def make_orb_view(frame):
                     return NSColor.colorWithCalibratedRed_green_blue_alpha_(r, g, b, a)
                 def oval(x, y, w, h):
                     return NSBezierPath.bezierPathWithOvalInRect_(NSMakeRect(x, y, w, h))
-                # Soft original vector shadow; no images or third-party assets.
-                for inset in range(4):
-                    color(0.02, 0.04, 0.14, 0.035).setFill()
-                    oval(8 + inset, 3 + inset, 56 - inset * 2, 16 - inset).fill()
+                # Vectors only, drawn in a 72pt design space scaled to the
+                # view, so AppKit renders them at the backing scale (Retina
+                # crisp). The window draws the drop shadow; no fake ovals.
+                bounds = self.bounds()
+                bw, bh = float(bounds.size.width), float(bounds.size.height)
+                scale = min(bw, bh) / ORB_DESIGN_EXTENT
+                xf = NSAffineTransform.transform()
+                xf.translateXBy_yBy_(bw / 2.0, bh / 2.0)
+                xf.scaleBy_(scale)
+                xf.translateXBy_yBy_(-36.0, -36.0)
+                xf.concat()
                 body = oval(8, 8 + bob, ORB_SIZE, ORB_SIZE)
                 if self.solid:
                     color(0.12, 0.27, 0.65).setFill()
                     body.fill()
                 else:
-                    gradient = NSGradient.alloc().initWithColors_([
-                        color(0.07, 0.05, 0.28), color(0.12, 0.29, 0.83), color(0.24, 0.91, 0.81)])
-                    gradient.drawInBezierPath_angle_(body, 65)
-                    color(0.85, 1, 0.98, 0.20).setFill()
-                    oval(18 + sweep, 43 + bob, 23, 12).fill()
+                    base = NSGradient.alloc().initWithColors_([
+                        color(0.36, 0.95, 0.92), color(0.16, 0.42, 0.95), color(0.08, 0.07, 0.36)])
+                    base.drawInBezierPath_relativeCenterPosition_(body, NSMakePoint(-0.35, 0.45))
+                    ctx = NSGraphicsContext.currentContext()
+                    ctx.saveGraphicsState()
+                    body.addClip()
+                    shade = NSGradient.alloc().initWithStartingColor_endingColor_(
+                        color(0.02, 0.02, 0.2, 0.0), color(0.02, 0.02, 0.2, 0.45))
+                    shade.drawInBezierPath_angle_(oval(4, 2 + bob, 64, 40), -90)
+                    gloss = NSGradient.alloc().initWithStartingColor_endingColor_(
+                        color(1, 1, 1, 0.85), color(1, 1, 1, 0.0))
+                    gloss.drawInBezierPath_angle_(oval(18 + sweep * 0.3, 40 + bob, 36, 21), -90)
+                    rim = NSGradient.alloc().initWithStartingColor_endingColor_(
+                        color(0.45, 0.85, 1, 0.0), color(0.45, 0.85, 1, 0.35))
+                    rim.drawInBezierPath_relativeCenterPosition_(body, NSMakePoint(0, 0))
+                    ctx.restoreGraphicsState()
+                    color(1, 1, 1, 0.18).setStroke()
+                    body.setLineWidth_(0.75)
+                    body.stroke()
                 if self.state == "listening":
                     color(0.18, 0.65, 1).setStroke()
                     ring = oval(5, 5 + bob, 62, 62)

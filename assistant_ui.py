@@ -35,6 +35,7 @@ from AppKit import (
     NSEventMaskLeftMouseUp,
     NSEventTypeLeftMouseUp,
     NSFont,
+    NSEdgeInsets,
     NSFontAttributeName,
     NSForegroundColorAttributeName,
     NSGraphicsContext,
@@ -85,7 +86,7 @@ from AppKit import (
     NSWindowStyleMaskResizable,
     NSWindowStyleMaskTitled,
 )
-from Foundation import NSAttributedString, NSMakeSize, NSObject, NSURL, NSTimer, NSUserDefaults
+from Foundation import NSAttributedString, NSString, NSMakeSize, NSObject, NSURL, NSTimer, NSUserDefaults
 from assistant_layout import (
     DEFAULT_H,
     DEFAULT_W,
@@ -124,6 +125,7 @@ from mini_bar import (
     popover_controls,
     popover_open_animation,
     popover_subframes,
+    POPOVER_PANEL_RADIUS,
     screen_for_frame,
     status_shows_in_pill,
     window_frame_for_presentation,
@@ -397,6 +399,35 @@ def _glass_pass_through():
 
     _glass_pass_through.cls = PassThroughGlass
     return PassThroughGlass
+
+
+def _corner_mask(radius):
+    """Resizable rounded-rect mask for NSVisualEffectView (crisp at any scale)."""
+    radius = float(radius)
+    side = radius * 2.0 + 1.0
+
+    def draw(rect):
+        NSColor.blackColor().setFill()
+        NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(rect, radius, radius).fill()
+        return True
+
+    image = NSImage.imageWithSize_flipped_drawingHandler_((side, side), False, draw)
+    image.setCapInsets_(NSEdgeInsets(radius, radius, radius, radius))
+    image.setResizingMode_(1)  # NSImageResizingModeStretch
+    return image
+
+
+class SolidPanelView(NSView):
+    """Reduce Transparency: an opaque rounded panel instead of vibrancy."""
+
+    def hitTest_(self, _point):
+        return None
+
+    def drawRect_(self, _rect):
+        b = self.bounds()
+        NSColor.windowBackgroundColor().setFill()
+        NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+            b, POPOVER_PANEL_RADIUS, POPOVER_PANEL_RADIUS).fill()
 
 
 class PassThroughEffect(NSVisualEffectView):
@@ -732,22 +763,62 @@ class PopoverChipButton(NSButton):
         self = objc.super(PopoverChipButton, self).initWithFrame_(frame)
         if self is None:
             return None
-        self.setBezelStyle_(7)  # NSBezelStyleRounded
-        self.setBordered_(True)
+        self.setBordered_(False)
+        self.setTitle_("")
         self.setTarget_(None)
         self.setAction_("miniChip:")
         self.chipId = ""
+        self.chipTitle = ""
+        self.chipSubtitle = ""
         return self
 
     @objc.python_method
     def configure(self, chip_id, title, subtitle):
         self.chipId = str(chip_id or "")
-        if subtitle:
-            self.setTitle_("%s\n%s" % (title, subtitle))
-            self.setFont_(NSFont.systemFontOfSize_(11))
-        else:
-            self.setTitle_(str(title or ""))
-            self.setFont_(NSFont.systemFontOfSize_(12))
+        self.chipTitle = str(title or "")
+        self.chipSubtitle = str(subtitle or "")
+        self.setTitle_("")
+        self.setAccessibilityLabel_(self.chipTitle)
+        self.setToolTip_(self.chipSubtitle or self.chipTitle)
+        self.setNeedsDisplay_(True)
+
+    def drawRect_(self, _rect):
+        """Full capsule with the complete title (and subtitle), vector only."""
+        try:
+            b = self.bounds()
+            w, h = float(b.size.width), float(b.size.height)
+            if w < 4.0 or h < 4.0:
+                return
+            r = min(12.0, h / 2.0)
+            path = NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+                NSMakeRect(0.5, 0.5, w - 1.0, h - 1.0), r, r)
+            pressed = self.isHighlighted()
+            NSColor.labelColor().colorWithAlphaComponent_(0.16 if pressed else 0.08).setFill()
+            path.fill()
+            NSColor.separatorColor().setStroke()
+            path.setLineWidth_(0.75)
+            path.stroke()
+            title = getattr(self, "chipTitle", "") or ""
+            sub = getattr(self, "chipSubtitle", "") or ""
+            tf = NSFont.systemFontOfSize_weight_(12.5, 0.23)
+            ta = {NSFontAttributeName: tf, NSForegroundColorAttributeName: NSColor.labelColor()}
+            ts = NSString.stringWithString_(title)
+            tsz = ts.sizeWithAttributes_(ta)
+            if sub:
+                sf = NSFont.systemFontOfSize_(10.5)
+                sa = {NSFontAttributeName: sf, NSForegroundColorAttributeName: NSColor.secondaryLabelColor()}
+                ss = NSString.stringWithString_(sub)
+                ssz = ss.sizeWithAttributes_(sa)
+                total = tsz.height + ssz.height
+                y0 = (h - total) / 2.0
+                # NSButton is flipped: the title goes on top, the subtitle below.
+                ts.drawAtPoint_withAttributes_(NSMakePoint(12.0, y0), ta)
+                ss.drawAtPoint_withAttributes_(NSMakePoint(12.0, y0 + tsz.height), sa)
+            else:
+                ts.drawAtPoint_withAttributes_(
+                    NSMakePoint((w - tsz.width) / 2.0, (h - tsz.height) / 2.0), ta)
+        except Exception as exc:
+            print(f"  chip draw failed: {exc}")
 
 
 class HoldMicButton(PillButton):
@@ -1949,16 +2020,14 @@ class AppDelegate(NSObject):
         root.addSubview_(self.mini_expand)
         self._popover_refresh_index = 0
         self._popover_history_open = False
-        self.popover_history_btn = NSButton.alloc().initWithFrame_(NSMakeRect(0, 0, 10, 10))
-        self.popover_history_btn.setBezelStyle_(7)
-        self.popover_history_btn.setTitle_("History")
+        self.popover_history_btn = PopoverChipButton.alloc().initWithFrame_(NSMakeRect(0, 0, 10, 10))
+        self.popover_history_btn.configure("", "History", "")
         self.popover_history_btn.setTarget_(self)
         self.popover_history_btn.setAction_("miniToggleHistory:")
         self.popover_history_btn.setHidden_(True)
         root.addSubview_(self.popover_history_btn)
-        self.popover_refresh_btn = NSButton.alloc().initWithFrame_(NSMakeRect(0, 0, 10, 10))
-        self.popover_refresh_btn.setBezelStyle_(7)
-        self.popover_refresh_btn.setTitle_("Refresh")
+        self.popover_refresh_btn = PopoverChipButton.alloc().initWithFrame_(NSMakeRect(0, 0, 10, 10))
+        self.popover_refresh_btn.configure("", "Refresh", "")
         self.popover_refresh_btn.setTarget_(self)
         self.popover_refresh_btn.setAction_("miniRefreshChips:")
         self.popover_refresh_btn.setHidden_(True)
@@ -2364,7 +2433,7 @@ class AppDelegate(NSObject):
         bubble = getattr(self, "greeting_bubble", None)
         label = getattr(self, "greeting_label", None)
         if bubble is not None:
-            bubble.setHidden_(False)
+            bubble.setHidden_(True)
             _place(bubble, (gx, gy, gw, gh))
             chrome = getattr(self, "_pill_chrome", {})
             bubble.solidFill = chrome.get("material") == "solid"
@@ -2400,7 +2469,7 @@ class AppDelegate(NSObject):
         if hasattr(self, "zoe_label"):
             _place(self.zoe_label, (cx + field[0] + field[2] - 46.0, cy + field[1], 44.0, field[3]))
         self._layout_popover_footer(layout)
-        self._sync_capsule(width, height, popover=True)
+        self._sync_capsule(width, height, popover=True, panel_rect=layout.get("panel"))
         self._sync_recording_ui()
         self._style_pill_field()
         self._refresh_trailing_symbol()
@@ -2419,10 +2488,14 @@ class AppDelegate(NSObject):
         orb.configure(state, bool(getattr(self, "option_down", False)),
                       getattr(self, "_meter_unit", 0.0), visible,
                       flags.get("motion", True), flags.get("material") == "solid")
-        for name in ("pill_backing", "pill_overlay"):
-            view = getattr(self, name, None)
-            if view is not None:
-                view.setHidden_(collapsed)
+        backing = getattr(self, "pill_backing", None)
+        if backing is not None:
+            backing.setHidden_(collapsed)
+        overlay = getattr(self, "pill_overlay", None)
+        if overlay is not None:
+            # The orb popover draws its own rounded panel; the old capsule
+            # hairline poked out of the panel corners.
+            overlay.setHidden_(True)
         meter = getattr(self, "mic_level_view", None)
         if meter is not None:
             meter.setHidden_(collapsed)
@@ -2610,11 +2683,9 @@ class AppDelegate(NSObject):
 
     @objc.python_method
     def _pill_flags(self):
+        # Vibrancy, not NSGlassEffectView: glass refracted the orb and the
+        # greeting into low-resolution blobs in the borderless popover.
         glass = False
-        try:
-            glass = objc.lookUpClass("NSGlassEffectView") is not None
-        except Exception:
-            glass = False
         ws = NSWorkspace.sharedWorkspace()
         try:
             reduce_t = bool(ws.accessibilityDisplayShouldReduceTransparency())
@@ -2663,7 +2734,8 @@ class AppDelegate(NSObject):
             overlay.passesClicks = True
         if backing is not None:
             backing.passesClicks = True
-            root.addSubview_positioned_relativeTo_(backing, NSWindowBelow, overlay)
+            # Bottom of the stack, so the greeting, chips and orb draw on it.
+            root.addSubview_positioned_relativeTo_(backing, NSWindowBelow, None)
         overlay.solidFill = chrome.get("material") == "solid"
         overlay.contrastBorder = bool(chrome.get("contrast_border"))
         overlay.setNeedsDisplay_(True)
@@ -2675,7 +2747,8 @@ class AppDelegate(NSObject):
     def _make_backing(self, bounds, chrome):
         material = chrome.get("material")
         if material == "solid":
-            return None
+            view = SolidPanelView.alloc().initWithFrame_(bounds)
+            return view
         if material == "glass":
             glass = self._make_glass_backing(bounds)
             if glass is not None:
@@ -2707,24 +2780,29 @@ class AppDelegate(NSObject):
         view.setMaterial_(NSVisualEffectMaterialHUDWindow)
         view.setBlendingMode_(NSVisualEffectBlendingModeBehindWindow)
         view.setState_(NSVisualEffectStateActive)
-        radius = float(bounds.size.height) / 2.0
-        _capsule_layer(view, radius, True)
+        view.setMaskImage_(_corner_mask(POPOVER_PANEL_RADIUS))
         view.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable)
         return view
 
     @objc.python_method
-    def _sync_capsule(self, width, height, popover=False):
-        radius = 12.0 if popover else float(height) / 2.0
+    def _sync_capsule(self, width, height, popover=False, panel_rect=None):
+        """Transparent window. Only the popover column gets a rounded panel."""
         frame = NSMakeRect(0, 0, float(width), float(height))
+        if panel_rect is not None:
+            frame = NSMakeRect(*(float(v) for v in panel_rect))
         panel = getattr(self, "mini_panel", None)
         if panel is not None:
-            _capsule_layer(panel.contentView(), radius, False)
+            _capsule_layer(panel.contentView(), 0.0, False)
         backing = getattr(self, "pill_backing", None)
         if backing is not None:
             backing.setFrame_(frame)
-            if hasattr(backing, "setCornerRadius_"):
-                backing.setCornerRadius_(radius)
-            _capsule_layer(backing, radius, True)
+            backing.setHidden_(not popover)
+        solid = getattr(self, "pill_solid", None)
+        if solid is not None:
+            solid.setFrame_(frame)
+            solid.setHidden_(not popover)
+        if panel is not None:
+            panel.invalidateShadow()
         overlay = getattr(self, "pill_overlay", None)
         if overlay is not None:
             overlay.setFrame_(frame)

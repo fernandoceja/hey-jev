@@ -43,6 +43,8 @@ POPOVER_CHIP_H = 40.0
 POPOVER_CHIP_GAP = 8.0
 POPOVER_CHIP_PAD_X = 14.0
 POPOVER_HISTORY_H = 88.0
+POPOVER_PANEL_PAD = 12.0  # vibrancy panel inset around the popover column
+POPOVER_PANEL_RADIUS = 16.0
 GREETING_NAME = "Fernando"
 
 # Quick-action chips below the composer. Refresh rotates pages locally only.
@@ -1395,27 +1397,35 @@ def popover_layout(composer_rect, screen, name=None, refresh_index=0, history_op
     content_w = max(cw, gw)
     footer_h = popover_footer_height(refresh_index, history_open, content_w)
     content_h = gh + POPOVER_GREETING_GAP + ch + footer_h
-    side = popover_side(orb, content_w, screen)
+    pad = POPOVER_PANEL_PAD
+    panel_w = content_w + pad * 2.0
+    side = popover_side(orb, panel_w, screen)
     gap = POPOVER_GAP
     if side == "left":
-        content_x = ox - gap - content_w
-        window_x = content_x
-        window_w = content_w + gap + ow
+        panel_x = ox - gap - panel_w
+        window_x = panel_x
+        window_w = panel_w + gap + ow
     else:
-        content_x = ox + ow + gap
+        panel_x = ox + ow + gap
         window_x = ox
-        window_w = ow + gap + content_w
+        window_w = ow + gap + panel_w
+    content_x = panel_x + pad
     orb_cy = oy + oh / 2.0
     composer_y = orb_cy - ch / 2.0
     greeting_y = composer_y + ch + POPOVER_GREETING_GAP
     footer = popover_footer_layout(content_w, composer_y, refresh_index, history_open)
     footer_bottom_screen = footer["footer_bottom"]
-    top = max(greeting_y + gh, oy + oh, composer_y + ch)
-    bottom = min(greeting_y, oy, composer_y, footer_bottom_screen)
+    panel_top = greeting_y + gh + pad
+    panel_bottom = footer_bottom_screen - pad
+    top = max(panel_top, oy + oh, composer_y + ch)
+    bottom = min(panel_bottom, oy, composer_y)
     window_y = bottom
     window_h = top - bottom
     composer_x = content_x + (content_w - cw) / 2.0
     greeting_x = content_x + (content_w - gw) / 2.0
+    # Locals are measured from the unclamped origin, so clamping slides the
+    # whole popover (orb included) on screen instead of clipping its bottom.
+    base_x, base_y = window_x, window_y
     window_x, window_y = clamp_origin((window_x, window_y), (window_w, window_h), screen)
     sx, sy, sw, sh = (float(v) for v in screen)
     inset = ORB_EDGE_INSET
@@ -1427,7 +1437,8 @@ def popover_layout(composer_rect, screen, name=None, refresh_index=0, history_op
         window_x = sx + sw - inset - window_w
     if window_x < sx + inset:
         window_x = sx + inset
-    # Recompute locals after clamping the window origin.
+    lx, ly = window_x, window_y
+    window_x, window_y = base_x, base_y
     orb_l = (ox - window_x, oy - window_y, ow, oh)
     composer_l = (composer_x - window_x, composer_y - window_y, cw, ch)
     greeting_l = (greeting_x - window_x, greeting_y - window_y, gw, gh)
@@ -1438,13 +1449,14 @@ def popover_layout(composer_rect, screen, name=None, refresh_index=0, history_op
         history_open,
     )
     return {
-        "frame": (window_x, window_y, window_w, window_h),
+        "frame": (lx, ly, window_w, window_h),
         "side": side,
         "orb": orb_l,
         "greeting": greeting_l,
         "composer": composer_l,
         "composer_rect": composer_rect,
         "footer": footer_local,
+        "panel": (panel_x - window_x, panel_bottom - window_y, panel_w, panel_top - panel_bottom),
     }
 
 
