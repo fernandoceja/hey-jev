@@ -155,6 +155,7 @@ from mini_bar import (
     undo_main_reveal,
     is_our_app,
 )
+from orb_view import make_orb_view, orb_frame
 from ptt import PushToTalk
 from secrets_store import KEY_NAMES, OPTIONAL, get_secret, missing_secrets, save_secret
 from commands.model import CLAUDE_MODEL, MODEL_PREF
@@ -1789,6 +1790,8 @@ class AppDelegate(NSObject):
         root = MiniBarBackground.alloc().initWithFrame_(NSMakeRect(0, 0, size[0], size[1]))
         root.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable)
         self.mini_panel.setContentView_(root)
+        self.orb_view = make_orb_view(NSMakeRect(0, 0, 72, 72))
+        root.addSubview_(self.orb_view)
         self.mini_plus = PillButton.alloc().initWithFrame_(NSMakeRect(0, 0, 10, 10))
         self.mini_plus.setBordered_(False)
         self.mini_plus.setTarget_(self)
@@ -1871,10 +1874,14 @@ class AppDelegate(NSObject):
                 self._order_bar_front()
         elif panel.isVisible():
             self._hide_bar()
+        self._sync_orb()
 
     @objc.python_method
     def _hide_bar(self):
         panel = self.mini_panel
+        orb = getattr(self, "orb_view", None)
+        if orb is not None:
+            orb.stop()
         motion = self._pill_flags().get("motion", True)
         if self.bar.quitting or not motion:
             panel.setAlphaValue_(1.0)
@@ -2150,6 +2157,32 @@ class AppDelegate(NSObject):
         self._refresh_trailing_symbol()
 
     @objc.python_method
+    def _sync_orb(self):
+        orb = getattr(self, "orb_view", None)
+        panel = getattr(self, "mini_panel", None)
+        if orb is None or panel is None:
+            return
+        collapsed = bool(getattr(self, "pillCollapsed", False))
+        flags = getattr(self, "_pill_chrome", {})
+        status = getattr(self, "status", None)
+        state = str(status.stringValue()) if status is not None else "Ready"
+        visible = collapsed and panel.isVisible() and self.bar.should_show()
+        orb.configure(state, bool(getattr(self, "option_down", False)),
+                      getattr(self, "_meter_unit", 0.0), visible,
+                      flags.get("motion", True), flags.get("material") == "solid")
+        for name in ("pill_backing", "pill_overlay"):
+            view = getattr(self, name, None)
+            if view is not None:
+                view.setHidden_(collapsed)
+        meter = getattr(self, "mic_level_view", None)
+        if meter is not None:
+            meter.setHidden_(collapsed)
+        # Screen recording retains its existing stop control above the orb.
+        stop = getattr(self, "rec_stop", None)
+        recording = stop is not None and not stop.isHidden()
+        self.mini_mic.setHidden_(collapsed or recording)
+
+    @objc.python_method
     def _place_mic_level(self, mic_frame):
         view = getattr(self, "mic_level_view", None)
         if view is None:
@@ -2213,7 +2246,7 @@ class AppDelegate(NSObject):
         expanded = (float(origin[0]), float(origin[1]), float(size[0]), float(size[1]))
         if getattr(self, "pill", None) is not None and self.pill.expanded:
             return expanded
-        return collapsed_frame(expanded)
+        return orb_frame(expanded)
 
     @objc.python_method
     def _apply_pill_presentation(self):
@@ -2231,6 +2264,7 @@ class AppDelegate(NSObject):
         finally:
             self._suppress_size_save = False
         self._apply_mic_tint()
+        self._sync_orb()
 
     @objc.python_method
     def _place_expanded_on_main_screen(self):
@@ -2257,6 +2291,7 @@ class AppDelegate(NSObject):
         mic.speakingTint = self.pill.mic_tint() == "blue"
         if hasattr(mic, "_apply_pill_tint"):
             mic._apply_pill_tint()
+        self._sync_orb()
 
     def expandMiniBar_(self, _sender):
         """A click on the idle capsule opens the typing pill and shows the caret."""
@@ -2331,6 +2366,7 @@ class AppDelegate(NSObject):
         overlay.setNeedsDisplay_(True)
         self._sync_capsule(float(bounds.size.width), float(bounds.size.height))
         self._style_pill_field()
+        self._sync_orb()
 
     @objc.python_method
     def _make_backing(self, bounds, chrome):
@@ -2548,6 +2584,9 @@ class AppDelegate(NSObject):
             return
         unit = smooth(getattr(self, "_meter_unit", 0.0), level_to_unit(db))
         self._meter_unit = unit
+        orb = getattr(self, "orb_view", None)
+        if orb is not None:
+            orb.level = unit
         amplitude = unit ** 0.7
         view = getattr(self, "mic_level_view", None)
         if view is not None:
@@ -3142,7 +3181,7 @@ class AppDelegate(NSObject):
         active = bool(status)
         label.setHidden_(not active)
         stop.setHidden_(not active)
-        mic.setHidden_(active)
+        mic.setHidden_(active or getattr(self, "pillCollapsed", False))
         if active:
             label.setStringValue_("\u25cf  " + str(status.get("clock") or ""))
             label.setTextColor_(NSColor.systemRedColor())
@@ -3303,6 +3342,7 @@ class AppDelegate(NSObject):
         self._sync_recording_ui()
         self._sync_choice_dismiss()
         self._sync_zoe_ui()
+        self._sync_orb()
 
     @objc.python_method
     def _sync_choice_dismiss(self):
@@ -3354,6 +3394,7 @@ class AppDelegate(NSObject):
             if panel is not None and panel.isVisible() and not capture_saved(shown):
                 self.choice_answer.setStringValue_(shown)
         self._maybe_show_choices(detail)
+        self._sync_orb()
 
     def applicationShouldTerminateAfterLastWindowClosed_(self, _application):
         return False  # keep listening with the window closed, the Dock icon reopens it
@@ -3365,6 +3406,9 @@ class AppDelegate(NSObject):
         return 1  # NSTerminateNow. Closing the window is not quitting.
 
     def applicationWillTerminate_(self, _notification):
+        orb = getattr(self, "orb_view", None)
+        if orb is not None:
+            orb.stop()
         timer = getattr(self, "_listen_timer", None)
         if timer is not None:
             timer.invalidate()
