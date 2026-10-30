@@ -323,6 +323,9 @@ def launch_rom(console, path, title="", platform=None, exists=os.path.exists, ru
     title = title or os.path.basename(path)
     if (sys.platform if platform is None else platform) != "darwin":
         return GAMES_NOT_MAC
+    if console == "nxnative":
+        from .nxnative import launch_port
+        return launch_port(path, title, platform=platform, exists=exists, run=run)
     emu = emulator_for(console)
     if emu is None:
         return GAME_UNKNOWN

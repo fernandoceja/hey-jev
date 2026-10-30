@@ -433,6 +433,9 @@ ACTIONS = {
     "test_results_open": lambda _arg, _text: commands.open_test_results(),
     "game_open": lambda _arg, text: commands.open_game_from_text(text),
     "game_close": lambda _arg, text: commands.close_game_from_text(text),
+    # NXNative ports: list, or open one app bundle. Mac-only, not bridged.
+    "nx_list": lambda _arg, _text: commands.nx_list_ports(),
+    "nx_play": lambda _arg, text: commands.nx_play_from_text(text),
     # Scan only: opens CleanMyMac and presses Scan. Never cleans. Not bridged.
     "cleanmymac_scan": lambda _arg, text: commands.cleanmymac_scan_from_text(text),
     # REA analyze of the front app. Read-only. LocalSpeech, so no paid API. Not bridged.

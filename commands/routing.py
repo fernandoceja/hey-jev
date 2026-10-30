@@ -8,6 +8,7 @@ from .passwords import is_password_lookup
 from .tutor import is_tutor_phrase
 from .recreate import is_recreate_phrase, is_recreate_status
 from .games import is_game_close_phrase, is_game_phrase
+from .nxnative import is_list_phrase as is_nx_list_phrase, match_port as match_nx_port
 from .cleanmymac import is_cleanmymac_phrase
 from .fm_serve import offline_brain_action
 from .rea_analyze import rea_action
@@ -81,6 +82,12 @@ def route_before_api(text):
         return "game_open"
     if is_game_close_phrase(raw):
         return "game_close"
+    # NXNative ports found on disk ("play high on life", "list games"). Mac-only,
+    # not in BRIDGE_ALLOW. Opens the port's app bundle only.
+    if is_nx_list_phrase(raw):
+        return "nx_list"
+    if match_nx_port(raw) is not None:
+        return "nx_play"
     # CleanMyMac Smart Care scan. Scan only. Mac-only, not in BRIDGE_ALLOW.
     # Before the "clean my mac" open-app nickname, which "open CleanMyMac" keeps.
     if is_cleanmymac_phrase(raw):
