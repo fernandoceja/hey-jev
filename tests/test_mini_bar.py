@@ -274,8 +274,10 @@ class TestPlacement(unittest.TestCase):
         drag = _func(ui, "mouseDown_")
         self.assertIn("class MiniBarBackground", ui[:ui.index("def mouseDown_")])
         self.assertIn("drag_origin", drag)
+        self.assertIn("_finalize_mini_bar_drag", drag)
         self.assertIn("setFrameOrigin_", drag)
         self.assertIn("NSEvent.mouseLocation()", drag)
+        self.assertIn("finish_drag", ui)
         self.assertIn("CenteredFieldCell", ui)
         cell = _func(ui, "drawingRectForBounds_")
         self.assertIn("ascender", cell)
@@ -285,7 +287,7 @@ class TestPlacement(unittest.TestCase):
         moved = _func(ui, "windowDidMove_")
         self.assertIn("ORIGIN_KEY", moved)
         order = _func(ui, "_order_bar_front")
-        self.assertIn("place_bar(saved, screens, size)", order)
+        self.assertIn("migrate_saved_origin(saved, screens, size)", order)
 
     def test_double_click_on_the_background_recenters_on_the_main_screen(self):
         screens = (AIR, RIGHT, LEFT)

@@ -117,6 +117,7 @@ from mini_bar import (
     expanded_frame_from_capsule,
     status_shows_in_pill,
     drag_origin,
+    finish_drag,
     enabled_from_pref,
     format_origin,
     format_size,
@@ -131,6 +132,7 @@ from mini_bar import (
     choice_origin,
     choice_panel_box,
     pointer_inside,
+    migrate_saved_origin,
     place_bar,
     plus_item,
     plus_menu,
@@ -483,6 +485,9 @@ class MiniBarBackground(NSView):
             if moved:
                 x, y = drag_origin(origin, start, point)
                 window.setFrameOrigin_(NSMakePoint(x, y))
+        if moved and delegate is not None and hasattr(delegate, "_finalize_mini_bar_drag"):
+            delegate._finalize_mini_bar_drag(window)
+            return
         if not moved and delegate is not None and hasattr(delegate, "expandMiniBar_"):
             delegate.expandMiniBar_(self)
 
@@ -536,6 +541,9 @@ class MiniBarBackground(NSView):
             now = NSEvent.mouseLocation()
             x, y = drag_origin(origin, start, (float(now.x), float(now.y)))
             window.setFrameOrigin_(NSMakePoint(x, y))
+        delegate = window.delegate()
+        if delegate is not None and hasattr(delegate, "_finalize_mini_bar_drag"):
+            delegate._finalize_mini_bar_drag(window)
 
 
 class PillButton(NSButton):
@@ -1965,6 +1973,22 @@ class AppDelegate(NSObject):
         return frames
 
     @objc.python_method
+    def _finalize_mini_bar_drag(self, window):
+        """Clamp and snap when a drag ends. Dragging never opens the typing pill."""
+        frame = window.frame()
+        origin = finish_drag(
+            (float(frame.origin.x), float(frame.origin.y)),
+            (float(frame.size.width), float(frame.size.height)),
+            self._visible_screens(),
+        )
+        window.setFrameOrigin_(NSMakePoint(origin[0], origin[1]))
+        self._sync_expanded_from_window()
+        saved = getattr(self, "_expanded_origin", None)
+        if saved is not None:
+            NSUserDefaults.standardUserDefaults().setObject_forKey_(
+                format_origin(saved[0], saved[1]), ORIGIN_KEY)
+
+    @objc.python_method
     def _order_bar_front(self):
         screens = self._visible_screens()
         if not screens:
@@ -1972,7 +1996,7 @@ class AppDelegate(NSObject):
         defaults = NSUserDefaults.standardUserDefaults()
         saved = parse_origin(defaults.stringForKey_(ORIGIN_KEY))
         size = remembered_size(defaults.stringForKey_(SIZE_KEY))
-        x, y = place_bar(saved, screens, size)
+        x, y = migrate_saved_origin(saved, screens, size)
         self._expanded_origin = (x, y)
         self._expanded_size = size
         if hasattr(self, "pill") and not self.pill.busy:
