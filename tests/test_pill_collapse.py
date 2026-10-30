@@ -212,7 +212,7 @@ class TestPillCollapseWiring(unittest.TestCase):
         self.assertIn("status_shows_in_pill", status)
         self.assertIn("_show_bar_reply", status)
         order = _func(ui, "_order_bar_front")
-        self.assertIn("place_bar(saved, screens, size)", order)
+        self.assertIn("migrate_saved_origin(saved, screens, size)", order)
         self.assertIn("_apply_pill_presentation", order)
         layout = _func(ui, "_layout_mini_bar")
         self.assertIn("_layout_collapsed_capsule", layout)
@@ -229,6 +229,8 @@ class TestPillCollapseWiring(unittest.TestCase):
         capsule_click = _func(ui, "_collapsed_click_or_drag")
         self.assertIn("expandMiniBar_", capsule_click)
         self.assertIn("capsule_click_moved", capsule_click)
+        self.assertIn("_finalize_mini_bar_drag", capsule_click)
+        self.assertIn("finish_drag", ui)
         hold = ui[ui.index("class HoldMicButton"):ui.index("class PillTextField")]
         self.assertIn('"pillRole", "mic") == "expand"', hold)
         self.assertIn("expandMiniBar_", hold)

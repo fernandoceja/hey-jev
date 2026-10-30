@@ -30,6 +30,10 @@ BAR_GRIP = 6.0
 # Visible-frame origin is already above the Dock. The extra gap leaves room
 # for the dictation bubble, which sits in that same bottom-center spot.
 DOCK_GAP = 72.0
+# Idle orb window matches orb_view.PANEL_SIZE. Placement math stays here, not in AppKit.
+ORB_PANEL = 72.0
+ORB_EDGE_INSET = 12.0
+ORB_SNAP_BAND = 36.0
 PLACEHOLDER = "Type to Jev\u2026"
 # Template-image tint while right Option is held for push-to-talk, and after.
 MIC_TINT_NORMAL = "normal"
@@ -183,6 +187,101 @@ def drag_origin(origin, start, now):
     """Window origin after a drag. All three are screen points (x, y). No clamping."""
     return (float(origin[0]) + float(now[0]) - float(start[0]),
             float(origin[1]) + float(now[1]) - float(start[1]))
+
+
+def _placement_size(size):
+    """Window width and height for placement. The orb is smaller than BAR_MIN_W."""
+    if size is None:
+        return default_size()
+    try:
+        width = float(size[0])
+        height = float(size[1])
+    except (TypeError, ValueError, IndexError):
+        return default_size()
+    if width <= 0.0 or height <= 0.0:
+        return default_size()
+    if width >= BAR_MIN_W and height >= BAR_MIN_H:
+        return clamp_size(width, height)
+    return (width, height)
+
+
+def screen_for_frame(frame, visible):
+    """Visible frame (x, y, w, h) that holds the most of `frame`, or None."""
+    screens = _as_screens(visible)
+    if not screens:
+        return None
+    best = None
+    best_area = 0.0
+    for screen in screens:
+        area = _intersection_area(frame, screen)
+        if area > best_area:
+            best_area = area
+            best = screen
+    if best_area <= 0.0:
+        return None
+    return best
+
+
+def clamp_origin(origin, size, screen):
+    """Keep the window inside a screen's visible frame with ORB_EDGE_INSET margin."""
+    x, y = float(origin[0]), float(origin[1])
+    width, height = _placement_size(size)
+    sx, sy, sw, sh = (float(v) for v in screen)
+    inset = ORB_EDGE_INSET
+    min_x = sx + inset
+    max_x = sx + sw - width - inset
+    min_y = sy + inset
+    max_y = sy + sh - height - inset
+    if max_x < min_x:
+        x = sx + (sw - width) / 2.0
+    else:
+        x = min(max(x, min_x), max_x)
+    if max_y < min_y:
+        y = sy + (sh - height) / 2.0
+    else:
+        y = min(max(y, min_y), max_y)
+    return (x, y)
+
+
+def snap_origin(origin, size, screen, band=None):
+    """Snap near a visible edge to ORB_EDGE_INSET; otherwise keep the clamped spot."""
+    clamped = clamp_origin(origin, size, screen)
+    x, y = clamped
+    width, height = _placement_size(size)
+    sx, sy, sw, sh = (float(v) for v in screen)
+    inset = ORB_EDGE_INSET
+    limit = ORB_SNAP_BAND if band is None else float(band)
+    min_x = sx + inset
+    max_x = sx + sw - width - inset
+    min_y = sy + inset
+    max_y = sy + sh - height - inset
+    if x - min_x <= limit:
+        x = min_x
+    elif max_x - x <= limit:
+        x = max_x
+    if y - min_y <= limit:
+        y = min_y
+    elif max_y - y <= limit:
+        y = max_y
+    return (x, y)
+
+
+def finish_drag(origin, size, visible):
+    """Clamp and snap after a drag release. Off every screen, recover like place_bar."""
+    width, height = _placement_size(size)
+    frame = (float(origin[0]), float(origin[1]), width, height)
+    screens = _as_screens(visible)
+    if not screens:
+        return (0.0, DOCK_GAP)
+    screen = screen_for_frame(frame, screens)
+    if screen is None:
+        return place_bar(None, screens, (width, height))
+    return snap_origin(origin, (width, height), screen)
+
+
+def migrate_saved_origin(saved, visible, size=None):
+    """Remembered typing-pill origin, or bottom-center when a display is gone."""
+    return place_bar(saved, visible, size)
 
 
 def reset_origin(visible):
