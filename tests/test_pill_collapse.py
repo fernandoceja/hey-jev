@@ -61,7 +61,7 @@ class TestIdleCapsule(unittest.TestCase):
         restored = expanded_frame_from_capsule(capsule, (BAR_W, BAR_H))
         self.assertEqual(restored, expanded)
         self.assertEqual(capsule[0] + capsule[2], expanded[0] + expanded[2])
-        self.assertEqual(PLACEHOLDER, "Type to Jev\u2026")
+        self.assertEqual(PLACEHOLDER, "Describe your task\u2026")
 
     def test_command_finished_collapses(self):
         pill = PillPresentation()
@@ -216,7 +216,7 @@ class TestPillCollapseWiring(unittest.TestCase):
         self.assertIn("_apply_pill_presentation", order)
         layout = _func(ui, "_layout_mini_bar")
         self.assertIn("_layout_collapsed_capsule", layout)
-        self.assertIn("bar_controls", layout)
+        self.assertIn("popover_controls", layout)
         capsule = _func(ui, "_layout_collapsed_capsule")
         self.assertIn("capsule_controls", capsule)
         self.assertIn('setHidden_(True)', capsule)
@@ -225,6 +225,8 @@ class TestPillCollapseWiring(unittest.TestCase):
         self.assertIn("pillCollapsed", background)
         self.assertIn("_collapsed_click_or_drag", background)
         self.assertLess(background.index("resetMiniBarPosition_"), background.index("resize_frame"))
+        self.assertIn("popover_subframes", background)
+        self.assertIn("popover_controls", background)
         self.assertLess(background.index("resize_frame"), background.index("drag_origin"))
         capsule_click = _func(ui, "_collapsed_click_or_drag")
         self.assertIn("expandMiniBar_", capsule_click)
