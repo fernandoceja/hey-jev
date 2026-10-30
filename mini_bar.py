@@ -789,6 +789,8 @@ class TypedHistory:
         cleaned = " ".join(str(text or "").split())
         if not cleaned:
             return ""
+        if cleaned.strip(" .?!'\"").lower() == self.pending.strip(" .?!'\"").lower():
+            return ""  # the heard echo of the request is not the reply
         self.rows.append(("jev", cleaned))
         self.pending = ""
         self._trim()
