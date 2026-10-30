@@ -56,11 +56,12 @@ POPOVER_CHIPS = {
     "weather": {"title": "Weather", "subtitle": "Local forecast", "phrase": "what's the weather"},
     "time": {"title": "Time", "subtitle": "Clock check", "phrase": "what time is it"},
     "joke": {"title": "Joke", "subtitle": "Quick laugh", "phrase": "tell me a joke"},
+    "games": {"title": "Games", "subtitle": "NXNative ports", "phrase": "list games"},
     "eta_work": {"title": "ETA work", "subtitle": "Commute", "phrase": "what's my ETA to work"},
 }
 POPOVER_CHIP_PAGES = (
     ("eta_home", "hazard_check", "plan_day", "mac_health"),
-    ("weather", "time", "joke", "eta_work"),
+    ("weather", "time", "games", "eta_work"),
 )
 # Template-image tint while right Option is held for push-to-talk, and after.
 MIC_TINT_NORMAL = "normal"
@@ -1030,8 +1031,34 @@ def console_menus(games=None):
     return tuple(menus)
 
 
+def _nx_ports(ports):
+    if ports is not None:
+        return ports
+    try:
+        from commands.nxnative import ports as found
+        return found()
+    except Exception:
+        return []
+
+
+def nxnative_menu(ports=None):
+    """NXNative Games submenu: one game_launch row per port app found on disk
+    (console "nxnative", opened with ["open", app]). List Games types "list games"."""
+    rows = [_menu_text("nx_list", "List Games", "list games", "list.bullet"), {"kind": "separator"}]
+    found = list(_nx_ports(ports) or ())
+    for p in found:
+        rows.append({"id": p["id"], "title": p["title"], "kind": "game_launch", "phrase": "",
+                     "symbol": "gamecontroller", "key": "", "console": "nxnative", "path": p["path"]})
+    if not found:
+        rows.append({"id": "games_none_nxnative", "title": "No games found", "kind": "games_empty",
+                     "phrase": "", "symbol": "questionmark.folder", "key": ""})
+    return {"id": "nxnative_games", "title": "NXNative Games", "kind": "submenu",
+            "symbol": "gamecontroller.fill", "items": tuple(rows)}
+
+
 def plus_menu(can_attach=None, recording=False, clipboard_entries=None,
-              clipboard_paused=False, zoe_mode=False, hazard_alerts=False, game_library=None):
+              clipboard_paused=False, zoe_mode=False, hazard_alerts=False, game_library=None,
+              nx_ports=None):
     """Items for the + button. Only commands the app already runs.
 
     `can_attach` defaults to attachments_supported(). Attach File is included
@@ -1061,6 +1088,7 @@ def plus_menu(can_attach=None, recording=False, clipboard_entries=None,
         _menu_text("tutor", "Tutor", "tutor me", "graduationcap"),
         _menu_text("play_zelda", "Play Zelda", "play zelda", "gamecontroller"),
         *console_menus(game_library),
+        nxnative_menu(nx_ports),
         _menu_text("cleanmymac_scan", "CleanMyMac Scan", "cleanmymac scan", "sparkles"),
         _menu_text("offline_brain_on", "Start Offline Brain", "start offline brain", "brain"),
         _menu_text("offline_brain_off", "Stop Offline Brain", "stop offline brain", "brain.head.profile"),

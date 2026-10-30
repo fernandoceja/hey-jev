@@ -699,6 +699,12 @@ from .games import (
     match_game_close,
 )
 
+from .nxnative import (
+    list_ports as nx_list_ports,
+    play_from_text as nx_play_from_text,
+    launch_port as nx_launch_port,
+)
+
 from .cleanmymac import (
     CLEANMYMAC_APPS,
     CMM_ALREADY,
