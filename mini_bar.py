@@ -8,8 +8,8 @@ numbers the window stores. Nothing here opens a socket.
 The pill stays nonactivating until the field is clicked or Control-Option-J
 focuses it. Return and Esc hand the keyboard back to the app that was in front.
 
-Idle, the pill is a small capsule with only the mic. A click opens the typing
-pill. It closes again when the command finishes, when focus leaves, or on Esc.
+Idle, the bar is the original orb. A click opens the anchored popover beside
+it. It closes again when the command finishes, when focus leaves, or on Esc.
 Holding Option to talk turns that mic blue until the key comes up. While that
 hold is Listening, the mic view draws a level from the same block loudness the
 recorder stores.
@@ -34,7 +34,10 @@ DOCK_GAP = 72.0
 ORB_PANEL = 72.0
 ORB_EDGE_INSET = 12.0
 ORB_SNAP_BAND = 36.0
-PLACEHOLDER = "Type to Jev\u2026"
+PLACEHOLDER = "Describe your task\u2026"
+POPOVER_GAP = 14.0  # 12–16 pt between orb and popover column
+POPOVER_GREETING_GAP = 8.0
+GREETING_NAME = "Fernando"
 # Template-image tint while right Option is held for push-to-talk, and after.
 MIC_TINT_NORMAL = "normal"
 MIC_TINT_SPEAKING = "blue"
@@ -1208,6 +1211,160 @@ def expanded_frame_from_capsule(capsule_frame, expanded_size):
     return (x + w - ew, y + (h - eh) / 2.0, ew, eh)
 
 
+def greeting_text(name=None):
+    who = str(name or GREETING_NAME).strip() or GREETING_NAME
+    return f"Hi, {who}. What can I help with?"
+
+
+def greeting_bubble_size(text=None):
+    """Rounded greeting bubble beside the orb."""
+    line = str(text or greeting_text())
+    width = min(300.0, max(168.0, len(line) * 6.8 + 24.0))
+    height = 34.0
+    return (width, height)
+
+
+def popover_content_width(composer_size=None):
+    cw, _ch = clamp_size(*(composer_size or default_size()))
+    gw, _gh = greeting_bubble_size()
+    return max(cw, gw)
+
+
+def popover_content_height(composer_size=None):
+    _cw, ch = clamp_size(*(composer_size or default_size()))
+    _gw, gh = greeting_bubble_size()
+    return gh + POPOVER_GREETING_GAP + ch
+
+
+def popover_side(orb_screen, content_width, screen):
+    """Place the greeting and composer on the side with room; flip near edges."""
+    ox, _oy, ow, _oh = (float(v) for v in orb_screen)
+    sx, _sy, sw, _sh = (float(v) for v in screen)
+    inset = ORB_EDGE_INSET
+    gap = POPOVER_GAP
+    need = float(content_width) + gap
+    left_room = ox - (sx + inset)
+    right_room = (sx + sw - inset) - (ox + ow)
+    if left_room >= need:
+        return "left"
+    if right_room >= need:
+        return "right"
+    return "left" if left_room >= right_room else "right"
+
+
+def popover_open_animation(reduce_motion=False):
+    """Fade the popover in over ~180 ms with a slight offset toward the orb."""
+    if reduce_motion:
+        return {"duration": 0.0, "offset": 0.0}
+    return {"duration": 0.18, "offset": 8.0}
+
+
+def home_draft_from_popover(text):
+    """Unsent mini-bar text carried into Jev Home without running a turn."""
+    return str(text or "")
+
+
+def popover_layout(composer_rect, screen, name=None):
+    """Window frame and local subview frames for the orb popover.
+
+    `composer_rect` is the remembered 420×44 composer on screen. The orb sits
+    on its right edge while idle, the same anchor as the old typing pill.
+    """
+    cx, cy, cw, ch = (float(v) for v in composer_rect)
+    cw, ch = clamp_size(cw, ch)
+    composer_rect = (cx, cy, cw, ch)
+    orb = (cx + cw - ORB_PANEL, cy + (ch - ORB_PANEL) / 2.0, ORB_PANEL, ORB_PANEL)
+    ox, oy, ow, oh = (float(v) for v in orb)
+    gw, gh = greeting_bubble_size(greeting_text(name))
+    content_w = max(cw, gw)
+    content_h = gh + POPOVER_GREETING_GAP + ch
+    side = popover_side(orb, content_w, screen)
+    gap = POPOVER_GAP
+    if side == "left":
+        content_x = ox - gap - content_w
+        window_x = content_x
+        window_w = content_w + gap + ow
+    else:
+        content_x = ox + ow + gap
+        window_x = ox
+        window_w = ow + gap + content_w
+    orb_cy = oy + oh / 2.0
+    composer_y = orb_cy - ch / 2.0
+    greeting_y = composer_y + ch + POPOVER_GREETING_GAP
+    top = max(greeting_y + gh, oy + oh, composer_y + ch)
+    bottom = min(greeting_y, oy, composer_y)
+    window_y = bottom
+    window_h = top - bottom
+    composer_x = content_x + (content_w - cw) / 2.0
+    greeting_x = content_x + (content_w - gw) / 2.0
+    window_x, window_y = clamp_origin((window_x, window_y), (window_w, window_h), screen)
+    sx, sy, sw, sh = (float(v) for v in screen)
+    inset = ORB_EDGE_INSET
+    if window_y + window_h > sy + sh - inset:
+        window_y = sy + sh - inset - window_h
+    if window_y < sy + inset:
+        window_y = sy + inset
+    if window_x + window_w > sx + sw - inset:
+        window_x = sx + sw - inset - window_w
+    if window_x < sx + inset:
+        window_x = sx + inset
+    # Recompute locals after clamping the window origin.
+    orb_l = (ox - window_x, oy - window_y, ow, oh)
+    composer_l = (composer_x - window_x, composer_y - window_y, cw, ch)
+    greeting_l = (greeting_x - window_x, greeting_y - window_y, gw, gh)
+    return {
+        "frame": (window_x, window_y, window_w, window_h),
+        "side": side,
+        "orb": orb_l,
+        "greeting": greeting_l,
+        "composer": composer_l,
+        "composer_rect": composer_rect,
+    }
+
+
+def window_frame_for_presentation(composer_rect, expanded, screen, name=None):
+    """Collapsed orb window, or the full popover beside it."""
+    if not expanded:
+        return collapsed_frame(composer_rect)
+    layout = popover_layout(composer_rect, screen, name=name)
+    return layout["frame"]
+
+
+def popover_subframes(composer_rect, screen, name=None):
+    """Subview frames for an expanded popover window."""
+    return popover_layout(composer_rect, screen, name=name)
+
+
+def composer_rect_from_window(window_frame, composer_size, screen, name=None):
+    """Recover the remembered composer rect from an expanded popover window."""
+    wx, wy, ww, wh = (float(v) for v in window_frame)
+    size = clamp_size(*(composer_size or default_size()))
+    layout = popover_layout((wx, wy, *size), screen, name=name)
+    expected = layout["frame"]
+    if abs(expected[0] - wx) > 0.5 or abs(expected[1] - wy) > 0.5:
+        # Window moved without updating composer origin; keep saved width/height.
+        return (wx, wy, size[0], size[1])
+    rect = layout["composer_rect"]
+    return (rect[0], rect[1], size[0], size[1])
+
+
+def popover_controls(size=None):
+    """Plus, field, expand, and mic inside the composer row."""
+    width, height = clamp_size(*(size or default_size()))
+    metrics = bar_metrics(width, height)
+    button = metrics["button"]
+    edge = metrics["edge"]
+    gap = metrics["gap"]
+    y = (height - button) / 2.0
+    plus = (edge, y, button, button)
+    mic = (width - edge - button, y, button, button)
+    expand = (mic[0] - gap - button, y, button, button)
+    field_h = metrics["field_h"]
+    field_x = edge + button + gap
+    field = (field_x, (height - field_h) / 2.0, expand[0] - gap - field_x, field_h)
+    return {"plus": plus, "field": field, "expand": expand, "mic": mic}
+
+
 def capsule_controls(size=None):
     """The mic, centered. The idle capsule has no plus button and no field."""
     if size is None:
@@ -1234,12 +1391,15 @@ def capsule_click_moved(start, now, threshold=4.0):
 
 
 def hit_control(x, y, controls=None):
-    """'plus', 'field', or 'mic' when a click lands on that control. Else None.
+    """'plus', 'field', 'expand', or 'mic' when a click lands on that control. Else None.
 
     None means the pill background or an edge. A single click there drags, and a double-click recenters.
     """
     frames = controls or bar_controls()
-    for name in ("plus", "field", "mic"):
+    order = ("plus", "field", "expand", "mic")
+    for name in order:
+        if name not in frames:
+            continue
         rx, ry, rw, rh = frames[name]
         if rx <= x < rx + rw and ry <= y < ry + rh:
             return name

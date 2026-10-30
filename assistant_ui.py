@@ -115,7 +115,14 @@ from mini_bar import (
     collapsed_frame,
     default_size,
     expanded_frame_from_capsule,
+    greeting_text,
+    home_draft_from_popover,
+    popover_controls,
+    popover_open_animation,
+    popover_subframes,
+    screen_for_frame,
     status_shows_in_pill,
+    window_frame_for_presentation,
     drag_origin,
     finish_drag,
     enabled_from_pref,
@@ -502,7 +509,23 @@ class MiniBarBackground(NSView):
         bounds = self.bounds()
         size = (float(bounds.size.width), float(bounds.size.height))
         point = self.convertPoint_fromView_(event.locationInWindow(), None)
-        action = background_action(event.clickCount(), float(point.x), float(point.y), None, size)
+        px, py = float(point.x), float(point.y)
+        controls = None
+        control_size = size
+        if delegate is not None and hasattr(delegate, "_composer_rect"):
+            composer_rect = delegate._composer_rect()
+            screens = delegate._visible_screens() if hasattr(delegate, "_visible_screens") else []
+            screen = screen_for_frame(composer_rect, screens) if screens else None
+            if screen is None and screens:
+                screen = screens[0]
+            layout = popover_subframes(composer_rect, screen or (0.0, 0.0, size[0], size[1]))
+            cx, cy, cw, ch = layout["composer"]
+            if cx <= px < cx + cw and cy <= py < cy + ch:
+                controls = popover_controls((cw, ch))
+                control_size = (cw, ch)
+                px -= cx
+                py -= cy
+        action = background_action(event.clickCount(), px, py, controls, control_size)
         if action == "reset":
             delegate = window.delegate()
             if delegate is not None:
@@ -512,9 +535,24 @@ class MiniBarBackground(NSView):
             down = NSEvent.mouseLocation()
             frame = window.frame()
             start = (float(down.x), float(down.y))
+            delegate = window.delegate()
+            if delegate is not None and not getattr(delegate, "pillCollapsed", False):
+                comp_size = getattr(delegate, "_expanded_size", None) or default_size()
+                original = (0.0, 0.0, float(comp_size[0]), float(comp_size[1]))
+                edges = resize_edges(px, py, control_size)
+                mask = NSEventMaskLeftMouseDragged | NSEventMaskLeftMouseUp
+                while True:
+                    nxt = window.nextEventMatchingMask_(mask)
+                    if nxt is None or nxt.type() == NSEventTypeLeftMouseUp:
+                        break
+                    now = NSEvent.mouseLocation()
+                    _x, _y, w, h = resize_frame(original, edges, start, (float(now.x), float(now.y)))
+                    delegate._expanded_size = (w, h)
+                    delegate._apply_pill_presentation()
+                return
             original = (float(frame.origin.x), float(frame.origin.y),
                         float(frame.size.width), float(frame.size.height))
-            edges = resize_edges(float(point.x), float(point.y), size)
+            edges = resize_edges(px, py, control_size)
             mask = NSEventMaskLeftMouseDragged | NSEventMaskLeftMouseUp
             while True:
                 nxt = window.nextEventMatchingMask_(mask)
@@ -591,6 +629,33 @@ class PillButton(NSButton):
         else:
             color = NSColor.labelColor()
         self.setContentTintColor_(color)
+
+
+class GreetingBubbleView(NSView):
+    """Small speech bubble beside the orb."""
+
+    def drawRect_(self, _rect):
+        try:
+            bounds = self.bounds()
+            width = float(bounds.size.width)
+            height = float(bounds.size.height)
+            if width < 4.0 or height < 4.0:
+                return
+            inset = 0.75
+            radius = min(14.0, height / 2.0 - inset)
+            rect = NSMakeRect(inset, inset, width - inset * 2.0, height - inset * 2.0)
+            path = NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(rect, radius, radius)
+            solid = bool(getattr(self, "solidFill", False))
+            if solid:
+                NSColor.windowBackgroundColor().setFill()
+            else:
+                NSColor.colorWithCalibratedWhite_alpha_(0.12, 0.88).setFill()
+            path.fill()
+            NSColor.separatorColor().colorWithAlphaComponent_(0.55).setStroke()
+            path.setLineWidth_(0.75)
+            path.stroke()
+        except Exception as exc:
+            print(f"  greeting bubble draw failed: {exc}")
 
 
 class MicLevelView(NSView):
@@ -680,8 +745,16 @@ class HoldMicButton(PillButton):
             return
         if target is not None:
             target.miniMicDown_(self)
+        window = self.window()
+        if window is None:
+            target.miniMicUp_(self) if target is not None else None
+            return
+        mask = NSEventMaskLeftMouseDragged | NSEventMaskLeftMouseUp
         try:
-            objc.super(HoldMicButton, self).mouseDown_(event)
+            while True:
+                nxt = window.nextEventMatchingMask_(mask)
+                if nxt is None or nxt.type() == NSEventTypeLeftMouseUp:
+                    break
         finally:
             if target is not None:
                 target.miniMicUp_(self)
@@ -1800,6 +1873,14 @@ class AppDelegate(NSObject):
         self.mini_panel.setContentView_(root)
         self.orb_view = make_orb_view(NSMakeRect(0, 0, 72, 72))
         root.addSubview_(self.orb_view)
+        self.greeting_bubble = GreetingBubbleView.alloc().initWithFrame_(NSMakeRect(0, 0, 10, 10))
+        self.greeting_bubble.setHidden_(True)
+        root.addSubview_(self.greeting_bubble)
+        self.greeting_label = NSTextField.labelWithString_(greeting_text())
+        self.greeting_label.setFont_(NSFont.systemFontOfSize_weight_(13, 0.2))
+        self.greeting_label.setTextColor_(NSColor.labelColor())
+        self.greeting_label.setHidden_(True)
+        root.addSubview_(self.greeting_label)
         self.mini_plus = PillButton.alloc().initWithFrame_(NSMakeRect(0, 0, 10, 10))
         self.mini_plus.setBordered_(False)
         self.mini_plus.setTarget_(self)
@@ -1829,6 +1910,14 @@ class AppDelegate(NSObject):
         self.mini_mic.pillRole = "mic"
         self._set_button_symbol(self.mini_mic, "mic.fill", "Listen")
         root.addSubview_(self.mini_mic)
+        self.mini_expand = PillButton.alloc().initWithFrame_(NSMakeRect(0, 0, 10, 10))
+        self.mini_expand.setBordered_(False)
+        self.mini_expand.setTarget_(self)
+        self.mini_expand.setAction_("miniExpandHome:")
+        self.mini_expand.setImageScaling_(NSImageScaleProportionallyUpOrDown)
+        self.mini_expand.setHidden_(True)
+        self._set_button_symbol(self.mini_expand, "arrow.up.left.and.arrow.down.right", "Expand to Jev Home")
+        root.addSubview_(self.mini_expand)
         self.mic_level_view = MicLevelView.alloc().initWithFrame_(NSMakeRect(0, 0, 10, 10))
         self.mic_level_view.setAmplitude_(0.0)
         root.addSubview_(self.mic_level_view)
@@ -2150,32 +2239,67 @@ class AppDelegate(NSObject):
         self._layout_mini_bar(float(size.width), float(size.height))
 
     @objc.python_method
+    def _composer_rect(self):
+        origin = getattr(self, "_expanded_origin", None) or (0.0, 0.0)
+        size = getattr(self, "_expanded_size", None) or default_size()
+        return (float(origin[0]), float(origin[1]), float(size[0]), float(size[1]))
+
+    @objc.python_method
     def _layout_mini_bar(self, width, height):
-        """Place +, the field, and the mic for this pill size, and scale the type."""
+        """Place the orb popover, or the idle mic capsule."""
         if not hasattr(self, "mini_field"):
             return
         if getattr(self, "pillCollapsed", False):
             self._layout_collapsed_capsule(width, height)
             return
+        composer_rect = self._composer_rect()
+        screens = self._visible_screens()
+        screen = screen_for_frame(composer_rect, screens) if screens else None
+        if screen is None and screens:
+            screen = screens[0]
+        layout = popover_subframes(composer_rect, screen or (0.0, 0.0, float(width), float(height)))
+        ox, oy, ow, oh = layout["orb"]
+        _place(self.orb_view, (ox, oy, ow, oh))
+        gx, gy, gw, gh = layout["greeting"]
+        bubble = getattr(self, "greeting_bubble", None)
+        label = getattr(self, "greeting_label", None)
+        if bubble is not None:
+            bubble.setHidden_(False)
+            _place(bubble, (gx, gy, gw, gh))
+            chrome = getattr(self, "_pill_chrome", {})
+            bubble.solidFill = chrome.get("material") == "solid"
+            bubble.setNeedsDisplay_(True)
+        if label is not None:
+            label.setHidden_(False)
+            label.setStringValue_(greeting_text())
+            _place(label, (gx + 8.0, gy + 6.0, max(40.0, gw - 16.0), max(16.0, gh - 12.0)))
+        cx, cy, cw, ch = layout["composer"]
         self.mini_plus.setHidden_(False)
         self.mini_field.setHidden_(False)
-        frames = bar_controls((width, height))
-        metrics = bar_metrics(width, height)
+        self.mini_expand.setHidden_(False)
+        frames = popover_controls((cw, ch))
+        metrics = bar_metrics(cw, ch)
         on = self._apply_zoe_badge()
-        _place(self.mini_plus, frames["plus"])
+        _place(self.mini_plus, (cx + frames["plus"][0], cy + frames["plus"][1], frames["plus"][2], frames["plus"][3]))
         self.mini_plus.setFont_(NSFont.systemFontOfSize_weight_(metrics["plus_font"], 0.3))
         field = frames["field"]
         badge = 48.0 if on else 0.0
-        _place(self.mini_field, (field[0], field[1], max(40.0, field[2] - badge), field[3]))
+        _place(
+            self.mini_field,
+            (cx + field[0], cy + field[1], max(40.0, field[2] - badge), field[3]),
+        )
         self.mini_field.setFont_(NSFont.systemFontOfSize_(metrics["field_font"]))
-        _place(self.mini_mic, frames["mic"])
-        self._place_mic_level(frames["mic"])
+        expand = frames["expand"]
+        _place(self.mini_expand, (cx + expand[0], cy + expand[1], expand[2], expand[3]))
+        mic = frames["mic"]
+        _place(self.mini_mic, (cx + mic[0], cy + mic[1], mic[2], mic[3]))
+        self._place_mic_level((cx + mic[0], cy + mic[1], mic[2], mic[3]))
         if hasattr(self, "rec_stop"):
-            _place(self.rec_stop, frames["mic"])
-            _place(self.rec_label, (field[0], field[1], min(88.0, field[2]), field[3]))
+            _place(self.rec_stop, (cx + mic[0], cy + mic[1], mic[2], mic[3]))
+            _place(self.rec_label, (cx + field[0], cy + field[1], min(88.0, field[2]), field[3]))
         if hasattr(self, "zoe_label"):
-            _place(self.zoe_label, (field[0] + field[2] - 46.0, field[1], 44.0, field[3]))
-        self._sync_capsule(width, height)
+            _place(self.zoe_label, (cx + field[0] + field[2] - 46.0, cy + field[1], 44.0, field[3]))
+        self._sync_capsule(width, height, popover=True)
         self._sync_recording_ui()
         self._style_pill_field()
         self._refresh_trailing_symbol()
@@ -2190,7 +2314,7 @@ class AppDelegate(NSObject):
         flags = getattr(self, "_pill_chrome", {})
         status = getattr(self, "status", None)
         state = str(status.stringValue()) if status is not None else "Ready"
-        visible = collapsed and panel.isVisible() and self.bar.should_show()
+        visible = panel.isVisible() and self.bar.should_show()
         orb.configure(state, bool(getattr(self, "option_down", False)),
                       getattr(self, "_meter_unit", 0.0), visible,
                       flags.get("motion", True), flags.get("material") == "solid")
@@ -2219,12 +2343,18 @@ class AppDelegate(NSObject):
         frames = capsule_controls((width, height))
         self.mini_plus.setHidden_(True)
         self.mini_field.setHidden_(True)
+        if hasattr(self, "mini_expand"):
+            self.mini_expand.setHidden_(True)
+        for name in ("greeting_bubble", "greeting_label"):
+            view = getattr(self, name, None)
+            if view is not None:
+                view.setHidden_(True)
+        _place(self.orb_view, (0.0, 0.0, width, height))
         _place(self.mini_mic, frames["mic"])
         self._place_mic_level(frames["mic"])
         self.mini_mic.pillRole = "expand"
         if hasattr(self, "rec_stop"):
             _place(self.rec_stop, frames["mic"])
-        self._sync_capsule(width, height)
         self._sync_recording_ui()
         if hasattr(self, "rec_label"):
             self.rec_label.setHidden_(True)
@@ -2234,8 +2364,9 @@ class AppDelegate(NSObject):
         self.mini_field.setHidden_(True)
         recording = hasattr(self, "rec_stop") and not bool(self.rec_stop.isHidden())
         if not recording:
-            self._set_button_symbol(self.mini_mic, "mic.fill", "Type to Jev")
+            self._set_button_symbol(self.mini_mic, "mic.fill", "Open Jev")
         self._apply_mic_tint()
+        self._sync_capsule(width, height, popover=False)
 
     @objc.python_method
     def _sync_expanded_from_window(self):
@@ -2260,21 +2391,30 @@ class AppDelegate(NSObject):
             self._expanded_origin = (restored[0], restored[1])
             self._expanded_size = (restored[2], restored[3])
             return
-        self._expanded_origin = (box[0], box[1])
-        self._expanded_size = (box[2], box[3])
+        composer_rect = self._composer_rect()
+        screens = self._visible_screens()
+        screen = screen_for_frame(composer_rect, screens) if screens else None
+        if screen is None and screens:
+            screen = screens[0]
+        layout = popover_subframes(composer_rect, screen or box)
+        cr = layout["composer_rect"]
+        self._expanded_origin = (cr[0], cr[1])
+        size = getattr(self, "_expanded_size", None) or default_size()
+        self._expanded_size = (float(size[0]), float(size[1]))
 
     @objc.python_method
     def _target_pill_frame(self):
-        origin = getattr(self, "_expanded_origin", None) or (0.0, 0.0)
-        size = getattr(self, "_expanded_size", None) or default_size()
-        expanded = (float(origin[0]), float(origin[1]), float(size[0]), float(size[1]))
-        if getattr(self, "pill", None) is not None and self.pill.expanded:
-            return expanded
-        return orb_frame(expanded)
+        composer_rect = self._composer_rect()
+        screens = self._visible_screens()
+        screen = screen_for_frame(composer_rect, screens) if screens else (0.0, 0.0, 1440.0, 900.0)
+        if screen is None and screens:
+            screen = screens[0]
+        expanded = getattr(self, "pill", None) is not None and self.pill.expanded
+        return window_frame_for_presentation(composer_rect, expanded, screen or (0.0, 0.0, 1440.0, 900.0))
 
     @objc.python_method
-    def _apply_pill_presentation(self):
-        """Resize to the capsule or the typing pill without saving that as the user's size."""
+    def _apply_pill_presentation(self, animate_open=False):
+        """Resize to the orb capsule or the anchored popover."""
         panel = getattr(self, "mini_panel", None)
         if panel is None or not hasattr(self, "pill"):
             return
@@ -2282,11 +2422,24 @@ class AppDelegate(NSObject):
         target = self._target_pill_frame()
         self._suppress_size_save = True
         self._pill_frame_collapsed = self.pillCollapsed
+        flags = self._pill_flags()
+        motion = flags.get("motion", True)
+        anim = popover_open_animation(not motion) if animate_open and not self.pillCollapsed else {"duration": 0.0, "offset": 0.0}
         try:
+            if anim["duration"] > 0.0:
+                panel.setAlphaValue_(0.0)
             panel.setFrame_display_(NSMakeRect(target[0], target[1], target[2], target[3]), True)
             self._layout_mini_bar(target[2], target[3])
         finally:
             self._suppress_size_save = False
+        if anim["duration"] > 0.0:
+            NSAnimationContext.beginGrouping()
+            ctx = NSAnimationContext.currentContext()
+            ctx.setDuration_(anim["duration"])
+            panel.animator().setAlphaValue_(1.0)
+            NSAnimationContext.endGrouping()
+        else:
+            panel.setAlphaValue_(1.0)
         self._apply_mic_tint()
         self._sync_orb()
 
@@ -2325,9 +2478,22 @@ class AppDelegate(NSObject):
             self._focus_pill_field()
             return
         self.pill.click()
-        self._place_expanded_on_main_screen()
-        self._apply_pill_presentation()
+        self._apply_pill_presentation(animate_open=True)
         self._focus_pill_field()
+
+    def miniExpandHome_(self, _sender):
+        """Open Jev Home with the current draft, without submitting a turn."""
+        draft = home_draft_from_popover(getattr(self, "mini_field", None).stringValue() if hasattr(self, "mini_field") else "")
+        if hasattr(self, "pill"):
+            self.pill.escape()
+        self._apply_pill_presentation()
+        self._restore_front_app()
+        self.showMain_(None)
+        self._select_tab("home")
+        field = getattr(self, "home_field", None)
+        if field is not None:
+            field.setStringValue_(draft)
+            self.panel.makeFirstResponder_(field)
 
     @objc.python_method
     def _pill_flags(self):
@@ -2434,8 +2600,8 @@ class AppDelegate(NSObject):
         return view
 
     @objc.python_method
-    def _sync_capsule(self, width, height):
-        radius = float(height) / 2.0
+    def _sync_capsule(self, width, height, popover=False):
+        radius = 12.0 if popover else float(height) / 2.0
         frame = NSMakeRect(0, 0, float(width), float(height))
         panel = getattr(self, "mini_panel", None)
         if panel is not None:
@@ -3398,8 +3564,7 @@ class AppDelegate(NSObject):
             displayed = True
             if hasattr(self, "pill") and self.pill.collapsed:
                 self.pill.reveal_reply()
-                self._place_expanded_on_main_screen()
-                self._apply_pill_presentation()
+                self._apply_pill_presentation(animate_open=True)
             elif hasattr(self, "pill"):
                 self.pill.reveal_reply()
             self._show_bar_reply(shown)
