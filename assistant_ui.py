@@ -117,6 +117,10 @@ from mini_bar import (
     expanded_frame_from_capsule,
     greeting_text,
     home_draft_from_popover,
+    chip_command_plan,
+    popover_chip_ids,
+    POPOVER_CHIPS,
+    refresh_chip_suggestions,
     popover_controls,
     popover_open_animation,
     popover_subframes,
@@ -719,6 +723,31 @@ class MicLevelView(NSView):
             bar = NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(rect, bar_w / 2.0, bar_w / 2.0)
             color.colorWithAlphaComponent_(0.9).setFill()
             bar.fill()
+
+
+class PopoverChipButton(NSButton):
+    """Wrapping quick-action chip under the orb composer."""
+
+    def initWithFrame_(self, frame):
+        self = objc.super(PopoverChipButton, self).initWithFrame_(frame)
+        if self is None:
+            return None
+        self.setBezelStyle_(7)  # NSBezelStyleRounded
+        self.setBordered_(True)
+        self.setTarget_(None)
+        self.setAction_("miniChip:")
+        self.chipId = ""
+        return self
+
+    @objc.python_method
+    def configure(self, chip_id, title, subtitle):
+        self.chipId = str(chip_id or "")
+        if subtitle:
+            self.setTitle_("%s\n%s" % (title, subtitle))
+            self.setFont_(NSFont.systemFontOfSize_(11))
+        else:
+            self.setTitle_(str(title or ""))
+            self.setFont_(NSFont.systemFontOfSize_(12))
 
 
 class HoldMicButton(PillButton):
@@ -1918,6 +1947,44 @@ class AppDelegate(NSObject):
         self.mini_expand.setHidden_(True)
         self._set_button_symbol(self.mini_expand, "arrow.up.left.and.arrow.down.right", "Expand to Jev Home")
         root.addSubview_(self.mini_expand)
+        self._popover_refresh_index = 0
+        self._popover_history_open = False
+        self.popover_history_btn = NSButton.alloc().initWithFrame_(NSMakeRect(0, 0, 10, 10))
+        self.popover_history_btn.setBezelStyle_(7)
+        self.popover_history_btn.setTitle_("History")
+        self.popover_history_btn.setTarget_(self)
+        self.popover_history_btn.setAction_("miniToggleHistory:")
+        self.popover_history_btn.setHidden_(True)
+        root.addSubview_(self.popover_history_btn)
+        self.popover_refresh_btn = NSButton.alloc().initWithFrame_(NSMakeRect(0, 0, 10, 10))
+        self.popover_refresh_btn.setBezelStyle_(7)
+        self.popover_refresh_btn.setTitle_("Refresh")
+        self.popover_refresh_btn.setTarget_(self)
+        self.popover_refresh_btn.setAction_("miniRefreshChips:")
+        self.popover_refresh_btn.setHidden_(True)
+        root.addSubview_(self.popover_refresh_btn)
+        self.popover_history = NSTextView.alloc().initWithFrame_(NSMakeRect(0, 0, 10, 10))
+        self.popover_history.setEditable_(False)
+        self.popover_history.setSelectable_(True)
+        self.popover_history.setDrawsBackground_(True)
+        self.popover_history.setBackgroundColor_(NSColor.quaternaryLabelColor().colorWithAlphaComponent_(0.12))
+        self.popover_history.setFont_(NSFont.systemFontOfSize_(11))
+        self.popover_history.setTextColor_(NSColor.secondaryLabelColor())
+        self.popover_history_scroll = NSScrollView.alloc().initWithFrame_(NSMakeRect(0, 0, 10, 10))
+        self.popover_history_scroll.setDrawsBackground_(False)
+        self.popover_history_scroll.setHasVerticalScroller_(True)
+        self.popover_history_scroll.setAutohidesScrollers_(True)
+        self.popover_history_scroll.setBorderType_(1)
+        self.popover_history_scroll.setDocumentView_(self.popover_history)
+        self.popover_history_scroll.setHidden_(True)
+        root.addSubview_(self.popover_history_scroll)
+        self.popover_chips = []
+        for _index in range(4):
+            chip = PopoverChipButton.alloc().initWithFrame_(NSMakeRect(0, 0, 10, 10))
+            chip.setTarget_(self)
+            chip.setHidden_(True)
+            root.addSubview_(chip)
+            self.popover_chips.append(chip)
         self.mic_level_view = MicLevelView.alloc().initWithFrame_(NSMakeRect(0, 0, 10, 10))
         self.mic_level_view.setAmplitude_(0.0)
         root.addSubview_(self.mic_level_view)
@@ -2114,12 +2181,40 @@ class AppDelegate(NSObject):
             return
         self.bar.reply = ""
         self.mini_field.setStringValue_("")
+        self._dispatch_text_plan(plan)
+
+    def miniChip_(self, sender):
+        chip_id = getattr(sender, "chipId", "") or ""
+        plan = chip_command_plan(chip_id)
+        if plan is None or plan.get("kind") != "run":
+            return
+        self._dispatch_text_plan(plan)
+
+    def miniRefreshChips_(self, _sender):
+        self._popover_refresh_index = refresh_chip_suggestions(getattr(self, "_popover_refresh_index", 0))
+        self._apply_pill_presentation()
+
+    def miniToggleHistory_(self, _sender):
+        self._popover_history_open = not bool(getattr(self, "_popover_history_open", False))
+        self._refresh_popover_history()
+        self._apply_pill_presentation()
+
+    @objc.python_method
+    def _dispatch_text_plan(self, plan):
         local_reply = False
         if plan["kind"] == "run":
-            # Mark the turn before the keyboard goes back, so that blur waits for it.
+            phrase = plan["control"][1]
+            if hasattr(self, "typed"):
+                self.typed.note_request(phrase)
+                self._refresh_home_history()
+                self._refresh_popover_history()
             if hasattr(self, "pill"):
                 self.pill.command_started()
             if not self.worker_started:
+                if hasattr(self, "typed"):
+                    self.typed.note_reply("Add your API keys in the main window first.")
+                    self._refresh_home_history()
+                    self._refresh_popover_history()
                 self._show_bar_reply("Add your API keys in the main window first.")
                 local_reply = True
             else:
@@ -2257,7 +2352,12 @@ class AppDelegate(NSObject):
         screen = screen_for_frame(composer_rect, screens) if screens else None
         if screen is None and screens:
             screen = screens[0]
-        layout = popover_subframes(composer_rect, screen or (0.0, 0.0, float(width), float(height)))
+        layout = popover_subframes(
+            composer_rect,
+            screen or (0.0, 0.0, float(width), float(height)),
+            refresh_index=getattr(self, "_popover_refresh_index", 0),
+            history_open=getattr(self, "_popover_history_open", False),
+        )
         ox, oy, ow, oh = layout["orb"]
         _place(self.orb_view, (ox, oy, ow, oh))
         gx, gy, gw, gh = layout["greeting"]
@@ -2299,6 +2399,7 @@ class AppDelegate(NSObject):
             _place(self.rec_label, (cx + field[0], cy + field[1], min(88.0, field[2]), field[3]))
         if hasattr(self, "zoe_label"):
             _place(self.zoe_label, (cx + field[0] + field[2] - 46.0, cy + field[1], 44.0, field[3]))
+        self._layout_popover_footer(layout)
         self._sync_capsule(width, height, popover=True)
         self._sync_recording_ui()
         self._style_pill_field()
@@ -2349,6 +2450,12 @@ class AppDelegate(NSObject):
             view = getattr(self, name, None)
             if view is not None:
                 view.setHidden_(True)
+        for name in ("popover_history_btn", "popover_refresh_btn", "popover_history_scroll"):
+            view = getattr(self, name, None)
+            if view is not None:
+                view.setHidden_(True)
+        for chip in getattr(self, "popover_chips", []):
+            chip.setHidden_(True)
         _place(self.orb_view, (0.0, 0.0, width, height))
         _place(self.mini_mic, frames["mic"])
         self._place_mic_level(frames["mic"])
@@ -2410,7 +2517,13 @@ class AppDelegate(NSObject):
         if screen is None and screens:
             screen = screens[0]
         expanded = getattr(self, "pill", None) is not None and self.pill.expanded
-        return window_frame_for_presentation(composer_rect, expanded, screen or (0.0, 0.0, 1440.0, 900.0))
+        return window_frame_for_presentation(
+            composer_rect,
+            expanded,
+            screen or (0.0, 0.0, 1440.0, 900.0),
+            refresh_index=getattr(self, "_popover_refresh_index", 0),
+            history_open=getattr(self, "_popover_history_open", False),
+        )
 
     @objc.python_method
     def _apply_pill_presentation(self, animate_open=False):
@@ -3354,6 +3467,52 @@ class AppDelegate(NSObject):
         if view is None or not hasattr(self, "typed"):
             return
         view.setString_(self.typed.text())
+        self._refresh_popover_history()
+
+    @objc.python_method
+    def _refresh_popover_history(self):
+        view = getattr(self, "popover_history", None)
+        if view is None or not hasattr(self, "typed"):
+            return
+        view.setString_(self.typed.text())
+
+    @objc.python_method
+    def _layout_popover_footer(self, layout):
+        cx, cy, cw, ch = layout["composer"]
+        gx, _gy, gw, _gh = layout["greeting"]
+        content_w = max(cw, gw)
+        content_x = cx - (content_w - cw) / 2.0
+        footer = layout.get("footer") or {}
+        toolbar = footer.get("toolbar") or {}
+        for key, btn_name in (("history", "popover_history_btn"), ("refresh", "popover_refresh_btn")):
+            frame = toolbar.get(key)
+            btn = getattr(self, btn_name, None)
+            if btn is None or not frame:
+                continue
+            btn.setHidden_(False)
+            _place(btn, (content_x + frame[0], frame[1], frame[2], frame[3]))
+        scroll = getattr(self, "popover_history_scroll", None)
+        hist = footer.get("history")
+        if scroll is not None:
+            if hist and getattr(self, "_popover_history_open", False):
+                scroll.setHidden_(False)
+                _place(scroll, (content_x + hist[0], hist[1], hist[2], hist[3]))
+                self.popover_history.setFrame_(NSMakeRect(0, 0, hist[2], max(hist[3], 40)))
+            else:
+                scroll.setHidden_(True)
+        chips = footer.get("chips") or []
+        pool = getattr(self, "popover_chips", [])
+        for index, chip_btn in enumerate(pool):
+            if index >= len(chips):
+                chip_btn.setHidden_(True)
+                continue
+            spec = chips[index]
+            chip_id = spec.get("id")
+            info = POPOVER_CHIPS.get(chip_id, {})
+            chip_btn.configure(chip_id, info.get("title", ""), info.get("subtitle", ""))
+            fx, fy, fw, fh = spec["frame"]
+            chip_btn.setHidden_(False)
+            _place(chip_btn, (content_x + fx, fy, fw, fh))
 
     @objc.python_method
     def _sync_recording_ui(self):

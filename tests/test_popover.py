@@ -116,7 +116,10 @@ class TestPopoverWiring(unittest.TestCase):
         home = _func(ui, "miniExpandHome_")
         self.assertIn("home_draft_from_popover", home)
         self.assertIn("showMain_", home)
-        self.assertIn("command_started()", _func(ui, "miniSubmit_"))
+        dispatch = _func(ui, "_dispatch_text_plan")
+        self.assertIn("command_started()", dispatch)
+        self.assertIn("miniRefreshChips_", ui)
+        self.assertIn("miniChip_", ui)
         hold = ui[ui.index("class HoldMicButton"):ui.index("class PillTextField")]
         self.assertIn("nextEventMatchingMask_", hold)
         self.assertIn("miniMicUp_", hold)
