@@ -111,7 +111,8 @@ class TestPasswordRouting(unittest.TestCase):
         ui = open(os.path.join(ROOT, "assistant_ui.py"), encoding="utf-8").read()
         self.assertIn("def miniSubmit_", ui)
         self.assertIn("def homeSubmit_", ui)
-        self.assertEqual(ui.count("plan = submission("), 2)
+        self.assertIn("def fullSubmit_", ui)
+        self.assertEqual(ui.count("plan = submission("), 3)
         for raw in (
             "Password for Netflix",
             "  what's my password for Chase? ",

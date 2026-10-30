@@ -86,7 +86,7 @@ from AppKit import (
     NSWindowStyleMaskResizable,
     NSWindowStyleMaskTitled,
 )
-from Foundation import NSAttributedString, NSString, NSMakeSize, NSObject, NSURL, NSTimer, NSUserDefaults
+from Foundation import NSInsetRect, NSAttributedString, NSMutableAttributedString, NSString, NSMakeSize, NSObject, NSURL, NSTimer, NSUserDefaults
 from assistant_layout import (
     DEFAULT_H,
     DEFAULT_W,
@@ -119,6 +119,7 @@ from mini_bar import (
     greeting_text,
     home_draft_from_popover,
     chip_command_plan,
+    chip_width,
     popover_chip_ids,
     POPOVER_CHIPS,
     refresh_chip_suggestions,
@@ -171,6 +172,7 @@ from mini_bar import (
     is_our_app,
 )
 from orb_view import make_orb_view, orb_frame
+import full_window as fw
 from ptt import PushToTalk
 from secrets_store import KEY_NAMES, OPTIONAL, get_secret, missing_secrets, save_secret
 from commands.model import CLAUDE_MODEL, MODEL_PREF
@@ -428,6 +430,26 @@ class SolidPanelView(NSView):
         NSColor.windowBackgroundColor().setFill()
         NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
             b, POPOVER_PANEL_RADIUS, POPOVER_PANEL_RADIUS).fill()
+
+
+class SolidFullView(NSView):
+    """Flat REA-token fill for the full window (also the Reduce Transparency backing)."""
+
+    def drawRect_(self, _rect):
+        name = getattr(self, "fill", "soft")
+        radius = float(getattr(self, "radius", 0.0))
+        dark = "Dark" in str(self.effectiveAppearance().name())
+        r, g, b = fw.token(name, dark)
+        NSColor.colorWithSRGBRed_green_blue_alpha_(r, g, b, 1.0).setFill()
+        path = NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+            NSInsetRect(self.bounds(), 0.5, 0.5) if getattr(self, "stroke", None) else self.bounds(), radius, radius)
+        path.fill()
+        stroke = getattr(self, "stroke", None)
+        if stroke:
+            r, g, b = fw.token(stroke, dark)
+            NSColor.colorWithSRGBRed_green_blue_alpha_(r, g, b, 1.0).setStroke()
+            path.setLineWidth_(1.0)
+            path.stroke()
 
 
 class PassThroughEffect(NSVisualEffectView):
@@ -2346,6 +2368,10 @@ class AppDelegate(NSObject):
             self._sync_mini_bar()
 
     def windowWillClose_(self, notification):
+        if notification.object() == getattr(self, "full_window", None):
+            # Closing the full window hands back to the orb; nothing else changes.
+            self._sync_mini_bar()
+            return
         if notification.object() == self.panel:
             self._main_closing = True
             self._sync_mini_bar()
@@ -2369,6 +2395,9 @@ class AppDelegate(NSObject):
         NSUserDefaults.standardUserDefaults().setObject_forKey_(format_origin(origin[0], origin[1]), ORIGIN_KEY)
 
     def windowDidResize_(self, notification):
+        if notification.object() == getattr(self, "full_window", None):
+            self._layout_full_window()
+            return
         panel = getattr(self, "mini_panel", None)
         if panel is None or notification.object() != panel:
             return
@@ -2668,18 +2697,246 @@ class AppDelegate(NSObject):
         self._focus_pill_field()
 
     def miniExpandHome_(self, _sender):
-        """Open Jev Home with the current draft, without submitting a turn."""
+        """Expand the popover into the full Jev window, keeping the draft."""
         draft = home_draft_from_popover(getattr(self, "mini_field", None).stringValue() if hasattr(self, "mini_field") else "")
         if hasattr(self, "pill"):
             self.pill.escape()
         self._apply_pill_presentation()
-        self._restore_front_app()
+        self._show_full_window(draft)
+
+    def fullOpenHome_(self, _sender):
+        """The old expand target: Jev Home in the main window."""
+        draft = self.full_field.stringValue() if hasattr(self, "full_field") else ""
         self.showMain_(None)
         self._select_tab("home")
         field = getattr(self, "home_field", None)
         if field is not None:
             field.setStringValue_(draft)
             self.panel.makeFirstResponder_(field)
+
+    @objc.python_method
+    def _fw_color(self, name, alpha=1.0):
+        dark = False
+        try:
+            appearance = self.full_window.effectiveAppearance().name()
+            dark = "Dark" in str(appearance)
+        except Exception:
+            pass
+        r, g, b = fw.token(name, dark)
+        return NSColor.colorWithSRGBRed_green_blue_alpha_(r, g, b, alpha)
+
+    @objc.python_method
+    def _build_full_window(self):
+        w, h = fw.FULL_DEFAULT
+        style = (NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable
+                 | NSWindowStyleMaskResizable | NSWindowStyleMaskFullSizeContentView)
+        win = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
+            NSMakeRect(0, 0, w, h), style, NSBackingStoreBuffered, False)
+        win.setTitle_("Jev")
+        win.setTitleVisibility_(1)
+        win.setTitlebarAppearsTransparent_(True)
+        win.setMovableByWindowBackground_(True)
+        win.setReleasedWhenClosed_(False)
+        win.setMinSize_(NSMakeSize(*fw.FULL_MIN))
+        win.setContentMinSize_(NSMakeSize(*fw.FULL_MIN))
+        win.setDelegate_(self)
+        win.center()
+        win.setFrameAutosaveName_(fw.FULL_AUTOSAVE)  # remembers size and position
+        self.full_window = win
+        root = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, w, h))
+        win.setContentView_(root)
+        self.full_solid = SolidFullView.alloc().initWithFrame_(NSMakeRect(0, 0, w, h))
+        root.addSubview_(self.full_solid)
+        self.full_effect = NSVisualEffectView.alloc().initWithFrame_(NSMakeRect(0, 0, w, h))
+        self.full_effect.setMaterial_(SIDEBAR_MATERIAL)
+        self.full_effect.setBlendingMode_(NSVisualEffectBlendingModeBehindWindow)
+        self.full_effect.setState_(NSVisualEffectStateFollowsWindowActiveState)
+        root.addSubview_(self.full_effect)
+        self.full_main = SolidFullView.alloc().initWithFrame_(NSMakeRect(fw.SIDEBAR_W, 0, w - fw.SIDEBAR_W, h))
+        self.full_main.fill = "page"
+        root.addSubview_(self.full_main)
+
+        def label(text, size, weight, color):
+            f = NSTextField.labelWithString_(text)
+            f.setFont_(NSFont.systemFontOfSize_weight_(size, weight))
+            f.setTextColor_(color)
+            root.addSubview_(f)
+            return f
+
+        self.full_side_title = label("History", 11, 0.4, NSColor.secondaryLabelColor())
+        self.full_header = label("Jev", 17, 0.4, NSColor.labelColor())
+        self.full_home_btn = NSButton.buttonWithTitle_target_action_("Jev Home", self, "fullOpenHome:")
+        self.full_home_btn.setBezelStyle_(14 if hasattr(self.full_home_btn, "setBezelStyle_") else 1)
+        self.full_home_btn.setBordered_(False)
+        self.full_home_btn.setContentTintColor_(NSColor.secondaryLabelColor())
+        self.full_home_btn.setFont_(NSFont.systemFontOfSize_(12))
+        root.addSubview_(self.full_home_btn)
+
+        def scrolled(font, card):
+            tv = NSTextView.alloc().initWithFrame_(NSMakeRect(0, 0, 100, 100))
+            tv.setEditable_(False)
+            tv.setSelectable_(True)
+            tv.setDrawsBackground_(False)
+            tv.setFont_(font)
+            tv.setTextContainerInset_(NSMakeSize(10, 10) if card else NSMakeSize(4, 6))
+            tv.setAutoresizingMask_(NSViewWidthSizable)
+            tv.setVerticallyResizable_(True)
+            tv.setHorizontallyResizable_(False)
+            tv.textContainer().setWidthTracksTextView_(True)
+            sc = NSScrollView.alloc().initWithFrame_(NSMakeRect(0, 0, 100, 100))
+            sc.setDrawsBackground_(False)
+            sc.setHasVerticalScroller_(True)
+            sc.setAutohidesScrollers_(True)
+            sc.setDocumentView_(tv)
+            root.addSubview_(sc)
+            return tv, sc
+
+        self.full_card = SolidFullView.alloc().initWithFrame_(NSMakeRect(0, 0, 10, 10))
+        self.full_card.fill = "soft"
+        self.full_card.radius = 12.0
+        self.full_card.stroke = "line"
+        root.addSubview_(self.full_card)
+        self.full_result_title = label("Result", 11, 0.4, NSColor.secondaryLabelColor())
+        self.full_divider = SolidFullView.alloc().initWithFrame_(NSMakeRect(0, 0, 1, 10))
+        self.full_divider.fill = "line"
+        root.addSubview_(self.full_divider)
+        self.full_history, self.full_history_scroll = scrolled(NSFont.systemFontOfSize_(12.5), False)
+        self.full_convo, self.full_convo_scroll = scrolled(NSFont.systemFontOfSize_(13.5), False)
+        self.full_result, self.full_result_scroll = scrolled(
+            NSFont.monospacedSystemFontOfSize_weight_(12, 0.0), True)
+        self.full_input_bg = SolidFullView.alloc().initWithFrame_(NSMakeRect(0, 0, 10, 10))
+        self.full_input_bg.fill = "soft"
+        self.full_input_bg.radius = fw.INPUT_H / 2.0
+        root.addSubview_(self.full_input_bg)
+        self.full_field = NSTextField.alloc().initWithFrame_(NSMakeRect(0, 0, 10, 10))
+        self.full_field.setBezeled_(False)
+        self.full_field.setDrawsBackground_(False)
+        self.full_field.setFocusRingType_(1)
+        self.full_field.setFont_(NSFont.systemFontOfSize_(14))
+        self.full_field.setPlaceholderString_("Ask Jev anything…")
+        self.full_field.setTarget_(self)
+        self.full_field.setAction_("fullSubmit:")
+        root.addSubview_(self.full_field)
+        self.full_mic = HoldMicButton.alloc().initWithFrame_(NSMakeRect(0, 0, 10, 10))
+        self.full_mic.setBordered_(False)
+        self.full_mic.setTarget_(self)
+        self.full_mic.setImageScaling_(NSImageScaleProportionallyUpOrDown)
+        self.full_mic.pillRole = "mic"
+        self._set_button_symbol(self.full_mic, "mic.fill", "Hold to talk")
+        root.addSubview_(self.full_mic)
+        self.full_chips = []
+        for chip_id in popover_chip_ids(0):
+            info = POPOVER_CHIPS.get(chip_id, {})
+            btn = PopoverChipButton.alloc().initWithFrame_(NSMakeRect(0, 0, 10, 10))
+            btn.configure(chip_id, info.get("title", chip_id), info.get("subtitle", ""))
+            btn.setTarget_(self)
+            root.addSubview_(btn)
+            self.full_chips.append(btn)
+        self._apply_full_chrome()
+        self._layout_full_window()
+
+    @objc.python_method
+    def _apply_full_chrome(self):
+        ws = NSWorkspace.sharedWorkspace()
+        try:
+            reduce_t = bool(ws.accessibilityDisplayShouldReduceTransparency())
+        except Exception:
+            reduce_t = False
+        chrome = fw.full_chrome(reduce_t)
+        self.full_effect.setHidden_(chrome["backing"] == "solid")
+        self.full_solid.fill = "soft"
+        self.full_solid.setHidden_(chrome["backing"] != "solid")
+        for view in (self.full_solid, self.full_main, self.full_input_bg):
+            view.setNeedsDisplay_(True)
+        self.full_card.setNeedsDisplay_(True)
+        self.full_result_title.setTextColor_(self._fw_color("muted"))
+        self.full_header.setTextColor_(self._fw_color("ink"))
+        self.full_side_title.setTextColor_(self._fw_color("muted"))
+
+    @objc.python_method
+    def _layout_full_window(self):
+        win = getattr(self, "full_window", None)
+        if win is None:
+            return
+        size = win.contentView().frame().size
+        lay = fw.full_layout(size.width, size.height)
+        R = lambda r: NSMakeRect(*r)
+        cw, ch = lay["size"]
+        self.full_solid.setFrame_(R((0, 0, cw, ch)))
+        self.full_effect.setFrame_(R(lay["sidebar"]))
+        self.full_main.setFrame_(R((fw.SIDEBAR_W, 0, cw - fw.SIDEBAR_W, ch)))
+        self.full_side_title.setFrame_(R(lay["sidebar_title"]))
+        self.full_history_scroll.setFrame_(R(lay["history"]))
+        hx, hy, hw, hh = lay["header"]
+        self.full_header.setFrame_(R((hx, hy, hw - 90, hh)))
+        self.full_home_btn.setFrame_(R((hx + hw - 84, hy, 84, hh)))
+        self.full_convo_scroll.setFrame_(R(lay["conversation"]))
+        self.full_divider.setFrame_(R((fw.SIDEBAR_W, 0, 1, ch)))
+        if lay["result"]:
+            rx, ry, rw, rh = lay["result"]
+            self.full_card.setFrame_(R((rx, ry, rw, rh - 18)))
+            self.full_result_scroll.setFrame_(R((rx + 1, ry + 1, rw - 2, rh - 20)))
+            self.full_result_title.setFrame_(R((rx + 2, ry + rh - 16, rw, 16)))
+        self.full_input_bg.setFrame_(R(lay["field"]))
+        fx, fy, fwid, fh = lay["field"]
+        self.full_field.setFrame_(R((fx + 16, fy + (fh - 20) / 2.0, fwid - 32, 20)))
+        mx, my, mw, mh = lay["mic"]
+        self.full_mic.setFrame_(R((mx + 8, my + 8, mw - 16, mh - 16)))
+        widths = {b.chipId: chip_width(b.chipId) for b in self.full_chips}
+        placed = {c["id"]: c["frame"] for c in fw.chip_frames([b.chipId for b in self.full_chips], widths, lay["chips"])}
+        for b in self.full_chips:
+            frame = placed.get(b.chipId)
+            b.setHidden_(frame is None)
+            if frame is not None:
+                b.setFrame_(R(frame))
+
+    @objc.python_method
+    def _refresh_full_window(self):
+        if getattr(self, "full_window", None) is None or not hasattr(self, "typed"):
+            return
+        rows = list(self.typed.rows)
+        items = fw.history_items(rows)
+        self.full_history.setString_("\n\n".join(items) if items else "Nothing yet.")
+        self.full_history.setTextColor_(self._fw_color("ink"))
+        text = NSMutableAttributedString.alloc().init()
+        for who, line in fw.conversation_lines(rows):
+            name_attrs = {NSFontAttributeName: NSFont.systemFontOfSize_weight_(12, 0.4),
+                          NSForegroundColorAttributeName: self._fw_color("accent" if who == "Jev" else "muted")}
+            body_attrs = {NSFontAttributeName: NSFont.systemFontOfSize_(13.5),
+                          NSForegroundColorAttributeName: self._fw_color("ink")}
+            text.appendAttributedString_(NSAttributedString.alloc().initWithString_attributes_(who + "\n", name_attrs))
+            text.appendAttributedString_(NSAttributedString.alloc().initWithString_attributes_(line + "\n\n", body_attrs))
+        if not rows:
+            text = NSAttributedString.alloc().initWithString_attributes_(
+                "Hi, I'm Jev. Type below, tap a chip, or hold the mic to talk.",
+                {NSFontAttributeName: NSFont.systemFontOfSize_(13.5),
+                 NSForegroundColorAttributeName: self._fw_color("muted")})
+        self.full_convo.textStorage().setAttributedString_(text)
+        self.full_convo.scrollToEndOfDocument_(None)
+        result = fw.last_result(rows) or "Results and tool output show here."
+        self.full_result.setString_(result)
+        self.full_result.setTextColor_(self._fw_color("ink" if fw.last_result(rows) else "muted"))
+
+    @objc.python_method
+    def _show_full_window(self, draft=""):
+        if getattr(self, "full_window", None) is None:
+            self._build_full_window()
+        self._apply_full_chrome()
+        self._layout_full_window()
+        self._refresh_full_window()
+        if draft:
+            self.full_field.setStringValue_(draft)
+        NSApp.activateIgnoringOtherApps_(True)
+        self.full_window.makeKeyAndOrderFront_(None)
+        self.full_window.makeFirstResponder_(self.full_field)
+
+    def fullSubmit_(self, _sender):
+        plan = submission(self.full_field.stringValue(), "")
+        if plan is None:
+            return
+        self.full_field.setStringValue_("")
+        self._dispatch_text_plan(plan)
+        self._refresh_full_window()
 
     @objc.python_method
     def _pill_flags(self):
@@ -3553,6 +3810,7 @@ class AppDelegate(NSObject):
         if view is None or not hasattr(self, "typed"):
             return
         view.setString_(self.typed.text())
+        self._refresh_full_window()
 
     @objc.python_method
     def _layout_popover_footer(self, layout):
@@ -3794,6 +4052,7 @@ class AppDelegate(NSObject):
         if shown and getattr(self, "typed", None) is not None and self.typed.pending:
             self.typed.note_reply(shown)
             self._refresh_home_history()
+            self._refresh_full_window()
         option_down = bool(getattr(self, "option_down", False))
         show_line = bool(shown) and status_shows_in_pill(state, option_down)
         displayed = False
