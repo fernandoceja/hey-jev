@@ -37,7 +37,29 @@ ORB_SNAP_BAND = 36.0
 PLACEHOLDER = "Describe your task\u2026"
 POPOVER_GAP = 14.0  # 12–16 pt between orb and popover column
 POPOVER_GREETING_GAP = 8.0
+POPOVER_FOOTER_GAP = 10.0
+POPOVER_TOOLBAR_H = 28.0
+POPOVER_CHIP_H = 40.0
+POPOVER_CHIP_GAP = 8.0
+POPOVER_CHIP_PAD_X = 14.0
+POPOVER_HISTORY_H = 88.0
 GREETING_NAME = "Fernando"
+
+# Quick-action chips below the composer. Refresh rotates pages locally only.
+POPOVER_CHIPS = {
+    "eta_home": {"title": "ETA home", "subtitle": "", "phrase": "eta home"},
+    "hazard_check": {"title": "Hazard Check", "subtitle": "", "phrase": "hazard check"},
+    "plan_day": {"title": "Plan my day", "subtitle": "Today's brief", "phrase": "brief me"},
+    "mac_health": {"title": "Mac health", "subtitle": "CleanMyMac scan only.", "phrase": "cleanmymac scan"},
+    "weather": {"title": "Weather", "subtitle": "Local forecast", "phrase": "what's the weather"},
+    "time": {"title": "Time", "subtitle": "Clock check", "phrase": "what time is it"},
+    "joke": {"title": "Joke", "subtitle": "Quick laugh", "phrase": "tell me a joke"},
+    "eta_work": {"title": "ETA work", "subtitle": "Commute", "phrase": "what's my ETA to work"},
+}
+POPOVER_CHIP_PAGES = (
+    ("eta_home", "hazard_check", "plan_day", "mac_health"),
+    ("weather", "time", "joke", "eta_work"),
+)
 # Template-image tint while right Option is held for push-to-talk, and after.
 MIC_TINT_NORMAL = "normal"
 MIC_TINT_SPEAKING = "blue"
@@ -1230,10 +1252,104 @@ def popover_content_width(composer_size=None):
     return max(cw, gw)
 
 
-def popover_content_height(composer_size=None):
+def popover_chip_ids(refresh_index=0):
+    """Chip ids for one suggestion page. Refresh changes the page, not a command."""
+    pages = POPOVER_CHIP_PAGES
+    if not pages:
+        return ()
+    idx = int(refresh_index) % len(pages)
+    return pages[idx]
+
+
+def refresh_chip_suggestions(refresh_index):
+    """Next local suggestion page. Never queues a command."""
+    pages = len(POPOVER_CHIP_PAGES)
+    if pages <= 0:
+        return 0
+    return (int(refresh_index) + 1) % pages
+
+
+def chip_width(chip_id):
+    """Approximate chip width from title and optional subtitle."""
+    info = POPOVER_CHIPS.get(str(chip_id or ""), {})
+    title = str(info.get("title") or "")
+    subtitle = str(info.get("subtitle") or "")
+    title_w = len(title) * 7.4 + POPOVER_CHIP_PAD_X * 2.0
+    if subtitle:
+        sub_w = len(subtitle) * 6.6 + POPOVER_CHIP_PAD_X * 2.0
+        return max(72.0, title_w, sub_w)
+    return max(64.0, title_w)
+
+
+def chip_command_plan(chip_id):
+    """Queue the chip phrase through the same path as typing Return."""
+    info = POPOVER_CHIPS.get(str(chip_id or ""))
+    if not info:
+        return None
+    return submission(str(info.get("phrase") or ""))
+
+
+def _layout_chip_row(chip_ids, content_w, origin_x, row_top_y):
+    """Wrap chips within `content_w`. `row_top_y` is the top edge of the first row."""
+    frames = []
+    x = float(origin_x)
+    y = float(row_top_y)
+    row_h = POPOVER_CHIP_H
+    max_x = origin_x + content_w
+    for chip_id in chip_ids:
+        w = chip_width(chip_id)
+        if x > origin_x and x + w > max_x + 0.5:
+            x = float(origin_x)
+            y -= row_h + POPOVER_CHIP_GAP
+        frames.append({"id": chip_id, "frame": (x, y - row_h, w, row_h)})
+        x += w + POPOVER_CHIP_GAP
+    bottom = y - row_h
+    if frames:
+        bottom = min(f["frame"][1] for f in frames)
+    return frames, bottom
+
+
+def popover_footer_layout(content_w, composer_bottom_y, refresh_index=0, history_open=False):
+    """Toolbar, optional history, and wrapping chips below the composer."""
+    content_w = float(content_w)
+    origin_x = 0.0
+    toolbar_y = float(composer_bottom_y) - POPOVER_FOOTER_GAP - POPOVER_TOOLBAR_H
+    toolbar = {
+        "history": (origin_x, toolbar_y, 88.0, POPOVER_TOOLBAR_H),
+        "refresh": (origin_x + 96.0, toolbar_y, 88.0, POPOVER_TOOLBAR_H),
+    }
+    cursor_y = toolbar_y - POPOVER_CHIP_GAP
+    history = None
+    if history_open:
+        history_h = POPOVER_HISTORY_H
+        history_y = cursor_y - history_h
+        history = (origin_x, history_y, content_w, history_h)
+        cursor_y = history_y - POPOVER_CHIP_GAP
+    chip_ids = popover_chip_ids(refresh_index)
+    chips, chip_bottom = _layout_chip_row(chip_ids, content_w, origin_x, cursor_y)
+    footer_bottom = chip_bottom
+    footer_top = float(composer_bottom_y)
+    return {
+        "toolbar": toolbar,
+        "history": history,
+        "chips": chips,
+        "footer_bottom": footer_bottom,
+        "footer_top": footer_top,
+    }
+
+
+def popover_footer_height(refresh_index=0, history_open=False, content_w=BAR_W):
+    """Vertical space for the popover footer below the composer."""
+    footer = popover_footer_layout(content_w, 0.0, refresh_index, history_open)
+    return POPOVER_FOOTER_GAP + (0.0 - footer["footer_bottom"]) + POPOVER_FOOTER_GAP
+
+
+def popover_content_height(composer_size=None, refresh_index=0, history_open=False):
     _cw, ch = clamp_size(*(composer_size or default_size()))
     _gw, gh = greeting_bubble_size()
-    return gh + POPOVER_GREETING_GAP + ch
+    content_w = max(_cw, _gw)
+    footer = popover_footer_height(refresh_index, history_open, content_w)
+    return gh + POPOVER_GREETING_GAP + ch + footer
 
 
 def popover_side(orb_screen, content_width, screen):
@@ -1264,7 +1380,7 @@ def home_draft_from_popover(text):
     return str(text or "")
 
 
-def popover_layout(composer_rect, screen, name=None):
+def popover_layout(composer_rect, screen, name=None, refresh_index=0, history_open=False):
     """Window frame and local subview frames for the orb popover.
 
     `composer_rect` is the remembered 420×44 composer on screen. The orb sits
@@ -1277,7 +1393,8 @@ def popover_layout(composer_rect, screen, name=None):
     ox, oy, ow, oh = (float(v) for v in orb)
     gw, gh = greeting_bubble_size(greeting_text(name))
     content_w = max(cw, gw)
-    content_h = gh + POPOVER_GREETING_GAP + ch
+    footer_h = popover_footer_height(refresh_index, history_open, content_w)
+    content_h = gh + POPOVER_GREETING_GAP + ch + footer_h
     side = popover_side(orb, content_w, screen)
     gap = POPOVER_GAP
     if side == "left":
@@ -1291,8 +1408,10 @@ def popover_layout(composer_rect, screen, name=None):
     orb_cy = oy + oh / 2.0
     composer_y = orb_cy - ch / 2.0
     greeting_y = composer_y + ch + POPOVER_GREETING_GAP
+    footer = popover_footer_layout(content_w, composer_y, refresh_index, history_open)
+    footer_bottom_screen = footer["footer_bottom"]
     top = max(greeting_y + gh, oy + oh, composer_y + ch)
-    bottom = min(greeting_y, oy, composer_y)
+    bottom = min(greeting_y, oy, composer_y, footer_bottom_screen)
     window_y = bottom
     window_h = top - bottom
     composer_x = content_x + (content_w - cw) / 2.0
@@ -1312,6 +1431,12 @@ def popover_layout(composer_rect, screen, name=None):
     orb_l = (ox - window_x, oy - window_y, ow, oh)
     composer_l = (composer_x - window_x, composer_y - window_y, cw, ch)
     greeting_l = (greeting_x - window_x, greeting_y - window_y, gw, gh)
+    footer_local = popover_footer_layout(
+        content_w,
+        composer_l[1],
+        refresh_index,
+        history_open,
+    )
     return {
         "frame": (window_x, window_y, window_w, window_h),
         "side": side,
@@ -1319,20 +1444,33 @@ def popover_layout(composer_rect, screen, name=None):
         "greeting": greeting_l,
         "composer": composer_l,
         "composer_rect": composer_rect,
+        "footer": footer_local,
     }
 
 
-def window_frame_for_presentation(composer_rect, expanded, screen, name=None):
+def window_frame_for_presentation(composer_rect, expanded, screen, name=None, refresh_index=0, history_open=False):
     """Collapsed orb window, or the full popover beside it."""
     if not expanded:
         return collapsed_frame(composer_rect)
-    layout = popover_layout(composer_rect, screen, name=name)
+    layout = popover_layout(
+        composer_rect,
+        screen,
+        name=name,
+        refresh_index=refresh_index,
+        history_open=history_open,
+    )
     return layout["frame"]
 
 
-def popover_subframes(composer_rect, screen, name=None):
+def popover_subframes(composer_rect, screen, name=None, refresh_index=0, history_open=False):
     """Subview frames for an expanded popover window."""
-    return popover_layout(composer_rect, screen, name=name)
+    return popover_layout(
+        composer_rect,
+        screen,
+        name=name,
+        refresh_index=refresh_index,
+        history_open=history_open,
+    )
 
 
 def composer_rect_from_window(window_frame, composer_size, screen, name=None):
