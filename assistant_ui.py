@@ -4,6 +4,7 @@ The window is resizable. Frames come from assistant_layout so a smaller window
 reflows instead of clipping. The frame is saved under HeyJevMainWindow, and a
 missing or offscreen frame is centered.
 """
+import functools
 import json
 import math
 import os
@@ -13,6 +14,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 from datetime import datetime
 
 import objc
@@ -195,7 +197,7 @@ from orb_motion import (
 )
 from orb_view import make_orb_view, orb_frame, orb_state
 from orb_motion import (  # PR 6a: expand from the orb, dock on the divider, collapse back
-    EXPAND_START_SCALE, ORB_STATE_COLLAPSING, ORB_STATE_EXPANDING, ORB_STATE_IDLE,
+    EXPAND_START_SCALE, ORB_STATE_COLLAPSING, ORB_STATE_EXPANDING, ORB_STATE_IDLE, ORB_STATE_OPEN,
     SPRING_EXPAND, collapse_target, dock_point, expand_rects, orb_window_next,
 )
 from area_hotkey import AreaCaptureHotKey
@@ -379,6 +381,26 @@ def hid_modifier_flags():
         return int(Quartz.CGEventSourceFlagsState(Quartz.kCGEventSourceStateHIDSystemState))
     except Exception:
         return None
+
+
+def orb_guarded(fn):
+    """Log a traceback instead of letting an error in an orb transition take the app down.
+
+    On failure the orb settles on what is really on screen, so the state is never left stuck.
+    """
+    @functools.wraps(fn)
+    def wrapper(self, *args, **kwargs):
+        try:
+            return fn(self, *args, **kwargs)
+        except Exception:
+            print("  orb transition failed in {0}:".format(fn.__name__))
+            traceback.print_exc()
+            try:
+                self._orb_recover()
+            except Exception:
+                traceback.print_exc()
+            return None
+    return wrapper
 
 
 class CenteredFieldCell(NSTextFieldCell):
@@ -3933,9 +3955,10 @@ class AppDelegate(NSObject):
         flags = getattr(self, "_pill_chrome", {})
         status = getattr(self, "status", None)
         state = str(status.stringValue()) if status is not None else "Ready"
-        visible = panel.isVisible() and self.bar.should_show()
         full = getattr(self, "full_window", None)
         docked = self._orb_docked_now() or (full is not None and bool(full.isVisible()))
+        # While the window is open the docked orb stays up, whatever the bar's show/hide rules say.
+        visible = (panel.isVisible() or docked) and (self.bar.should_show() or docked)
         orb.configure(state, bool(getattr(self, "option_down", False)),
                       getattr(self, "_meter_unit", 0.0), visible,
                       flags.get("motion", True), flags.get("material") == "solid",
@@ -4255,6 +4278,7 @@ class AppDelegate(NSObject):
         self._orb_spring_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             DRAG_TICK_SECONDS, self, "orbSpringTick:", None, True)
 
+    @orb_guarded
     def orbSpringTick_(self, _timer):
         state = getattr(self, "_orb_spring", None)
         if state is None:
@@ -4268,6 +4292,16 @@ class AppDelegate(NSObject):
         self._place_orb_rect(rect)
         if done:
             self._stop_orb_spring()
+
+    @objc.python_method
+    def _orb_recover(self):
+        """After a failed transition: stop the motion and settle the state on what is really on screen."""
+        self._stop_orb_spring()
+        self._remove_orb_ghost()
+        full = getattr(self, "full_window", None)
+        self._orb_window_state = ORB_STATE_OPEN if (full is not None and full.isVisible()) else ORB_STATE_IDLE
+        print("  orb recovered to {0}".format(self._orb_window_state))
+        self._sync_orb()
 
     @objc.python_method
     def _stop_orb_spring(self):
@@ -4286,6 +4320,7 @@ class AppDelegate(NSObject):
         self._orb_land_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             max(0.01, float(seconds)), self, "orbTransitionLanded:", None, False)
 
+    @orb_guarded
     def orbTransitionLanded_(self, _timer):
         self._orb_land_timer = None
         state = self._orb_window_state_now()
@@ -4295,6 +4330,7 @@ class AppDelegate(NSObject):
             self._land_orb_collapse()
 
     @objc.python_method
+    @orb_guarded
     def _expand_orb_to_full(self, draft=""):
         """The window grows out of the orb. The orb springs to the divider at half size and stops bobbing."""
         panel = getattr(self, "mini_panel", None)
@@ -4318,6 +4354,7 @@ class AppDelegate(NSObject):
         if draft:
             self.full_field.setStringValue_(draft)
         window_frame = self._frame_tuple(self.full_window.frame())
+        self._orb_window_target = window_frame  # the real window lands on exactly this frame
         orb_rect = self._frame_tuple(panel.frame())
         self._orb_undocked_frame = orb_rect
         screen = screen_for_frame(orb_rect, self._visible_screens())
@@ -4350,14 +4387,23 @@ class AppDelegate(NSObject):
         self._schedule_orb_landing(duration)
 
     @objc.python_method
+    @orb_guarded
     def _land_orb_expand(self):
         self._stop_orb_spring()
         full = self.full_window
         panel = self.mini_panel
+        target = getattr(self, "_orb_window_target", None)
+        if target is not None:
+            full.setFrame_display_(NSMakeRect(*target), False)  # land exactly where the ghost ended
         self._place_orb_rect(dock_point(self._frame_tuple(full.frame())))
         NSApp.activateIgnoringOtherApps_(True)
         full.makeKeyAndOrderFront_(None)
+        print("  orb expand: window frame={0} visible={1}".format(
+            tuple(round(v, 1) for v in self._frame_tuple(full.frame())), bool(full.isVisible())))
         full.addChildWindow_ordered_(panel, NSWindowAbove)  # the orb follows the window from here on
+        panel.orderFront_(None)  # docked orb stays on screen while the window is open
+        print("  orb expand: docked orb visible={0} child={1}".format(
+            bool(panel.isVisible()), panel.parentWindow() is full))
         draft = getattr(self, "_orb_expand_draft", "")
         if draft:
             self.full_field.setStringValue_(draft)
@@ -4369,6 +4415,7 @@ class AppDelegate(NSObject):
             time.monotonic() - getattr(self, "_orb_started", time.monotonic()), getattr(self, "_orb_ticks", 0)))
 
     @objc.python_method
+    @orb_guarded
     def _collapse_orb_from_full(self):
         """The exact reverse of the expand: snapshot, hide the window, shrink the ghost into the orb's origin."""
         if not self._set_orb_window_state("collapse"):
@@ -4411,6 +4458,7 @@ class AppDelegate(NSObject):
         self._schedule_orb_landing(duration)
 
     @objc.python_method
+    @orb_guarded
     def _land_orb_collapse(self):
         self._stop_orb_spring()
         self._place_orb_rect(self._orb_collapse_to)

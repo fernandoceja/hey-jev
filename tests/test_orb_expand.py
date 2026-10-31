@@ -224,6 +224,25 @@ class ExpandWiringTests(unittest.TestCase):
         collapse = _func(self.ui, "_collapse_orb_from_full")
         self.assertLess(collapse.index("orb = self.orb_view"), collapse.index("orb collapse: start"))
 
+    def test_transitions_are_guarded_and_recover(self):
+        ui = self.ui
+        for name in ("_land_orb_expand", "_land_orb_collapse", "_expand_orb_to_full", "_collapse_orb_from_full"):
+            self.assertIn("@orb_guarded", ui[ui.index(f"def {name}") - 200:ui.index(f"def {name}")], name)
+        self.assertIn("traceback.print_exc()", ui)
+        self.assertIn("_orb_recover", _func(ui, "orb_guarded") if "def orb_guarded" in ui else ui)
+        self.assertIn("ORB_STATE_OPEN", ui)  # the recovery path names every state it can settle on
+
+    def test_landing_puts_the_window_on_the_ghost_frame(self):
+        land = _func(self.ui, "_land_orb_expand")
+        self.assertIn("setFrame_display_(NSMakeRect(*target)", land)
+        self.assertLess(land.index("setFrame_display_"), land.index("makeKeyAndOrderFront_"))
+        self.assertIn("_orb_window_target", _func(self.ui, "_expand_orb_to_full"))
+
+    def test_docked_orb_stays_visible_while_the_window_is_open(self):
+        sync = _func(self.ui, "_sync_orb")
+        self.assertIn("(panel.isVisible() or docked) and (self.bar.should_show() or docked)", sync)
+        self.assertIn("panel.orderFront_(None)", _func(self.ui, "_land_orb_expand"))
+
     def test_closing_the_window_collapses_it(self):
         self.assertIn("_collapse_orb_from_full", _func(self.ui, "windowWillClose_"))
 
