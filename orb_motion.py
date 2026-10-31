@@ -568,16 +568,32 @@ def result_frames(text, width=RESULT_WIDTH):
     }
 
 
-def result_layout(orb_frame, screen, text, width=RESULT_WIDTH, gap=MENU_GAP):
-    """Result panel frame beside the orb, on the side popover_side picks, clamped on screen."""
+def beside_orb(orb_frame, screen, pw, ph, gap=MENU_GAP):
+    """A pw x ph panel beside the orb, on the side popover_side picks, centred on the orb and clamped on screen."""
     from mini_bar import popover_side  # lazy: mini_bar imports this module at load time
     ox, oy, ow, oh = (float(v) for v in orb_frame)
     sx, sy, sw, sh = (float(v) for v in screen)
-    frames = result_frames(text, width)
-    pw, ph = frames["panel"]
     side = popover_side((ox, oy, ow, oh), pw, (sx, sy, sw, sh))
     px = ox + ow + gap if side == "right" else ox - gap - pw
     px = min(max(px, sx + MENU_SCREEN_INSET), sx + sw - MENU_SCREEN_INSET - pw)
     py = oy + oh / 2.0 - ph / 2.0
     py = min(max(py, sy + MENU_SCREEN_INSET), sy + sh - MENU_SCREEN_INSET - ph)
     return {"panel": (px, py, pw, ph), "side": side}
+
+
+def result_layout(orb_frame, screen, text, width=RESULT_WIDTH, gap=MENU_GAP):
+    """Result panel frame beside the orb, on the side popover_side picks, clamped on screen."""
+    pw, ph = result_frames(text, width)["panel"]
+    return beside_orb(orb_frame, screen, pw, ph, gap)
+
+
+# PR 5a: the Find Image hint. Shown only after the copy and the Lens open both succeed.
+HINT_WIDTH = 300.0
+HINT_HEIGHT = 52.0
+HINT_SECONDS = 5.0  # it fades out by itself after this
+HINT_TEXT_INSET = 14.0
+
+
+def hint_layout(orb_frame, screen, width=HINT_WIDTH, height=HINT_HEIGHT, gap=MENU_GAP):
+    """Hint bubble frame beside the orb, the same placement rule as the result panel."""
+    return beside_orb(orb_frame, screen, width, height, gap)

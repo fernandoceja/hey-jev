@@ -377,7 +377,7 @@ def test_copy_image_and_find_image_call_the_real_functions_in_the_capture_thread
     ui = _ui()
     run = _body(ui, "    def _run_action_menu_capture(self, ident):")
     assert "run_capture_menu('share_copy', book=BOOK)" in run
-    assert "ask_from_text('ask google about this', book=BOOK)" in run
+    assert "execute_ask(ask_plan(\"google\", \"capture\", path=path))" in run
 
 
 def test_the_capture_thread_logs_each_click_and_outcome():
@@ -411,3 +411,67 @@ def test_the_button_is_a_view_with_a_hit_test_so_its_children_never_take_the_cli
     assert "def acceptsFirstMouse_(self, _event):" in cls
     assert "return True" in _body(cls, "    def acceptsFirstMouse_(self, _event):")
     assert "self.pick_target.actionMenuPick_(self)" in _body(cls, "    def mouseDown_(self, _event):")
+
+
+# PR 5a: the Find Image hint bubble.
+
+from mini_bar import FIND_IMAGE_HINT
+
+
+def test_the_hint_text_is_exact_and_uses_the_command_key():
+    assert FIND_IMAGE_HINT == "Image copied. Press \u2318V in Lens to search."
+
+
+def test_the_hint_is_five_seconds_and_fits_beside_the_orb_on_screen():
+    assert om.HINT_SECONDS == 5.0
+    for orb in ((600.0, 400.0, 72.0, 72.0), (1400.0, 400.0, 72.0, 72.0), (0.0, 0.0, 72.0, 72.0)):
+        px, py, pw, ph = om.hint_layout(orb, SCREEN)["panel"]
+        assert (pw, ph) == (om.HINT_WIDTH, om.HINT_HEIGHT)
+        assert px >= SCREEN[0] and px + pw <= SCREEN[0] + SCREEN[2]
+        assert py >= SCREEN[1] and py + ph <= SCREEN[1] + SCREEN[3]
+        assert px + pw <= orb[0] or px >= orb[0] + orb[2]  # clear of the orb
+
+
+def test_the_hint_is_built_nonactivating_at_bar_level_in_the_result_style():
+    ui = _ui()
+    build = _body(ui, "    def _build_hint_panel(self):")
+    assert "NSWindowStyleMaskNonactivatingPanel" in build
+    assert "panel.setLevel_(BAR_LEVEL)" in build
+    show = _body(ui, "    def _show_hint(self, text):")
+    assert "NSVisualEffectMaterialHUDWindow" in show
+    assert "MENU_CORNER_RADIUS" in show  # 14 pt
+    assert "self._animate_result_in(content.layer())" in show  # the same 0.96 to 1, 0.15 s entrance
+    for header in ("    def _build_hint_panel(self):", "    def _show_hint(self, text):",
+                   "    def _close_hint(self):", "    def findImageHint_(self, _payload):"):
+        body = _body(ui, header)
+        for banned in ("activateIgnoringOtherApps", "makeKeyAndOrderFront", "makeKey", "showMain"):
+            assert banned not in body, (header, banned)
+
+
+def test_the_hint_is_shown_only_after_the_copy_and_the_lens_open_both_succeed():
+    ui = _ui()
+    run = _body(ui, "    def _run_action_menu_capture(self, ident):")
+    branch = run[run.index('if ident == "ask_google":'):run.index('payload = json.dumps')]
+    assert "execute_ask(ask_plan(" in branch
+    # The hint call sits after execute_ask, with no except path that could still reach it.
+    assert branch.index("execute_ask(") < branch.index("findImageHint:")
+    assert "except" not in branch.split("findImageHint:")[0].split("execute_ask(")[1]
+
+
+def test_the_hint_closes_on_its_timer_on_esc_and_on_a_click():
+    ui = _ui()
+    assert "self._sync_hint_dismiss()" in ui
+    assert "self._sync_hint_dismiss" in ui and "HINT_SECONDS" in _body(ui, "    def _sync_hint_dismiss(self):")
+    local = _body(ui, "    def _local_key(self, event):")
+    assert "self._hint_open" in local and "self._close_hint()" in local
+    globe = _body(ui, "    def _global_type_key(self, event):")
+    assert "self._close_hint()" in globe
+    click = _body(ui, "    def mouseDown_(self, _event):")  # HintClickView
+    assert "self.dismiss_target.hintDismiss_(self)" in ui
+
+
+def test_the_hint_never_touches_the_orb_panel_level_or_flags():
+    ui = _ui()
+    for header in ("    def _show_hint(self, text):", "    def _build_hint_panel(self):", "    def _close_hint(self):"):
+        body = _body(ui, header)
+        assert "mini_panel.setLevel_" not in body and "mini_panel.setFloatingPanel_" not in body

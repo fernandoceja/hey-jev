@@ -187,10 +187,10 @@ from orb_view import make_orb_view, orb_frame, orb_state
 from area_hotkey import AreaCaptureHotKey
 from orb_motion import (
     MENU_CORNER_RADIUS, MENU_FILL_HOVER, MENU_FILL_REST, MENU_FAN_START_SCALE, MENU_HOVER_SECONDS,
-    RESULT_FADE_SECONDS, RESULT_SCALE_FROM, SPRING_MENU_FAN, TEXT_ACTIONS, menu_layout, result_frames,
-    result_layout,
+    HINT_SECONDS, HINT_TEXT_INSET, RESULT_FADE_SECONDS, RESULT_SCALE_FROM, SPRING_MENU_FAN, TEXT_ACTIONS,
+    hint_layout, menu_layout, result_frames, result_layout,
 )
-from mini_bar import capture_outcome, menu_on_drop, orb_action_menu
+from mini_bar import FIND_IMAGE_HINT, capture_outcome, menu_on_drop, orb_action_menu
 import full_window as fw
 from ptt import PushToTalk
 from secrets_store import KEY_NAMES, OPTIONAL, get_secret, missing_secrets, save_secret
@@ -1086,6 +1086,19 @@ class ActionMenuButton(NSView):
         set_action_fill(self.circle_layer, MENU_FILL_REST)
 
 
+class HintClickView(NSView):
+    """Covers the Find Image hint. A click on it dismisses the hint."""
+
+    dismiss_target = None
+
+    def acceptsFirstMouse_(self, _event):
+        return True
+
+    def mouseDown_(self, _event):
+        if self.dismiss_target is not None:
+            self.dismiss_target.hintDismiss_(self)
+
+
 def result_pill(title, frame, scale, target, action):
     """Copy and Close on the result panel: a small rounded pill with a faint white fill."""
     pill = NSButton.alloc().initWithFrame_(NSMakeRect(*frame))
@@ -1140,6 +1153,10 @@ class AppDelegate(NSObject):
     _result_open = False
     _result_heading = ""
     _result_text = ""
+    # PR 5a: the Find Image hint bubble. Nonactivating; closes on its own, on Esc, or on a click on it.
+    _hint_panel = None
+    _hint_open = False
+    _hint_shown_at = 0.0
     _action_menu_shown_at = 0.0
     _orb_dragging = False
 
@@ -1979,6 +1996,9 @@ class AppDelegate(NSObject):
             return None
 
         if event.keyCode() == 53:
+            if self._hint_open:
+                self._close_hint()
+                return None
             if self._result_open:
                 self._close_result_panel()
                 return None
@@ -1999,6 +2019,8 @@ class AppDelegate(NSObject):
         return event
 
     def _global_type_key(self, event):
+        if event.keyCode() == 53 and self._hint_open:
+            self._close_hint()  # PR 5a: Esc closes the hint even while Chrome has focus
         if event.keyCode() == 53 and self._action_menu_open:
             self._close_action_menu()  # PR 5a: Esc closes the action menu even while another app is active
         flags = event.modifierFlags()
@@ -2723,7 +2745,7 @@ class AppDelegate(NSObject):
         """
         print(f"  action menu: {ident} clicked")
         try:
-            from commands.captures import BOOK, ask_from_text, run_capture_menu, take_screenshot
+            from commands.captures import BOOK, ask_plan, execute_ask, run_capture_menu, take_screenshot
             print("  action menu: capture started (area)")
             sentence = take_screenshot("area", book=BOOK)
             outcome = capture_outcome(sentence)
@@ -2740,7 +2762,10 @@ class AppDelegate(NSObject):
                 print(f"  action menu: copy image: {run_capture_menu('share_copy', book=BOOK)}")
                 return
             if ident == "ask_google":
-                print(f"  action menu: find image: {ask_from_text('ask google about this', book=BOOK)}")
+                # ask_plan + execute_ask: the copy and the Lens open each raise on failure, so no exception = both worked.
+                execute_ask(ask_plan("google", "capture", path=path))
+                print("  action menu: find image copied and opened Lens")
+                self.performSelectorOnMainThread_withObject_waitUntilDone_("findImageHint:", "", False)
                 return
         except Exception as exc:
             print(f"  action menu: {ident} failed: {exc}")
@@ -2762,6 +2787,91 @@ class AppDelegate(NSObject):
             self._open_choice_question()
             return
         print(f"  action menu: no handler for {ident}")
+
+    # PR 5a: the Find Image hint. The same dark style as the result panel; nonactivating so Chrome keeps focus.
+    @objc.python_method
+    def _build_hint_panel(self):
+        style = NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel
+        panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
+            NSMakeRect(0, 0, 300, 52), style, NSBackingStoreBuffered, False)
+        panel.setLevel_(BAR_LEVEL)
+        panel.setFloatingPanel_(True)
+        panel.setHidesOnDeactivate_(False)
+        panel.setBecomesKeyOnlyIfNeeded_(True)
+        panel.setOpaque_(False)
+        panel.setBackgroundColor_(NSColor.clearColor())
+        panel.setHasShadow_(True)
+        panel.setCollectionBehavior_(BAR_COLLECTION)
+        panel.setReleasedWhenClosed_(False)
+        panel.setAccessibilityLabel_("Jev hint")
+        self._hint_panel = panel
+        return panel
+
+    @objc.python_method
+    def _show_hint(self, text):
+        if self._hint_panel is None:
+            self._build_hint_panel()
+        window = getattr(self, "mini_panel", None)
+        if window is None:
+            return
+        frame = window.frame()
+        orb = (float(frame.origin.x), float(frame.origin.y), float(frame.size.width), float(frame.size.height))
+        screens = self._visible_screens() or [(0.0, 0.0, 1440.0, 900.0)]
+        screen = screen_for_frame(orb, screens) or screens[0]
+        layout = hint_layout(orb, screen)
+        px, py, pw, ph = layout["panel"]
+        panel = self._hint_panel
+        panel.setFrame_display_(NSMakeRect(px, py, pw, ph), False)
+        scale = float(panel.backingScaleFactor())
+        if NSWorkspace.sharedWorkspace().accessibilityDisplayShouldReduceTransparency():
+            content = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, pw, ph))
+            content.setWantsLayer_(True)
+            content.layer().setBackgroundColor_(NSColor.colorWithCalibratedWhite_alpha_(0.12, 0.96).CGColor())
+        else:
+            content = NSVisualEffectView.alloc().initWithFrame_(NSMakeRect(0, 0, pw, ph))
+            content.setMaterial_(NSVisualEffectMaterialHUDWindow)
+            content.setBlendingMode_(NSVisualEffectBlendingModeBehindWindow)
+            content.setState_(NSVisualEffectStateActive)
+            content.setWantsLayer_(True)
+        content.layer().setCornerRadius_(MENU_CORNER_RADIUS)
+        content.layer().setMasksToBounds_(True)
+        content.layer().setContentsScale_(scale)
+        inset = HINT_TEXT_INSET
+        body = NSTextField.wrappingLabelWithString_(text)
+        body.setFrame_(NSMakeRect(inset, 10.0, pw - 2.0 * inset, ph - 20.0))
+        body.setFont_(NSFont.systemFontOfSize_(13))
+        body.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(0.92, 1.0))
+        content.addSubview_(body)
+        click = HintClickView.alloc().initWithFrame_(NSMakeRect(0, 0, pw, ph))
+        click.dismiss_target = self
+        content.addSubview_(click)  # on top: a click on the hint dismisses it
+        panel.setContentView_(content)
+        self._hint_open = True
+        self._hint_shown_at = time.time()
+        panel.orderFrontRegardless()
+        orb_view = getattr(self, "orb_view", None)
+        if not bool(getattr(orb_view, "reduceMotion", False)):
+            self._animate_result_in(content.layer())
+
+    @objc.python_method
+    def _close_hint(self):
+        panel = self._hint_panel
+        if panel is not None and panel.isVisible():
+            panel.orderOut_(None)
+        self._hint_open = False
+        self._hint_shown_at = 0.0
+
+    def findImageHint_(self, _payload):
+        self._show_hint(FIND_IMAGE_HINT)
+        print("  action menu: find image hint shown")
+
+    def hintDismiss_(self, _sender):
+        self._close_hint()
+
+    @objc.python_method
+    def _sync_hint_dismiss(self):
+        if self._hint_open and time.time() - self._hint_shown_at >= HINT_SECONDS:
+            self._close_hint()
 
     # PR 5a (extra direction): Summarize and Translate. A dark rounded panel beside the orb, calm fade and scale.
     @objc.python_method
@@ -4948,6 +5058,7 @@ class AppDelegate(NSObject):
         self._sync_recording_ui()
         self._sync_choice_dismiss()
         self._sync_action_menu_dismiss()
+        self._sync_hint_dismiss()
         self._sync_zoe_ui()
         self._sync_orb()
 

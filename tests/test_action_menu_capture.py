@@ -69,3 +69,43 @@ def test_capture_outcome_names_the_three_ends():
     assert capture_outcome("Cancelled.") == "cancelled"
     assert capture_outcome("Saved an area screenshot to your Captures folder.") == "saved"
     assert capture_outcome("Couldn't take a screenshot.") == "failed"
+
+
+def test_the_find_image_plan_copies_then_opens_lens_and_returns_the_speech(tmp_path):
+    from commands.captures import ask_plan, execute_ask
+    book = captures.CaptureBook()
+    captures.take_screenshot("area", folder=str(tmp_path), book=book, run=_fake_screencapture())
+    run = _fake_screencapture()
+    plan = ask_plan("google", "capture", path=book.last["path"])
+    speech = execute_ask(plan, run=run)
+    assert speech == plan["speech"]
+    assert run.calls[0][0] == "osascript"  # the copy first
+    assert any("https://lens.google.com/upload" in argv for argv in run.calls)
+
+
+def test_a_failed_copy_raises_so_the_hint_is_never_shown(tmp_path):
+    import pytest
+    from commands.captures import ask_plan, execute_ask
+    book = captures.CaptureBook()
+    captures.take_screenshot("area", folder=str(tmp_path), book=book, run=_fake_screencapture())
+
+    def failing(argv, timeout=None, **_kwargs):
+        raise RuntimeError("osascript failed")
+
+    with pytest.raises(RuntimeError):
+        execute_ask(ask_plan("google", "capture", path=book.last["path"]), run=failing)
+
+
+def test_a_failed_lens_open_raises_so_the_hint_is_never_shown(tmp_path):
+    import pytest
+    from commands.captures import ask_plan, execute_ask
+    book = captures.CaptureBook()
+    captures.take_screenshot("area", folder=str(tmp_path), book=book, run=_fake_screencapture())
+
+    def copy_ok_open_fails(argv, timeout=None, **_kwargs):
+        if argv[0] == "open":
+            raise RuntimeError("open failed")
+        return ""
+
+    with pytest.raises(RuntimeError):
+        execute_ask(ask_plan("google", "capture", path=book.last["path"]), run=copy_ok_open_fails)

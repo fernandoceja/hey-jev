@@ -671,6 +671,10 @@ def capture_saved(sentence):
     return text.startswith(("Saved a ", "Saved an ")) or text.startswith("Saved the recording")
 
 
+# Shown after Find Image copies the capture and opens Lens. The command key is U+2318.
+FIND_IMAGE_HINT = "Image copied. Press \u2318V in Lens to search."
+
+
 def capture_outcome(sentence):
     """What a menu capture ended with, for the log: "saved", "cancelled" (Esc or a zero-size selection), or "failed"."""
     text = " ".join(str(sentence or "").split())
