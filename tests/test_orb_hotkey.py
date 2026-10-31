@@ -100,12 +100,16 @@ class HotkeyWiringTests(unittest.TestCase):
         self.assertEqual(area_hotkey.CARBON_CONTROL | area_hotkey.CARBON_OPTION, 0x1800)
         self.assertEqual(area_hotkey.AreaCaptureHotKey.__mro__[1], area_hotkey.CarbonHotKey)
 
-    def test_the_spotlight_activates_before_it_becomes_key_and_logs_one_tick_later(self):
+    def test_the_spotlight_is_non_activating_so_it_takes_key_without_activating_jev(self):
         opener = _func(self.ui, "_open_orb_spotlight")
-        self.assertLess(opener.index("NSApp.activateIgnoringOtherApps_(True)"), opener.index("makeKeyAndOrderFront_"))
-        self.assertIn("orderFrontRegardless", opener)
+        self.assertIn("NSWindowStyleMaskNonactivatingPanel", opener)
+        self.assertNotIn("activateIgnoringOtherApps_(True)", opener)
+        self.assertLess(opener.index("makeKeyAndOrderFront_"), opener.index("orderFrontRegardless"))
         self.assertIn("setHidesOnDeactivate_(False)", opener)
-        self.assertIn('"orb spotlight: after open key={0} visible={1} occlusion={2}"', _func(self.ui, "spotlightAfterOpen_"))
+        after = _func(self.ui, "spotlightAfterOpen_")
+        self.assertIn('"orb spotlight: after open key={0} visible={1} occlusion={2}"', after)
+        self.assertIn('"orb spotlight: retry activate key={0}"', after)
+        self.assertIn("NSApp.activate()", after)  # macOS 14, the one retry
 
     def test_every_drop_logs_its_roughness(self):
         self.assertIn('"orb drag: end reversals={0} fast_s={1:.2f} rough={2}"', _func(self.ui, "_finalize_mini_bar_drag"))

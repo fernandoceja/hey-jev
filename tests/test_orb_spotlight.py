@@ -1,4 +1,4 @@
-"""PR 8: the orb's Spotlight-style panel. Rows, arrow keys and placement beside the orb, headless."""
+"""PR 8: the Spotlight-style panel. Rows, arrow keys and placement on the screen, headless."""
 import unittest
 
 import orb_spotlight as sp
@@ -47,6 +47,7 @@ class KeyTests(unittest.TestCase):
 
 
 class PlacementTests(unittest.TestCase):
+    """Spotlight placement: centred horizontally on the screen with the mouse, top edge a quarter down."""
     SCREEN = (0.0, 0.0, 1440.0, 900.0)
 
     def _inside(self, frame, bounds):
@@ -54,30 +55,31 @@ class PlacementTests(unittest.TestCase):
         bx, by, bw, bh = bounds
         return x >= bx - 1e-6 and y >= by - 1e-6 and x + w <= bx + bw + 1e-6 and y + h <= by + bh + 1e-6
 
-    def test_panel_sits_to_the_right_of_the_orb_and_is_centred_on_it(self):
-        orb = (600.0, 400.0, 72.0, 72.0)
-        x, y, w, h = sp.spotlight_frame(orb, self.SCREEN)
-        self.assertAlmostEqual(x, orb[0] + orb[2] + sp.SPOTLIGHT_GAP)
-        self.assertAlmostEqual(y + h / 2.0, orb[1] + orb[3] / 2.0)
+    def test_the_panel_is_centred_horizontally(self):
+        x, _y, w, _h = sp.spotlight_frame(self.SCREEN)
+        self.assertAlmostEqual(x + w / 2.0, 720.0)
 
-    def test_panel_flips_to_the_left_when_the_orb_is_at_the_right_edge(self):
-        orb = (1400.0, 400.0, 72.0, 72.0)
-        frame = sp.spotlight_frame(orb, self.SCREEN)
-        self.assertTrue(self._inside(frame, self.SCREEN))
-        self.assertLess(frame[0] + frame[2], orb[0])
+    def test_its_top_edge_is_a_quarter_of_the_height_down_from_the_top(self):
+        _x, y, _w, h = sp.spotlight_frame(self.SCREEN)
+        self.assertAlmostEqual(y + h, 900.0 * 0.75)
 
-    def test_panel_stays_on_screen_near_the_top_and_bottom_edges(self):
-        for orb in [(600.0, 0.0, 72.0, 72.0), (600.0, 828.0, 72.0, 72.0), (1300.0, 0.0, 72.0, 72.0)]:
-            self.assertTrue(self._inside(sp.spotlight_frame(orb, self.SCREEN), self.SCREEN), orb)
+    def test_it_is_placed_on_the_visible_frame_it_is_given(self):
+        visible = (1440.0, 60.0, 1920.0, 1000.0)  # a second screen with a non-zero origin
+        x, y, w, h = sp.spotlight_frame(visible)
+        self.assertAlmostEqual(x + w / 2.0, 1440.0 + 960.0)
+        self.assertAlmostEqual(y + h, 60.0 + 1000.0 * 0.75)
 
-    def test_placement_is_inside_a_screen_with_a_nonzero_origin(self):
-        screen = (-1440.0, 60.0, 1440.0, 800.0)
-        orb = (-100.0, 300.0, 72.0, 72.0)
-        self.assertTrue(self._inside(sp.spotlight_frame(orb, screen), screen))
+    def test_it_stays_inside_a_small_visible_frame(self):
+        small = (0.0, 0.0, 600.0, 400.0)  # smaller than the screen, but tall enough for the panel
+        self.assertTrue(self._inside(sp.spotlight_frame(small), small))
 
-    def test_size_is_the_panel_width_and_height_by_default(self):
-        _x, _y, w, h = sp.spotlight_frame((600.0, 400.0, 72.0, 72.0), self.SCREEN)
+    def test_default_size_is_the_panel_width_and_height(self):
+        _x, _y, w, h = sp.spotlight_frame(self.SCREEN)
         self.assertEqual((w, h), (sp.SPOTLIGHT_WIDTH, sp.panel_height()))
+
+    def test_a_given_size_is_used(self):
+        _x, _y, w, h = sp.spotlight_frame(self.SCREEN, size=(500.0, 300.0))
+        self.assertEqual((w, h), (500.0, 300.0))
 
 
 class AnimationTests(unittest.TestCase):

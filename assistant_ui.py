@@ -2522,17 +2522,17 @@ class AppDelegate(NSObject):
         from Quartz import CABasicAnimation, CAMediaTimingFunction
         if getattr(self, "_spotlight", None) is not None:
             self._close_orb_spotlight("reopen")
-        panel_frame = getattr(self, "mini_panel", None)
-        if panel_frame is None:
-            return
-        orb_rect = self._frame_tuple(panel_frame.frame())
+        # Spotlight-style: on the screen that holds the mouse, centred, a quarter down from the top of its visible frame.
+        mouse = NSEvent.mouseLocation()
         screens = self._visible_screens()
-        screen = screen_for_frame(orb_rect, screens) if screens else None
+        screen = screen_for_frame((float(mouse.x), float(mouse.y), 1.0, 1.0), screens) if screens else None
         visible = screen or (0.0, 0.0, 1440.0, 900.0)
-        x, y, w, h = spotlight_frame(orb_rect, visible)
+        x, y, w, h = spotlight_frame(visible)
 
+        # Non-activating, so it can take key focus while another app stays the active one (PR 7b follow-up).
         win = OrbSpotlightPanel.alloc().initWithContentRect_styleMask_backing_defer_(
-            NSMakeRect(x, y, w, h), NSWindowStyleMaskBorderless, NSBackingStoreBuffered, False)
+            NSMakeRect(x, y, w, h), NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel,
+            NSBackingStoreBuffered, False)
         win.setOpaque_(False)
         win.setBackgroundColor_(NSColor.clearColor())
         win.setHasShadow_(True)  # the soft shadow follows the rounded glass
@@ -2610,11 +2610,31 @@ class AppDelegate(NSObject):
 
         win.setHidesOnDeactivate_(False)  # the panel stays up when another app is frontmost
         win.setAlphaValue_(0.0)
-        NSApp.activateIgnoringOtherApps_(True)  # activate first, so the panel can become key
         win.makeKeyAndOrderFront_(None)
-        win.orderFrontRegardless()
         win.makeFirstResponder_(field)
+        win.orderFrontRegardless()
         print("orb spotlight: level={0} key={1}".format(win.level(), bool(win.isKeyWindow())), flush=True)
+        # Any mouse-down outside the panel, in any app, closes it. The monitors live only while it is open.
+        from AppKit import NSEventMaskLeftMouseDown, NSEventMaskOtherMouseDown, NSEventMaskRightMouseDown
+        mask = NSEventMaskLeftMouseDown | NSEventMaskRightMouseDown | NSEventMaskOtherMouseDown
+
+        def outside_any_app(_event):
+            point = NSEvent.mouseLocation()
+            frame = win.frame()
+            inside = (frame.origin.x <= point.x <= frame.origin.x + frame.size.width
+                      and frame.origin.y <= point.y <= frame.origin.y + frame.size.height)
+            if not inside:
+                self._close_orb_spotlight("click outside")
+
+        def outside_jev(event):
+            if event.window() is not win:
+                self._close_orb_spotlight("click outside")
+            return event
+
+        state["monitors"] = [
+            NSEvent.addGlobalMonitorForEventsMatchingMask_handler_(mask, outside_any_app),
+            NSEvent.addLocalMonitorForEventsMatchingMask_handler_(mask, outside_jev),
+        ]
         self._spotlight_check = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             0.1, self, "spotlightAfterOpen:", None, False)
         content.setWantsLayer_(True)
@@ -2640,6 +2660,15 @@ class AppDelegate(NSObject):
             return
         print("orb spotlight: after open key={0} visible={1} occlusion={2}".format(
             bool(panel.isKeyWindow()), bool(panel.isVisible()), int(panel.occlusionState())), flush=True)
+        if not panel.isKeyWindow() and not state.get("retried"):
+            state["retried"] = True  # one retry only: activate Jev, then ask for key again
+            if hasattr(NSApp, "activate"):
+                NSApp.activate()  # macOS 14
+            else:
+                NSApp.activateIgnoringOtherApps_(True)
+            panel.makeKeyAndOrderFront_(None)
+            panel.makeFirstResponder_(state["field"])
+            print("orb spotlight: retry activate key={0}".format(bool(panel.isKeyWindow())), flush=True)
 
     @objc.python_method
     def _close_orb_spotlight(self, reason):
@@ -2649,6 +2678,8 @@ class AppDelegate(NSObject):
             return
         state["closing"] = True
         self._spotlight = None
+        for monitor in state.get("monitors", []):
+            NSEvent.removeMonitor_(monitor)
         panel = state.get("panel")
         if panel is not None:
             panel.setDelegate_(None)
@@ -2825,6 +2856,7 @@ class AppDelegate(NSObject):
     @objc.python_method
     def _pill_drag_began(self):
         """An orb drag started: hide the typing pill at once. Logs what it hid, or that nothing was visible."""
+        self._close_orb_spotlight("orb drag")
         if getattr(self, "_pill_drag_hidden", None):
             return
         views = self._pill_drag_views()
@@ -2875,6 +2907,7 @@ class AppDelegate(NSObject):
 
     def captureAreaWand_(self, _sender):
         """Command-W: the same area capture the orb menu runs today. The crosshair appears, and the usual choices follow."""
+        self._close_orb_spotlight("capture area")
         threading.Thread(target=self._capture_for_bar, args=("area",), daemon=True).start()
 
     def toggleOnTop_(self, _sender):
@@ -3508,6 +3541,7 @@ class AppDelegate(NSObject):
     # Every step is logged to Hey Jev.log. Strokes are kept in global points, and nothing is uploaded.
     @objc.python_method
     def _open_markup(self):
+        self._close_orb_spotlight("mark up")
         if self._markup_live() or getattr(self, "_markup_saving", False):
             return
         screens = list(NSScreen.screens() or [])
@@ -4889,6 +4923,7 @@ class AppDelegate(NSObject):
 
     def expandMiniBar_(self, _sender):
         """A click on the idle capsule opens the typing pill and shows the caret."""
+        self._close_orb_spotlight("type box")
         if not hasattr(self, "pill"):
             return
         if self._tuck_active():
@@ -4925,6 +4960,7 @@ class AppDelegate(NSObject):
 
     def expandOrbToFull_(self, _sender):
         """A single click on the orb (R2). On a docked orb it collapses instead, the same as a click on the orb."""
+        self._close_orb_spotlight("orb click")
         if self._orb_docked_now():
             self._collapse_orb_from_full()
             return
@@ -5089,6 +5125,7 @@ class AppDelegate(NSObject):
     @objc.python_method
     @orb_guarded
     def _expand_orb_to_full(self, draft=""):
+        self._close_orb_spotlight("full window")
         """The window grows out of the orb. The orb springs to the divider at half size and stops bobbing."""
         panel = getattr(self, "mini_panel", None)
         orb = getattr(self, "orb_view", None)
@@ -5533,6 +5570,7 @@ class AppDelegate(NSObject):
 
     @objc.python_method
     def _show_full_window(self, draft=""):
+        self._close_orb_spotlight("full window")
         if getattr(self, "full_window", None) is None:
             self._build_full_window()
         self._apply_full_chrome()
@@ -6445,6 +6483,7 @@ class AppDelegate(NSObject):
 
         It never opens or focuses the full window. That happens only from the orb click, Open Jev, or Settings.
         """
+        self._close_orb_spotlight("hotkey")
         if not hasattr(self, "pill"):
             return
         docked = self._orb_docked_now()

@@ -293,7 +293,7 @@ class SpotlightLevelTests(unittest.TestCase):
         self.assertIn("NSWindowCollectionBehaviorFullScreenAuxiliary", opener)
         self.assertIn("orb spotlight: level={0} key={1}", opener)
         self.assertIn("makeKeyAndOrderFront_", opener)
-        self.assertIn("NSApp.activateIgnoringOtherApps_(True)", opener)
+        self.assertIn("NSWindowStyleMaskNonactivatingPanel", opener)
         self.assertIn("def canBecomeKeyWindow", _source("assistant_ui.py"))
 
 
