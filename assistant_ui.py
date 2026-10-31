@@ -182,6 +182,9 @@ from orb_motion import (
     spring, spring_done,
 )
 from orb_view import make_orb_view, orb_frame, orb_state
+from capture_zone import (
+    ZONE_H, ZONE_RADIUS, ZONE_TEXT, ZONE_W, CaptureZone, screen_at, zone_frame, zone_state,
+)
 import full_window as fw
 from ptt import PushToTalk
 from secrets_store import KEY_NAMES, OPTIONAL, get_secret, missing_secrets, save_secret
@@ -511,6 +514,82 @@ class PillChromeOverlay(NSView):
             print(f"  mini bar draw failed: {exc}")
 
 
+class CaptureZonePanel:
+    """The 260 x 56 edge capture zone: a nonactivating HUD strip that ignores the mouse.
+
+    Built on first use. It sits at BAR_LEVEL, just below the orb, and the orb's own panel is not changed.
+    Every layer gets the window's backing scale. There is no shadow and no shadowPath.
+    """
+
+    def __init__(self, orb_window):
+        from Quartz import CALayer, CAShapeLayer, CGPathCreateWithRoundedRect, CGRectMake
+        style = NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel
+        panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
+            NSMakeRect(0, 0, ZONE_W, ZONE_H), style, NSBackingStoreBuffered, False)
+        panel.setLevel_(BAR_LEVEL)
+        panel.setFloatingPanel_(True)
+        panel.setHidesOnDeactivate_(False)
+        panel.setOpaque_(False)
+        panel.setBackgroundColor_(NSColor.clearColor())
+        panel.setHasShadow_(False)
+        panel.setIgnoresMouseEvents_(True)
+        panel.setReleasedWhenClosed_(False)
+        panel.setCollectionBehavior_(BAR_COLLECTION)
+        panel.setAppearance_(NSAppearance.appearanceNamed_("NSAppearanceNameDarkAqua"))
+        scale = float(orb_window.backingScaleFactor())
+
+        root = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, ZONE_W, ZONE_H))
+        root.setWantsLayer_(True)
+        effect = NSVisualEffectView.alloc().initWithFrame_(root.bounds())
+        effect.setMaterial_(NSVisualEffectMaterialHUDWindow)
+        effect.setBlendingMode_(NSVisualEffectBlendingModeBehindWindow)
+        effect.setState_(NSVisualEffectStateActive)
+        effect.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable)
+        effect.setWantsLayer_(True)
+        root.addSubview_(effect)
+
+        host = effect.layer()
+        host.setCornerRadius_(ZONE_RADIUS)
+        host.setMasksToBounds_(True)
+        fill = CALayer.layer()
+        fill.setFrame_(CGRectMake(0, 0, ZONE_W, ZONE_H))
+        fill.setCornerRadius_(ZONE_RADIUS)
+        fill.setBackgroundColor_(NSColor.blackColor().colorWithAlphaComponent_(0.55).CGColor())
+        host.addSublayer_(fill)
+        border = CAShapeLayer.layer()
+        border.setFrame_(CGRectMake(0, 0, ZONE_W, ZONE_H))
+        border.setPath_(CGPathCreateWithRoundedRect(
+            CGRectMake(0.5, 0.5, ZONE_W - 1, ZONE_H - 1), ZONE_RADIUS, ZONE_RADIUS, None))
+        border.setFillColor_(None)
+        border.setStrokeColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.35).CGColor())
+        border.setLineWidth_(1.0)
+        border.setLineDashPattern_([5, 4])
+        host.addSublayer_(border)
+        for layer in (root.layer(), host, fill, border):
+            layer.setContentsScale_(scale)
+
+        icon = NSImageView.alloc().initWithFrame_(NSMakeRect(16, 16, 24, 24))
+        icon.setImage_(NSImage.imageWithSystemSymbolName_accessibilityDescription_("camera.viewfinder", ZONE_TEXT))
+        icon.setImageScaling_(NSImageScaleProportionallyUpOrDown)
+        icon.setContentTintColor_(NSColor.whiteColor())
+        text = label(ZONE_TEXT, NSMakeRect(48, 19, 200, 18), 12, NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.9))
+        root.addSubview_(icon)
+        root.addSubview_(text)
+        panel.setContentView_(root)
+        self.panel = panel
+        self.scale = scale
+
+    def set_frame(self, frame):
+        x, y, w, h = frame
+        self.panel.setFrame_display_(NSMakeRect(x, y, w, h), False)
+
+    def order_below(self, orb_window):
+        self.panel.orderWindow_relativeTo_(NSWindowBelow, orb_window.windowNumber())
+
+    def order_out(self):
+        self.panel.orderOut_(None)
+
+
 class MiniBarBackground(NSView):
     """Capsule behind the controls. The background moves it. The outer edge resizes it.
 
@@ -549,6 +628,8 @@ class MiniBarBackground(NSView):
         self._finish_drag_settle()
         if delegate is not None and hasattr(delegate, "_peek_before_drag"):
             delegate._peek_before_drag()  # a tucked orb comes out to its inset before the drag starts
+        if delegate is not None and hasattr(delegate, "_zone_begin_press"):
+            delegate._zone_begin_press()  # PR 4: a new press clears any capture-zone state from the last drag
         orb = getattr(delegate, "orb_view", None) if delegate is not None else None
         animate = orb is not None and not orb.reduceMotion
         if animate:
@@ -562,9 +643,14 @@ class MiniBarBackground(NSView):
             if moved:
                 return  # the settle spring finalizes the drag when it lands
         else:
-            moved = self._drag_exactly(window, start, origin)
+            moved = self._drag_exactly(window, start, origin, delegate)
             if moved and delegate is not None and hasattr(delegate, "_finalize_mini_bar_drag"):
+                capture = False
+                if hasattr(delegate, "_zone_release"):
+                    capture, _cancelled = delegate._zone_release()
                 delegate._finalize_mini_bar_drag(window)
+                if capture:
+                    delegate._capture_zone_landed()
                 return
         if delegate is not None:
             delegate._orb_dragging = False  # only a press that never moved gets here; a real drag clears it on finalize
@@ -574,8 +660,11 @@ class MiniBarBackground(NSView):
             delegate.expandMiniBar_(self)
 
     @objc.python_method
-    def _drag_exactly(self, window, start, origin):
-        """Reduce Motion: the window follows the cursor exactly, as before PR 3a. Returns True once it moved."""
+    def _drag_exactly(self, window, start, origin, delegate=None):
+        """Reduce Motion: the window follows the cursor exactly, as before PR 3a. Returns True once it moved.
+
+        The capture zone still shows at the edge (PR 4). Without spring velocity it shows only within 4 pt.
+        """
         mask = NSEventMaskLeftMouseDragged | NSEventMaskLeftMouseUp
         moved = False
         while True:
@@ -589,6 +678,8 @@ class MiniBarBackground(NSView):
             if moved:
                 x, y = drag_origin(origin, start, point)
                 window.setFrameOrigin_(NSMakePoint(x, y))
+                if delegate is not None and hasattr(delegate, "_zone_tick"):
+                    delegate._zone_tick(point, (0.0, 0.0), time.monotonic())
         return moved
 
     @objc.python_method
@@ -623,22 +714,36 @@ class MiniBarBackground(NSView):
             window.setFrameOrigin_(NSMakePoint(pos[0], pos[1]))
             orb.dragStretch(*drag_stretch(smoothed[0], smoothed[1]))
             samples.append((stamp, pos[0], pos[1]))
+            if delegate is not None and hasattr(delegate, "_zone_tick"):
+                delegate._zone_tick(point, vel, stamp)  # PR 4: show, move or retract the capture zone
         if not moved:
             return False
-        orb.dropJiggle()
         if delegate is not None:
             delegate.last_drag_roughness = drag_roughness(samples)
+        if delegate is not None and hasattr(delegate, "_zone_release"):
+            capture, cancelled = delegate._zone_release()
+            if capture or cancelled:
+                # A capture drop or an Esc-cancelled drag: the orb springs home, and it does not snap to an edge.
+                orb.dropJiggle()
+                self._start_drag_settle(window, delegate, pos, vel, origin, capture=capture)
+                return True
+        orb.dropJiggle()
+        if delegate is not None:
             size = window.frame().size
             target = finish_drag(pos, (float(size.width), float(size.height)), delegate._visible_screens())
             self._start_drag_settle(window, delegate, pos, vel, target)
         return True
 
     @objc.python_method
-    def _start_drag_settle(self, window, delegate, origin, velocity, target):
-        """Spring the window from where the drag left it to the snap target, at 60 Hz."""
+    def _start_drag_settle(self, window, delegate, origin, velocity, target, capture=False):
+        """Spring the window from where the drag left it to the snap target, at 60 Hz.
+
+        capture (PR 4): the landing runs the area capture after the orb is home.
+        """
         self._stop_drag_settle()
         self._drag_settle = {"window": window, "delegate": delegate, "origin": origin,
-                             "velocity": velocity, "target": target, "started": time.monotonic()}
+                             "velocity": velocity, "target": target, "started": time.monotonic(),
+                             "capture": capture}
         self._drag_settle_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             DRAG_TICK_SECONDS, self, "settleDragTick:", None, True)
 
@@ -647,6 +752,9 @@ class MiniBarBackground(NSView):
         if state is None:
             self._stop_drag_settle()
             return
+        delegate = state["delegate"]
+        if delegate is not None and hasattr(delegate, "_zone_step"):
+            delegate._zone_step(time.monotonic())  # PR 4: finish the capture zone's slide out
         elapsed = time.monotonic() - state["started"]
         axes = [spring(elapsed, state["origin"][i], state["target"][i], *SPRING_SNAP,
                        v0=state["velocity"][i]) for i in (0, 1)]
@@ -662,6 +770,8 @@ class MiniBarBackground(NSView):
         delegate = state["delegate"]
         if delegate is not None and hasattr(delegate, "_finalize_mini_bar_drag"):
             delegate._finalize_mini_bar_drag(state["window"])
+        if state.get("capture") and delegate is not None and hasattr(delegate, "_capture_zone_landed"):
+            delegate._capture_zone_landed()  # PR 4: the orb is home, so the area capture starts now
 
     @objc.python_method
     def _finish_drag_settle(self):
@@ -1879,6 +1989,7 @@ class AppDelegate(NSObject):
 
     @objc.python_method
     def _local_key(self, event):
+        self._zone_key(event.keyCode())  # PR 4: Esc during a capture-zone drag; the event still goes on
         if type_focus_hotkey(event.keyCode(), event.modifierFlags()):
             self.focusTypeField_(None)
             return None
@@ -1897,6 +2008,7 @@ class AppDelegate(NSObject):
         return event
 
     def _global_type_key(self, event):
+        self._zone_key(event.keyCode())  # PR 4: Esc while the orb is dragged in another app
         if type_focus_hotkey(event.keyCode(), event.modifierFlags()):
             self.performSelectorOnMainThread_withObject_waitUntilDone_("focusTypeField:", None, False)
             return
@@ -2381,6 +2493,98 @@ class AppDelegate(NSObject):
             NSUserDefaults.standardUserDefaults().setObject_forKey_(
                 format_origin(saved[0], saved[1]), ORIGIN_KEY)
         self._peek_consider()
+
+    # PR 4: edge capture zone. During an orb drag, a 260 x 56 strip slides in from an outer screen edge. A drop on it
+    # springs the orb home and takes the usual area capture. Esc during the drag, or while the orb springs home, cancels.
+
+    @objc.python_method
+    def _capture_zone_state(self):
+        zone = getattr(self, "_capture_zone", None)
+        if zone is None:
+            zone = self._capture_zone = CaptureZone(CaptureZonePanel)
+        return zone
+
+    @objc.python_method
+    def _zone_begin_press(self):
+        zone = self._capture_zone_state()
+        zone.cancelled = False
+        zone.pending = False
+        self.was_capture_zone_drop = False
+
+    @objc.python_method
+    def _zone_screen_pairs(self):
+        """(full frame, visible frame) for each display, as tuples of floats."""
+        pairs = []
+        for screen in list(NSScreen.screens() or []):
+            full, visible = screen.frame(), screen.visibleFrame()
+            pairs.append((
+                (float(full.origin.x), float(full.origin.y), float(full.size.width), float(full.size.height)),
+                (float(visible.origin.x), float(visible.origin.y), float(visible.size.width), float(visible.size.height)),
+            ))
+        return pairs
+
+    @objc.python_method
+    def _zone_tick(self, cursor, velocity, now):
+        """One drag tick: show, move or retract the zone, then advance its slide. Returns the edge shown, or None."""
+        zone = self._capture_zone_state()
+        if zone.cancelled:
+            zone.retract(now)
+            zone.step(now)
+            return None
+        pairs = self._zone_screen_pairs()
+        fulls = [full for full, _visible in pairs]
+        screen = screen_at(cursor, fulls)
+        edge = zone_state(zone.edge, cursor, velocity, screen, fulls) if screen is not None else None
+        rest = None
+        if edge is not None:
+            visible = next((frame for full, frame in pairs if full == screen), None)
+            rest = zone_frame(edge, cursor, visible) if visible is not None else None
+        if rest is None:
+            edge = None
+        if edge is None:
+            zone.retract(now)
+        else:
+            zone.show(edge, rest, self.mini_panel, now)
+        zone.step(now)
+        return edge
+
+    @objc.python_method
+    def _zone_step(self, now):
+        self._capture_zone_state().step(now)
+
+    @objc.python_method
+    def _zone_release(self):
+        """A drop. Returns (capture, cancelled). capture is True when the drop lands on the zone."""
+        zone = self._capture_zone_state()
+        cancelled = zone.cancelled
+        capture = zone.visible_for_drop() and not cancelled
+        self.was_capture_zone_drop = capture
+        zone.pending = capture
+        if capture:
+            zone.retract(time.monotonic())  # the slide out runs while the orb springs home
+        else:
+            zone.hide_now()
+        return capture, cancelled
+
+    @objc.python_method
+    def _capture_zone_landed(self):
+        """The orb is home after a capture drop. Hide the zone and run the same area capture as the orb menu."""
+        zone = self._capture_zone_state()
+        zone.hide_now()
+        zone.pending = False
+        if zone.cancelled:
+            return
+        threading.Thread(target=self._capture_for_bar, args=("area",), daemon=True).start()
+
+    @objc.python_method
+    def _zone_key(self, key_code):
+        """Esc during a drag over the zone, or while the orb springs home for a capture, cancels it."""
+        if key_code != 53:
+            return
+        zone = self._capture_zone_state()
+        if zone.visible_for_drop() or zone.pending:
+            zone.cancelled = True
+            zone.retract(time.monotonic())
 
     # PR 3b: peek-dock. A snapped orb on a free screen edge tucks most of itself off-screen, and slides back
     # in when the cursor comes near. Reduce Motion fades in place instead of sliding. A tucked orb is never busy.
