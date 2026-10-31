@@ -12,6 +12,8 @@ from mini_bar import (
     BarController,
     orb_should_reassert,
     orb_window_config,
+    orb_window_log_line,
+    orb_window_needs_fix,
 )
 from tests.test_pill_collapse import _func
 
@@ -61,7 +63,45 @@ class TestOrbWindowFlags(unittest.TestCase):
         self.assertEqual(ORB_WINDOW_LEVEL, 28)
 
 
+class TestOrbWindowDrift(unittest.TestCase):
+    def test_floating_level_is_drift(self):
+        # The live orb ran at NSFloatingWindowLevel (3) because setFloatingPanel_ reset the level.
+        self.assertTrue(orb_window_needs_fix(3, BAR_COLLECTION))
+        self.assertFalse(orb_window_needs_fix(ORB_WINDOW_LEVEL, BAR_COLLECTION))
+
+    def test_collection_and_hiding_drift(self):
+        self.assertTrue(orb_window_needs_fix(ORB_WINDOW_LEVEL, NS_CAN_JOIN_ALL_SPACES))
+        self.assertTrue(orb_window_needs_fix(ORB_WINDOW_LEVEL, BAR_COLLECTION, hides_on_deactivate=True))
+        self.assertTrue(orb_window_needs_fix(ORB_WINDOW_LEVEL, BAR_COLLECTION, can_hide=True))
+        self.assertTrue(orb_window_needs_fix(None, BAR_COLLECTION))
+
+    def test_log_line_matches_cgwindowlist_fields(self):
+        line = orb_window_log_line("reshow", 4242, 28, BAR_COLLECTION, True)
+        self.assertEqual(line, "jev orb window: reason=reshow windowNumber=4242 level=28 "
+                               "collectionBehavior=337 visible=True")
+
+
 class TestOrbWindowWiring(unittest.TestCase):
+    def test_level_is_set_after_floating_panel(self):
+        apply = _func(_ui(), "_apply_orb_window_flags")
+        self.assertLess(apply.index("setFloatingPanel_("), apply.index("setLevel_("))
+        self.assertLess(apply.index("setCollectionBehavior_("), apply.index("setLevel_("))
+
+    def test_flags_checked_and_logged_after_every_transition(self):
+        ui = _ui()
+        ensure = _func(ui, "_ensure_orb_window_flags")
+        self.assertIn("orb_window_needs_fix", ensure)
+        self.assertIn("sys.stderr.write(orb_window_log_line(", ensure)
+        for name in ("_reassert_orb", "_order_bar_front", "_finalize_mini_bar_drag", "_focus_pill_field",
+                     "_keep_orb_visible", "_apply_pill_presentation"):
+            self.assertIn("_ensure_orb_window_flags(", _func(ui, name), name)
+
+    def test_nothing_else_sets_the_orb_level(self):
+        ui = _ui()
+        self.assertEqual(ui.count("mini_panel.setLevel_("), 0)
+        self.assertEqual(ui.count("mini_panel.setFloatingPanel_("), 0)
+        self.assertEqual(ui.count("mini_panel.setCollectionBehavior_("), 0)
+
     def test_flags_are_applied_in_one_place(self):
         ui = _ui()
         apply = _func(ui, "_apply_orb_window_flags")

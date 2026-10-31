@@ -150,6 +150,8 @@ from mini_bar import (
     pointer_inside,
     clicked_outside_popover,
     orb_should_reassert,
+    orb_window_log_line,
+    orb_window_needs_fix,
     orb_window_config,
     orb_after_click_away,
     migrate_saved_origin,
@@ -2270,11 +2272,27 @@ class AppDelegate(NSObject):
     def _apply_orb_window_flags(self, panel):
         """Status-level, every Space, Stationary, out of the window cycle, never hidden on deactivate or Hide."""
         config = orb_window_config()
-        panel.setLevel_(config["level"])
+        # setFloatingPanel_ resets the level to NSFloatingWindowLevel (3), so it must come before setLevel_.
         panel.setFloatingPanel_(config["floating"])
         panel.setHidesOnDeactivate_(config["hides_on_deactivate"])
         panel.setCanHide_(config["can_hide"])
         panel.setCollectionBehavior_(config["collection"])
+        panel.setLevel_(config["level"])
+
+    @objc.python_method
+    def _ensure_orb_window_flags(self, reason):
+        """Put the live orb window back on orb_window_config if anything changed it, then log it to stderr."""
+        panel = getattr(self, "mini_panel", None)
+        if panel is None:
+            return
+        if orb_window_needs_fix(panel.level(), panel.collectionBehavior(),
+                                panel.hidesOnDeactivate(), panel.canHide()):
+            self._apply_orb_window_flags(panel)
+        try:
+            sys.stderr.write(orb_window_log_line(reason, panel.windowNumber(), panel.level(),
+                                                 panel.collectionBehavior(), panel.isVisible()) + "\n")
+        except Exception:
+            pass
 
     @objc.python_method
     def _reassert_orb(self):
@@ -2285,9 +2303,8 @@ class AppDelegate(NSObject):
         if orb_should_reassert(self.bar.should_show(), bool(panel.isVisible())) != "front":
             return
         self._keep_orb_visible()
-        if panel.collectionBehavior() != orb_window_config()["collection"]:
-            self._apply_orb_window_flags(panel)
         panel.orderFrontRegardless()
+        self._ensure_orb_window_flags("reshow")
 
     def applicationDidBecomeActive_(self, _notification):
         self._reassert_orb()
@@ -2319,6 +2336,7 @@ class AppDelegate(NSObject):
         panel.setAlphaValue_(1.0)
         if not panel.isVisible():
             panel.orderFrontRegardless()
+        self._ensure_orb_window_flags("keep-visible")
         self._sync_orb()
 
     @objc.python_method
@@ -2401,6 +2419,7 @@ class AppDelegate(NSObject):
         if saved is not None:
             NSUserDefaults.standardUserDefaults().setObject_forKey_(
                 format_origin(saved[0], saved[1]), ORIGIN_KEY)
+        self._ensure_orb_window_flags("drag")
 
     @objc.python_method
     def _order_bar_front(self):
@@ -2423,6 +2442,7 @@ class AppDelegate(NSObject):
         else:
             self.mini_panel.setAlphaValue_(1.0)
         self.mini_panel.orderFrontRegardless()
+        self._ensure_orb_window_flags("show")
         if motion:
             self._fade_bar(1.0, None)
 
@@ -2833,6 +2853,8 @@ class AppDelegate(NSObject):
         self._sync_click_away_monitor(not self.pillCollapsed)
         if self.pillCollapsed:
             self._reassert_orb()  # every way the popover closes leaves the orb up front
+        elif panel.isVisible():
+            self._ensure_orb_window_flags("popover-open")
 
     @objc.python_method
     def _sync_click_away_monitor(self, wanted):
@@ -3962,6 +3984,7 @@ class AppDelegate(NSObject):
             main.orderOut_(None)
         if self.bar.should_show() and not panel.isVisible():
             panel.orderFrontRegardless()
+        self._ensure_orb_window_flags("focus")
 
     @objc.python_method
     def _place_pill_caret(self, field, caret):

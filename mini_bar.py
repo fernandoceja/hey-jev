@@ -555,7 +555,8 @@ ORB_WINDOW_LEVEL = 28
 def orb_window_config():
     """Flags for the orb and popover window (one panel), so the desktop never sweeps it away.
 
-    Status-level and floating; on every Space and over full-screen apps; Stationary so Mission Control,
+    Floating and status-level (setFloatingPanel_ resets the level to NSFloatingWindowLevel, 3, so the level
+    must be set after it); on every Space and over full-screen apps; Stationary so Mission Control,
     Show Desktop and the Sonoma "Click wallpaper to reveal desktop" sweep leave it put; out of the
     Command-` cycle. It never hides on deactivate or with Hide Jev (Command-H). The popover still closes
     on a click away; that is PillPresentation's job, not the window's.
@@ -567,6 +568,23 @@ def orb_window_config():
         "hides_on_deactivate": False,
         "can_hide": False,
     }
+
+
+def orb_window_needs_fix(level, collection, hides_on_deactivate=False, can_hide=False):
+    """True when a live orb window has drifted from orb_window_config (wrong level or collection, or it hides)."""
+    config = orb_window_config()
+    try:
+        return (int(level) != config["level"] or int(collection) != config["collection"]
+                or bool(hides_on_deactivate) != config["hides_on_deactivate"]
+                or bool(can_hide) != config["can_hide"])
+    except (TypeError, ValueError):
+        return True
+
+
+def orb_window_log_line(reason, window_number, level, collection, visible):
+    """One stderr line to match against CGWindowListCopyWindowInfo (kCGWindowNumber, kCGWindowLayer)."""
+    return "jev orb window: reason={0} windowNumber={1} level={2} collectionBehavior={3} visible={4}".format(
+        reason, int(window_number), int(level), int(collection), bool(visible))
 
 
 def orb_should_reassert(should_show, panel_visible):
