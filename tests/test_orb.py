@@ -35,10 +35,11 @@ def test_reduce_motion_freezes_all_decorative_motion(state):
     assert orb_pose(state, 0, 0, True) == orb_pose(state, 6.9, 1, True)
 
 
-def test_idle_breath_blink_thinking_sweep_and_audio_bounds():
-    assert orb_pose('idle', 1)[0] == 1.5
-    assert orb_pose('idle', 6.9)[1] < orb_pose('idle', 0)[1]
-    assert orb_pose('thinking', 0.75)[2] == 8
+def test_idle_pose_is_static_and_thinking_sweep_and_audio_bounds():
+    # Bob runs in the render server, and blinks are random accents, so the pose never blinks on a fixed beat.
+    assert all(orb_pose('idle', t)[0] == 0.0 for t in (0, 1, 6.9))
+    assert all(orb_pose('idle', t)[1] == 1.0 for t in (0, 6.9, 7.0, 14.0))
+    assert orb_pose('thinking', 0.75)[2] == pytest.approx(8)
     assert orb_pose('listening', 0, -5)[3] == 2
     assert orb_pose('listening', 0, 5)[3] == 4
     assert all(math.isfinite(v) for v in orb_pose('listening', 0, float('nan')))
@@ -72,6 +73,28 @@ def test_timer_is_single_and_stops_on_every_inactive_transition():
         assert ticker.timer is None
         ticker.sync(False, schedule)
     assert len(created) == 4
+
+
+def test_single_shot_ticker_schedules_again_only_after_it_fires():
+    created = []
+    class Timer:
+        invalidated = False
+        def invalidate(self):
+            self.invalidated = True
+    def schedule():
+        timer = Timer()
+        created.append(timer)
+        return timer
+    ticker = OrbTicker()
+    ticker.sync(True, schedule)
+    ticker.fired()
+    assert ticker.timer is None
+    ticker.sync(True, schedule)
+    assert len(created) == 2
+    assert not created[0].invalidated
+    assert ticker.timer is created[1]
+    ticker.sync(True, schedule)
+    assert len(created) == 2
 
 
 def test_click_stays_under_four_points_and_drag_does_not():

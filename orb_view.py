@@ -1,10 +1,14 @@
 """Original Jev vector orb. Pure presentation rules are usable without AppKit."""
 import math
+import random
 import time
 
+from orb_character import look_intensity, next_accent_delay, pick_accent
 from orb_motion import BODY_SIZE as ORB_SIZE
+from orb_motion import CURSOR_POLL_SECONDS, DESIGN_CENTER, EYE_CENTER_Y, EYE_SPACING
 from orb_motion import DESIGN_EXTENT as ORB_DESIGN_EXTENT
 from orb_motion import DESIGN_SIZE as PANEL_SIZE
+from orb_motion import cursor_moved, idle_active, pupil_offset
 
 
 def orb_frame(expanded):
@@ -26,14 +30,16 @@ def orb_state(status, held=False):
 
 
 def orb_pose(state, seconds, level=0.0, reduce_motion=False):
-    """Motion never carries the only state cue. Audio uses the existing meter."""
+    """Pose for the solid path and the listening ring. Motion never carries the only state cue.
+
+    Bob and breath run in the render server (orb_layers), and blinks are random accents (orb_character),
+    so this pose only needs the static values and the listening ring width.
+    """
     level = min(1.0, max(0.0, float(level))) if math.isfinite(float(level)) else 0.0
     if reduce_motion:
         return (0.0, 1.0, 0.0, 2.0)
-    bob = 1.5 * math.sin(seconds * math.tau / 4) if state == "idle" else 0.0
-    blink = 0.15 if state == "idle" and seconds % 7.0 > 6.85 else 1.0
     sweep = math.sin(seconds * math.tau / 3) * 8 if state == "thinking" else 0.0
-    return (bob, blink, sweep, 2.0 + 2.0 * level if state == "listening" else 2.0)
+    return (0.0, 1.0, sweep, 2.0 + 2.0 * level if state == "listening" else 2.0)
 
 
 class OrbTicker:
@@ -48,6 +54,10 @@ class OrbTicker:
             self.timer.invalidate()
             self.timer = None
 
+    def fired(self):
+        """A single-shot timer ran. Forget it without invalidating, so the next sync schedules a new one."""
+        self.timer = None
+
 
 _ORB_CLASS = None
 
@@ -57,8 +67,8 @@ def make_orb_view(frame):
     global _ORB_CLASS
     if _ORB_CLASS is None:
         import objc
-        from AppKit import (NSView, NSColor, NSBezierPath, NSMakeRect, NSMakePoint, NSAffineTransform,
-                            NSViewLayerContentsRedrawNever, NSViewLayerContentsRedrawOnSetNeedsDisplay)
+        from AppKit import (NSView, NSColor, NSBezierPath, NSMakeRect, NSMakePoint, NSAffineTransform, NSEvent,
+                            NSWorkspace, NSViewLayerContentsRedrawNever, NSViewLayerContentsRedrawOnSetNeedsDisplay)
         from Foundation import NSTimer
         import orb_layers
 
@@ -66,19 +76,33 @@ def make_orb_view(frame):
             def initWithFrame_(self, rect):
                 self = objc.super(JevOrbView, self).initWithFrame_(rect)
                 if self is not None:
-                    self.ticker = OrbTicker()
+                    self.ticker = OrbTicker()  # 20 Hz pupil poll
+                    self.accentTicker = OrbTicker()  # one single-shot idle accent at a time
                     self.state = "idle"
                     self.level = 0.0
                     self.reduceMotion = False
                     self.solid = False
-                    self.started = time.monotonic()
+                    self.cfg = (False, True, False, False)  # visible, motion, docked, popover
+                    self.halted = False  # stop() sets this; a later configure with visible clears it
+                    self.alive = False  # timers and passives are running
+                    self.asleep = False
+                    self.lastCursor = None
+                    self.clipName = None
+                    self.clipEnd = 0.0
+                    self.previousAccent = None
+                    self.rng = random.Random()
                     # Layer-backed: Core Animation draws the orb, so drawRect_ runs only for the solid case.
                     self.setWantsLayer_(True)
                     self.setLayerContentsRedrawPolicy_(NSViewLayerContentsRedrawNever)
-                    self.tree = orb_layers.OrbLayers(self.layer())
+                    self.tree = orb_layers.OrbLayers(self.layer(), self.rng)
                     self.setAccessibilityElement_(True)
                     self.setAccessibilityRole_("AXButton")
                     self.setAccessibilityLabel_("Jev — Ready. Click to type; hold right Option to speak.")
+                    center = NSWorkspace.sharedWorkspace().notificationCenter()
+                    center.addObserver_selector_name_object_(
+                        self, "screensDidSleep:", "NSWorkspaceScreensDidSleepNotification", None)
+                    center.addObserver_selector_name_object_(
+                        self, "screensDidWake:", "NSWorkspaceScreensDidWakeNotification", None)
                 return self
 
             def hitTest_(self, _point):
@@ -104,12 +128,49 @@ def make_orb_view(frame):
             def viewDidChangeEffectiveAppearance(self):
                 self.refreshLook()
 
+            def viewWillMoveToWindow_(self, window):
+                if window is None:
+                    self.stop()
+
+            def screensDidSleep_(self, _notification):
+                self.asleep = True
+                self.syncMotion()
+
+            def screensDidWake_(self, _notification):
+                self.asleep = False
+                self.syncMotion()
+
+            def trackCursor_(self, _timer):
+                self.followCursor()
+
+            def playAccent_(self, _timer):
+                self.accentTicker.fired()
+                if not self.alive or self.state != "idle" or self.cfg[3]:
+                    return
+                name = pick_accent(self.rng, self.previousAccent)
+                self.previousAccent = name
+                seconds = self.tree.play_accent(name)
+                self.clipName = name
+                self.clipEnd = time.monotonic() + seconds
+                self.accentTicker.sync(True, self.scheduleAccent)
+
+            @objc.python_method
+            def scheduleAccent(self):
+                return NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                    next_accent_delay(self.rng), self, "playAccent:", None, False)
+
+            @objc.python_method
+            def scheduleCursor(self):
+                return NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                    CURSOR_POLL_SECONDS, self, "trackCursor:", None, True)
+
             @objc.python_method
             def fitLayers(self):
                 tree = getattr(self, "tree", None)
                 if tree is not None:
                     bounds = self.bounds()
                     tree.fit(float(bounds.size.width), float(bounds.size.height))
+                self.lastCursor = None  # the eyes may have moved, so the next poll must recompute
 
             @objc.python_method
             def refreshLook(self):
@@ -122,11 +183,14 @@ def make_orb_view(frame):
                 self.fitLayers()
 
             @objc.python_method
-            def configure(self, status, held, level, visible, motion, solid):
+            def configure(self, status, held, level, visible, motion, solid, docked=False, popover=False):
                 self.state = orb_state(status, held)
                 self.level = level
                 self.reduceMotion = not motion
                 self.solid = solid
+                self.cfg = (bool(visible), bool(motion), bool(docked), bool(popover))
+                if visible:
+                    self.halted = False
                 label = "Listening" if held else status or "Ready"
                 self.setAccessibilityLabel_("Jev — " + label + ". Click to type; hold right Option to speak.")
                 self.setToolTip_("Jev — " + label)
@@ -137,31 +201,74 @@ def make_orb_view(frame):
                     self.layer().setContents_(None)  # Clear any solid frame from a previous draw.
                 self.tree.apply(self.state, solid, orb_pose(self.state, 0, self.level, self.reduceMotion)[3])
                 self.fitLayers()
-                # The solid path keeps its old 30 fps pose. The layer path only refreshes the listening ring.
-                self.ticker.sync(visible and motion and (solid or self.state == "listening"),
-                                 lambda: NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-                                     1 / 30, self, "animateOrb:", None, True))
-                self.setNeedsDisplay_(True)
+                self.syncMotion()
+                if solid:
+                    self.setNeedsDisplay_(True)
+
+            @objc.python_method
+            def syncMotion(self):
+                """Start or stop everything that moves, from the last configure and the sleep state."""
+                visible, motion, docked, popover = self.cfg
+                alive = not self.halted and idle_active(visible, motion, docked, self.asleep)
+                if self.alive and not alive:
+                    self.tree.reset_motion()
+                self.alive = alive
+                idle = alive and self.state == "idle"
+                self.tree.set_passives(idle and not self.solid)
+                self.ticker.sync(alive and not self.solid, self.scheduleCursor)
+                self.accentTicker.sync(idle and not popover and not self.solid, self.scheduleAccent)
+
+            @objc.python_method
+            def followCursor(self):
+                """Pupils follow the mouse anywhere on any display. Exits early when the cursor hasn't moved."""
+                if self.window() is None or not self.alive or self.solid:
+                    return
+                mouse = NSEvent.mouseLocation()
+                cursor = (float(mouse.x), float(mouse.y))
+                if not cursor_moved(self.lastCursor, cursor):
+                    return
+                self.lastCursor = cursor
+                intensity = look_intensity(self.state, self.currentClip())
+                scale = self.tree.scale or 1.0
+                offsets = {}
+                for side, sign in (("L", -1.0), ("R", 1.0)):
+                    dx, dy = pupil_offset(self.eyeOnScreen(sign), cursor)
+                    offsets[side] = (dx * intensity / scale, dy * intensity / scale)
+                self.tree.set_pupils(offsets)
+
+            @objc.python_method
+            def eyeOnScreen(self, sign):
+                """Screen position of one eye centre. sign is -1 for the left eye and 1 for the right."""
+                bounds = self.bounds()
+                scale = self.tree.scale or 1.0
+                view_x = float(bounds.size.width) / 2.0 + sign * EYE_SPACING * scale
+                view_y = float(bounds.size.height) / 2.0 + (EYE_CENTER_Y - DESIGN_CENTER) * scale
+                in_window = self.convertPoint_toView_(NSMakePoint(view_x, view_y), None)
+                on_screen = self.window().convertRectToScreen_(NSMakeRect(in_window.x, in_window.y, 0, 0))
+                return (on_screen.origin.x, on_screen.origin.y)
+
+            @objc.python_method
+            def currentClip(self):
+                if self.clipName is not None and time.monotonic() < self.clipEnd:
+                    return self.clipName
+                return None
+
+            @objc.python_method
+            def followLevel(self):
+                """The listening ring width follows the mic level. The old 30 fps loop did this."""
+                if self.solid or not self.alive or self.state != "listening":
+                    return
+                self.tree.set_ring_width(orb_pose(self.state, 0, self.level, self.reduceMotion)[3])
 
             @objc.python_method
             def stop(self):
-                self.ticker.sync(False, None)
-
-            def viewWillMoveToWindow_(self, window):
-                if window is None:
-                    self.stop()
-
-            def animateOrb_(self, _timer):
-                if self.solid:
-                    self.setNeedsDisplay_(True)
-                else:
-                    self.tree.set_ring_width(orb_pose(self.state, 0, self.level, self.reduceMotion)[3])
+                self.halted = True
+                self.syncMotion()
 
             def drawRect_(self, _rect):
                 if not self.solid:
                     return  # Layers draw everything else.
-                bob, blink, sweep, ring_width = orb_pose(
-                    self.state, time.monotonic() - self.started, self.level, self.reduceMotion)
+                bob, blink, sweep, ring_width = orb_pose(self.state, 0.0, self.level, self.reduceMotion)
                 def color(r, g, b, a=1):
                     return NSColor.colorWithCalibratedRed_green_blue_alpha_(r, g, b, a)
                 def oval(x, y, w, h):

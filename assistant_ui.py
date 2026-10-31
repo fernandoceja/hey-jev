@@ -2514,9 +2514,12 @@ class AppDelegate(NSObject):
         status = getattr(self, "status", None)
         state = str(status.stringValue()) if status is not None else "Ready"
         visible = panel.isVisible() and self.bar.should_show()
+        full = getattr(self, "full_window", None)
+        docked = full is not None and bool(full.isVisible())
         orb.configure(state, bool(getattr(self, "option_down", False)),
                       getattr(self, "_meter_unit", 0.0), visible,
-                      flags.get("motion", True), flags.get("material") == "solid")
+                      flags.get("motion", True), flags.get("material") == "solid",
+                      docked=docked, popover=not collapsed)
         # The orb layer draws its own shadow. A window shadow on the orb-only panel would add a second one.
         panel.setHasShadow_(not collapsed)
         backing = getattr(self, "pill_backing", None)
@@ -3227,6 +3230,7 @@ class AppDelegate(NSObject):
         orb = getattr(self, "orb_view", None)
         if orb is not None:
             orb.level = unit
+            orb.followLevel()
         amplitude = unit ** 0.7
         view = getattr(self, "mic_level_view", None)
         if view is not None:

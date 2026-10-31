@@ -82,3 +82,76 @@ def pupil_offset(eye_center, cursor, max_offset=MAX_PUPIL_OFFSET, reach=PUPIL_RE
     ratio = min(1.0, dist / reach) if reach > 0 else 1.0
     magnitude = max_offset * ratio
     return (dx / dist * magnitude, dy / dist * magnitude)
+
+
+# Idle character timing. Frame counts come from the REA study notes, which guess 60 fps for the clips.
+CLIP_FPS = 60  # assumed, not confirmed: see docs/plans/eney-bubble-v2-rea-notes.md
+BOB_AMPLITUDE = 2.5
+BOB_PERIOD = 2.6
+SHADOW_MIN_SCALE = 0.94
+SHADOW_MIN_OPACITY = 0.28
+BREATH_FRAMES = 450
+BREATH_SCALE_X = 0.995
+BREATH_SCALE_Y = 1.015
+FLOAT_FRAMES = 1500
+FLOAT_AMPLITUDE = 1.0
+CURSOR_POLL_SECONDS = 1.0 / 20.0
+CURSOR_EPS = 0.5
+
+
+def idle_active(visible, motion, docked, asleep):
+    """Decorative idle motion runs only when the orb is on screen, motion is allowed, and the screens are awake."""
+    return bool(visible and motion and not docked and not asleep)
+
+
+def cursor_moved(prev, now, eps=CURSOR_EPS):
+    """True when the cursor moved at least eps points since the last poll. Bad input counts as moved."""
+    if prev is None:
+        return True
+    try:
+        dx = float(now[0]) - float(prev[0])
+        dy = float(now[1]) - float(prev[1])
+    except (TypeError, ValueError, IndexError):
+        return True
+    dist = math.hypot(dx, dy)
+    if not math.isfinite(dist):
+        return True
+    return dist >= eps
+
+
+def sine_samples(period, amplitude, count=24):
+    """(t, offset) for one loop that starts and ends at rest, so starting it never snaps the pose."""
+    return [(period * i / count, amplitude * math.sin(math.tau * i / count)) for i in range(count + 1)]
+
+
+def shadow_for_bob(offset):
+    """Shadow (scale, opacity factor) for a bob offset. Higher orb, smaller and fainter shadow.
+
+    The opacity factor multiplies the shadow image, which is already drawn at SHADOW_OPACITY.
+    """
+    t = max(-1.0, min(1.0, float(offset) / BOB_AMPLITUDE))
+    scale = (1.0 + SHADOW_MIN_SCALE) / 2.0 - t * (1.0 - SHADOW_MIN_SCALE) / 2.0
+    min_factor = SHADOW_MIN_OPACITY / SHADOW_OPACITY
+    opacity = (1.0 + min_factor) / 2.0 - t * (1.0 - min_factor) / 2.0
+    return scale, opacity
+
+
+def spring_decay(k, c, t):
+    """Free response of a unit spring (m = 1) released from rest at displacement 1. Underdamped only."""
+    if t < 0.0:
+        return 1.0
+    omega = math.sqrt(k)
+    zeta = c / (2.0 * omega)
+    if zeta >= 1.0:
+        raise ValueError("spring_decay needs an underdamped spring")
+    omega_d = omega * math.sqrt(1.0 - zeta * zeta)
+    envelope = math.exp(-zeta * omega * t)
+    return envelope * (math.cos(omega_d * t) + zeta * omega / omega_d * math.sin(omega_d * t))
+
+
+def sample_track(fn, duration, fps=CLIP_FPS):
+    """(t, fn(t)) every 1/fps seconds from 0 to duration, with the last sample exactly at duration."""
+    count = max(1, int(round(duration * fps)))
+    pairs = [(i / float(fps), fn(i / float(fps))) for i in range(count)]
+    pairs.append((float(duration), fn(float(duration))))
+    return pairs
