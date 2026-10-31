@@ -176,10 +176,9 @@ from mini_bar import (
     is_our_app,
 )
 from orb_motion import (
-    CURSOR_POLL_SECONDS, DRAG_TICK_SECONDS, PEEK_FADE_SECONDS, PEEK_GLOW_ALPHA, PEEK_GLOW_FADE_SECONDS,
-    PEEK_GLOW_WIDTH,
-    PEEK_RETRACT_DISTANCE, RIM_RGB, SPRING_FOLLOW, SPRING_PEEK_IN, SPRING_PEEK_OUT, SPRING_SNAP,
-    drag_roughness, drag_stretch, follow_step, in_hot_zone, peek_frame, peek_visible_width, should_retract,
+    CURSOR_POLL_SECONDS, DRAG_TICK_SECONDS, PEEK_FADE_SECONDS, PEEK_RETRACT_DISTANCE, SPRING_FOLLOW,
+    SPRING_PEEK_IN, SPRING_PEEK_OUT, SPRING_SNAP,
+    drag_roughness, drag_stretch, follow_step, in_hot_zone, peek_frame, should_retract,
     spring, spring_done,
 )
 from orb_view import make_orb_view, orb_frame, orb_state
@@ -2453,60 +2452,10 @@ class AppDelegate(NSObject):
         self._peek_move(False)
 
     @objc.python_method
-    def _peek_glow(self, on):
-        """Soft blue edge on the visible side of a tucked orb. Fades in on the tuck and out as the orb slides back.
-
-        A native gradient layer, a sibling of the orb's root layer, so the orb's own layer tree is untouched.
-        It is optional: without Quartz the orb still tucks, just without the glow.
-        """
-        view = getattr(self, "orb_view", None)
-        if view is None:
-            return
-        try:
-            from Quartz import CABasicAnimation, CAGradientLayer, CGColorCreateGenericRGB
-        except Exception:
-            return
-        view.setWantsLayer_(True)
-        host = view.layer()
-        if host is None:
-            return
-        layer = getattr(self, "_peek_glow_layer", None)
-        if layer is None:
-            layer = CAGradientLayer.layer()
-            r, g, b = RIM_RGB
-            layer.setColors_([CGColorCreateGenericRGB(r, g, b, PEEK_GLOW_ALPHA), CGColorCreateGenericRGB(r, g, b, 0.0)])
-            layer.setOpacity_(0.0)
-            host.addSublayer_(layer)
-            self._peek_glow_layer = layer
-        window = view.window()
-        layer.setContentsScale_(float(window.backingScaleFactor()) if window is not None else 1.0)
-        if self._peek_edge is not None:
-            bounds = view.bounds()
-            w, h = float(bounds.size.width), float(bounds.size.height)
-            visible = peek_visible_width(w)
-            glow_w = min(PEEK_GLOW_WIDTH, visible)
-            if self._peek_edge == "left":  # the screen edge sits at the left of the visible part
-                layer.setStartPoint_((0.0, 0.5))
-                layer.setEndPoint_((1.0, 0.5))
-                layer.setFrame_(((w - visible, 0.0), (glow_w, h)))
-            else:  # right: the screen edge sits at the right of the visible part
-                layer.setStartPoint_((1.0, 0.5))
-                layer.setEndPoint_((0.0, 0.5))
-                layer.setFrame_(((visible - glow_w, 0.0), (glow_w, h)))
-        target = 1.0 if on else 0.0
-        anim = CABasicAnimation.animationWithKeyPath_("opacity")
-        anim.setFromValue_(float(layer.opacity()))
-        anim.setToValue_(target)
-        anim.setDuration_(PEEK_GLOW_FADE_SECONDS)
-        layer.addAnimation_forKey_(anim, "peekGlow")
-        layer.setOpacity_(target)
-
-    @objc.python_method
     def _peek_move(self, showing):
         """Slide to the inset (showing) or the rest. Reduce Motion fades in place instead."""
         panel = self.mini_panel
         self._peek_showing = bool(showing)
-        self._peek_glow(not showing)
         self._peek_outside = 0.0
         target_x = self._peek_position(self._peek_showing)
         if not self._pill_flags().get("motion", True):
@@ -2563,7 +2512,6 @@ class AppDelegate(NSObject):
         self._peek_anim = None
         self._peek_showing = True
         self._peek_outside = 0.0
-        self._peek_glow(False)
         panel = self.mini_panel
         panel.setAlphaValue_(1.0)
         panel.setFrameOrigin_(NSMakePoint(self._peek_inset[0], self._peek_inset[1]))
@@ -2580,7 +2528,6 @@ class AppDelegate(NSObject):
         inset = self._peek_inset
         was_fading = self._peek_fading
         self._peek_stop_timer()
-        self._peek_glow(False)
         self._peek_edge = None
         self._peek_screen = None
         self._peek_inset = None
