@@ -1,12 +1,30 @@
 """Orb geometry, palette and pupil rules, headless. No AppKit, Quartz or Cocoa."""
 import importlib
+import itertools
 import math
 import sys
 
 import pytest
 
 import orb_motion
-from orb_motion import BODY_SIZE, ORB_PALETTE, layer_geometry, pupil_offset
+from orb_motion import (
+    BODY_SIZE,
+    BOB_AMPLITUDE,
+    BOB_PERIOD,
+    BREATH_FRAMES,
+    CLIP_FPS,
+    FLOAT_FRAMES,
+    ORB_PALETTE,
+    SHADOW_MIN_SCALE,
+    cursor_moved,
+    idle_active,
+    layer_geometry,
+    pupil_offset,
+    sample_track,
+    shadow_for_bob,
+    sine_samples,
+    spring_decay,
+)
 
 BODY_CENTER = (36.0, 36.0)
 BODY_RADIUS = BODY_SIZE / 2.0
@@ -102,7 +120,63 @@ def test_palette_is_three_zero_to_one_float_colours():
             assert 0.0 <= channel <= 1.0
 
 
-@pytest.mark.parametrize('module_name', ['orb_motion', 'orb_layers'])
+def test_idle_motion_constants_match_the_plan():
+    assert BOB_AMPLITUDE == 2.5
+    assert BOB_PERIOD == 2.6
+    assert SHADOW_MIN_SCALE == 0.94
+    assert BREATH_FRAMES == 450
+    assert FLOAT_FRAMES == 1500
+    assert CLIP_FPS == 60
+
+
+@pytest.mark.parametrize('visible, motion, docked, asleep', list(itertools.product((False, True), repeat=4)))
+def test_idle_active_truth_table(visible, motion, docked, asleep):
+    expected = visible and motion and not docked and not asleep
+    assert idle_active(visible, motion, docked, asleep) is expected
+
+
+def test_cursor_moved_respects_the_half_point_threshold():
+    assert cursor_moved(None, (10.0, 10.0))
+    assert not cursor_moved((10.0, 10.0), (10.0, 10.0))
+    assert not cursor_moved((10.0, 10.0), (10.3, 10.3))
+    assert cursor_moved((10.0, 10.0), (10.5, 10.0))
+    assert cursor_moved((10.0, 10.0), (10.2, 10.2), eps=0.1)
+    assert cursor_moved((0.0, 0.0), (float('nan'), 0.0))
+
+
+def test_shadow_is_smallest_and_faintest_at_the_top_of_the_bob():
+    top_scale, top_opacity = shadow_for_bob(BOB_AMPLITUDE)
+    bottom_scale, bottom_opacity = shadow_for_bob(-BOB_AMPLITUDE)
+    assert top_scale == pytest.approx(SHADOW_MIN_SCALE)
+    assert bottom_scale == pytest.approx(1.0)
+    assert top_opacity == pytest.approx(0.28 / 0.35)
+    assert bottom_opacity == pytest.approx(1.0)
+
+
+def test_sine_samples_start_and_end_at_rest_and_stay_in_amplitude():
+    samples = sine_samples(BOB_PERIOD, BOB_AMPLITUDE)
+    assert samples[0] == (0.0, 0.0)
+    assert samples[-1][0] == pytest.approx(BOB_PERIOD)
+    assert abs(samples[-1][1]) < 1e-9
+    assert max(v for _, v in samples) == pytest.approx(BOB_AMPLITUDE, abs=0.05)
+    assert min(v for _, v in samples) == pytest.approx(-BOB_AMPLITUDE, abs=0.05)
+
+
+def test_spring_decay_starts_at_one_and_settles():
+    assert spring_decay(500.0, 18.0, 0.0) == pytest.approx(1.0)
+    assert abs(spring_decay(500.0, 18.0, 1.0)) < 0.01
+    with pytest.raises(ValueError):
+        spring_decay(100.0, 100.0, 0.0)
+
+
+def test_sample_track_ends_exactly_at_the_duration():
+    pairs = sample_track(lambda t: t, 0.6)
+    assert pairs[0] == (0.0, 0.0)
+    assert pairs[-1][0] == 0.6
+    assert len(pairs) == 37  # 36 frames at 60 fps, plus the endpoint
+
+
+@pytest.mark.parametrize('module_name', ['orb_motion', 'orb_layers', 'orb_character'])
 def test_motion_modules_import_with_no_appkit_or_quartz(monkeypatch, module_name):
     for blocked in ('AppKit', 'Quartz', 'Foundation', 'objc'):
         monkeypatch.setitem(sys.modules, blocked, None)

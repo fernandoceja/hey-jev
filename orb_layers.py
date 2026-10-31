@@ -9,13 +9,21 @@ The body, eyes and highlight are native CAGradientLayers with circular masks.
 Only the soft shadow is a pre-rendered image, rendered once per backing scale.
 """
 import math
+import random
 
+from orb_character import EYE_SHAPES, accent_seconds, accent_timeline, breath_batch, eye_shape
 from orb_motion import (
     BODY_SIZE,
+    BOB_AMPLITUDE,
+    BOB_PERIOD,
+    DESIGN_CENTER,
     DESIGN_EXTENT,
     DESIGN_SIZE,
     EYE_EDGE_RGB,
     EYE_SIZE,
+    FLOAT_AMPLITUDE,
+    FLOAT_FRAMES,
+    CLIP_FPS,
     GLYPH_RGB,
     HIGHLIGHT_ALPHA,
     LISTEN_GLYPH_RGB,
@@ -28,7 +36,13 @@ from orb_motion import (
     SHADOW_OPACITY,
     SHADOW_SIZE,
     layer_geometry,
+    shadow_for_bob,
+    sine_samples,
 )
+
+FLOAT_SECONDS = FLOAT_FRAMES / float(CLIP_FPS)
+MOUTH_RECT = (33.0, 23.0, 6.0, 6.0)  # design space, centred under the eyes. yawn opens it to 6 pt.
+MOUTH_RGB = (0.04, 0.06, 0.22)
 
 _SHADOW_IMAGES = {}  # backing scale -> CGImage; the shadow does not depend on appearance
 
@@ -168,12 +182,69 @@ def _glyph_paths(state):
     return None, GLYPH_RGB, None
 
 
+def _shape_path(points):
+    """CGPath from a 13-point eye shape: one move, then four cubic segments, closed."""
+    from Quartz import CGPathAddCurveToPoint, CGPathCloseSubpath, CGPathCreateMutable, CGPathMoveToPoint
+    path = CGPathCreateMutable()
+    CGPathMoveToPoint(path, None, points[0][0], points[0][1])
+    for i in range(1, len(points), 3):
+        c1, c2, end = points[i], points[i + 1], points[i + 2]
+        CGPathAddCurveToPoint(path, None, c1[0], c1[1], c2[0], c2[1], end[0], end[1])
+    CGPathCloseSubpath(path)
+    return path
+
+
+def _shape_layer(path, size):
+    """A CAShapeLayer mask of the given path, sized to its layer."""
+    from Quartz import CAShapeLayer, CGRectMake
+    mask = CAShapeLayer.layer()
+    mask.setFrame_(CGRectMake(0, 0, size, size))
+    mask.setPath_(path)
+    return mask
+
+
+def _track(keypath, pairs, duration, calc="linear"):
+    """Keyframe animation from (t, value) pairs. Holds the first value from 0 s and ends exactly at duration."""
+    from Quartz import CAKeyframeAnimation
+    pairs = list(pairs)
+    if pairs[0][0] > 0.0:
+        pairs.insert(0, (0.0, pairs[0][1]))
+    times = [min(1.0, max(0.0, t / float(duration))) for t, _ in pairs]
+    times[0] = 0.0
+    times[-1] = 1.0
+    anim = CAKeyframeAnimation.animationWithKeyPath_(keypath)
+    anim.setValues_([value for _, value in pairs])
+    anim.setKeyTimes_(times)
+    anim.setDuration_(float(duration))
+    anim.setCalculationMode_(calc)
+    return anim
+
+
+def _loop(keypath, pairs, duration):
+    """An endless, smooth loop that starts and ends at rest."""
+    anim = _track(keypath, pairs, duration, calc="cubic")
+    anim.setRepeatCount_(float("inf"))
+    return anim
+
+
+def _accent_group(animations, duration):
+    from Quartz import CAAnimationGroup
+    group = CAAnimationGroup.animation()
+    group.setAnimations_(animations)
+    group.setDuration_(float(duration))
+    return group
+
+
 class OrbLayers:
     """Owns the layer tree under a host layer. Frames come from orb_motion.layer_geometry."""
 
-    def __init__(self, host):
+    def __init__(self, host, rng=None):
         from Quartz import CALayer, CAShapeLayer, CGPointMake, CGRectMake
         geometry = layer_geometry()
+        self.rng = rng or random.Random()  # breath speeds; not seeded, so each run varies
+        self.scale = 1.0
+        self._passives = False
+        self._eye_paths = {name: _shape_path(eye_shape(name, EYE_SIZE)) for name in EYE_SHAPES}
 
         def place(layer, rect):
             layer.setFrame_(CGRectMake(*rect))
@@ -211,13 +282,17 @@ class OrbLayers:
 
         self.eyes = {}
         self.pupils = {}
+        self.eye_masks = {}
         for side in ("L", "R"):
             eye_rect = geometry["eye" + side]
             pupil_rect = geometry["pupil" + side]
             eye = _gradient_layer((0, 0, EYE_SIZE, EYE_SIZE),
                                         [((1.0, 1.0, 1.0), 1.0, 0.0), (EYE_EDGE_RGB, 1.0, 1.0)],
                                         (0.5, 0.5), (1.0, 1.0))
-            eye.setMask_(_circle_mask(EYE_SIZE))
+            # The eye's mask is a path that morphs between eye shapes. It starts as the open eye.
+            mask = _shape_layer(self._eye_paths["open"], EYE_SIZE)
+            eye.setMask_(mask)
+            self.eye_masks[side] = mask
             place(eye, eye_rect)
             pupil = CAShapeLayer.layer()
             pupil.setFrame_(CGRectMake(pupil_rect[0] - eye_rect[0], pupil_rect[1] - eye_rect[1],
@@ -227,6 +302,11 @@ class OrbLayers:
             eye.addSublayer_(pupil)
             self.eyes[side] = eye
             self.pupils[side] = pupil
+
+        self.mouth = place(CAShapeLayer.layer(), MOUTH_RECT)
+        self.mouth.setPath_(_ellipse_path(0, 0, MOUTH_RECT[2], MOUTH_RECT[3]))
+        self.mouth.setFillColor_(_cg_color(MOUTH_RGB, 0.9))
+        self.mouth.setOpacity_(0.0)
 
         self.glyph = place(CAShapeLayer.layer(), (0, 0, DESIGN_SIZE, DESIGN_SIZE))
         self.glyph_stroke = place(CAShapeLayer.layer(), (0, 0, DESIGN_SIZE, DESIGN_SIZE))
@@ -240,13 +320,14 @@ class OrbLayers:
 
         self.body_group = place(CALayer.layer(), (0, 0, DESIGN_SIZE, DESIGN_SIZE))
         self.body_group.setSublayers_([self.body, self.ring, self.eyes["L"], self.eyes["R"],
-                                       self.glyph, self.glyph_stroke])
+                                       self.mouth, self.glyph, self.glyph_stroke])
         self.root.setSublayers_([self.shadow, self.body_group, self.highlight])
 
     def fit(self, width, height):
         """Centre the design space in the view and scale it like the old drawRect_ path."""
         from Quartz import CGAffineTransformMakeScale, CGPointMake
         scale = min(width, height) / DESIGN_EXTENT if min(width, height) > 0 else 1.0
+        self.scale = scale
         self._disable_actions(lambda: (
             self.root.setPosition_(CGPointMake(width / 2.0, height / 2.0)),
             self.root.setAffineTransform_(CGAffineTransformMakeScale(scale, scale)),
@@ -282,6 +363,96 @@ class OrbLayers:
 
     def set_ring_width(self, width):
         self._disable_actions(lambda: self.ring.setLineWidth_(width))
+
+    def set_passives(self, on):
+        """Bob, float, breath and shadow pulse. They run in the render server, so Python does no per-frame work."""
+        on = bool(on)
+        if on == self._passives:
+            return
+        self._passives = on
+        if on:
+            self._add_passives()
+        else:
+            self._remove_passives()
+
+    def _add_passives(self):
+        body = self.body_group
+        bob = sine_samples(BOB_PERIOD, BOB_AMPLITUDE)
+        body.addAnimation_forKey_(_loop("position.y", [(t, DESIGN_CENTER + off) for t, off in bob], BOB_PERIOD),
+                                  "bob")
+        drift = sine_samples(FLOAT_SECONDS, FLOAT_AMPLITUDE, 48)
+        body.addAnimation_forKey_(_loop("position.x", [(t, DESIGN_CENTER + off) for t, off in drift],
+                                        FLOAT_SECONDS), "float")
+        # One batch of breath cycles with random speeds. The batch is picked again each time passives start.
+        breath = breath_batch(self.rng)
+        total = breath[-1][0]
+        body.addAnimation_forKey_(_loop("transform.scale.x", [(t, sx) for t, sx, _ in breath], total), "breathX")
+        body.addAnimation_forKey_(_loop("transform.scale.y", [(t, sy) for t, _, sy in breath], total), "breathY")
+        # The shadow follows the bob, so it is smallest and faintest at the top of the bob.
+        shadow = self.shadow
+        shadow.addAnimation_forKey_(_loop("transform.scale", [(t, shadow_for_bob(off)[0]) for t, off in bob],
+                                          BOB_PERIOD), "shadowScale")
+        shadow.addAnimation_forKey_(_loop("opacity", [(t, shadow_for_bob(off)[1]) for t, off in bob],
+                                          BOB_PERIOD), "shadowOpacity")
+
+    def _remove_passives(self):
+        for key in ("bob", "float", "breathX", "breathY"):
+            self.body_group.removeAnimationForKey_(key)
+        for key in ("shadowScale", "shadowOpacity"):
+            self.shadow.removeAnimationForKey_(key)
+
+    def play_accent(self, name):
+        """Start one idle accent and return its length in seconds. One group per layer, keyed 'accent'."""
+        timeline = accent_timeline(name)
+        duration = accent_seconds(name)
+        targets = {}  # target name -> (layer, [animations])
+
+        def add(target, layer, animation):
+            targets.setdefault(target, (layer, []))[1].append(animation)
+
+        for side in ("L", "R"):
+            track = timeline.get("eyes_" + side)
+            if track:
+                add("mask" + side, self.eye_masks[side],
+                    _track("path", [(t, self._eye_paths[shape]) for t, shape in track], duration))
+        if "pupil_x" in timeline:
+            for side in ("L", "R"):
+                add("pupil" + side, self.pupils[side],
+                    _track("transform.translation.x", timeline["pupil_x"], duration))
+        if "body_y" in timeline:
+            add("body", self.body_group, _track("transform.translation.y", timeline["body_y"], duration))
+        if "body_sy" in timeline:
+            add("body", self.body_group, _track("transform.scale.y", timeline["body_sy"], duration))
+        if "body_scale" in timeline:
+            add("body", self.body_group, _track("transform.scale", timeline["body_scale"], duration))
+        if "mouth" in timeline:
+            add("mouth", self.mouth, _track("transform.scale.y", timeline["mouth"], duration))
+            add("mouth", self.mouth, _track("opacity", timeline["mouth"], duration))
+        for layer, animations in targets.values():
+            layer.removeAnimationForKey_("accent")
+            layer.addAnimation_forKey_(_accent_group(animations, duration), "accent")
+        return duration
+
+    def set_pupils(self, offsets):
+        """offsets: {"L": (dx, dy), "R": (dx, dy)} in design points. Eases over 0.08 s, linear."""
+        from Quartz import CAMediaTimingFunction, CATransaction, CGAffineTransformMakeTranslation
+        CATransaction.begin()
+        CATransaction.setAnimationDuration_(0.08)
+        CATransaction.setAnimationTimingFunction_(CAMediaTimingFunction.functionWithName_("linear"))
+        try:
+            for side, (dx, dy) in offsets.items():
+                self.pupils[side].setAffineTransform_(CGAffineTransformMakeTranslation(dx, dy))
+        finally:
+            CATransaction.commit()
+
+    def reset_motion(self):
+        """Stop every animation and centre the pupils. Used when motion stops or the orb hides."""
+        from Quartz import CGAffineTransformIdentity
+        self.set_passives(False)
+        for layer in [self.body_group, self.mouth] + list(self.eye_masks.values()) + list(self.pupils.values()):
+            layer.removeAnimationForKey_("accent")
+        self._disable_actions(lambda: [pupil.setAffineTransform_(CGAffineTransformIdentity)
+                                       for pupil in self.pupils.values()])
 
     @staticmethod
     def _disable_actions(work):
