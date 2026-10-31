@@ -283,7 +283,9 @@ class GhostLayerTests(unittest.TestCase):
     def test_docking_does_not_touch_window_levels_beyond_the_documented_restore(self):
         ui = _src("assistant_ui.py")
         expand = _func(ui, "_expand_orb_to_full") + _func(ui, "_land_orb_expand")
-        self.assertNotIn("setLevel_", expand)
+        # PR 8: the docked orb takes one level above its full window, and nothing else in the expand path sets a level.
+        self.assertEqual(expand.count("setLevel_"), 1)
+        self.assertIn("setLevel_(dock_panel_level(full.level()))", expand)
         self.assertNotIn("setFloatingPanel_", expand)
         collapse = _func(ui, "_collapse_orb_from_full")
         self.assertEqual(collapse.count("setLevel_"), 1)

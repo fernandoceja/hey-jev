@@ -657,6 +657,13 @@ def expand_rects(orb_frame, target_frame, screen=None):
     return (x, y, sw, sh), (tx, ty, tw, th)
 
 
+def dock_panel_level(window_level):
+    """Level for the orb panel while it is docked on a full window: one above that window, so the window never draws
+    over it. The floating orb keeps BAR_LEVEL; collapse restores that.
+    """
+    return int(window_level) + 1
+
+
 def dock_point(window_frame, dock=DOCK_ORB):
     """Orb frame (x, y, w, h) docked on the left edge of a full window, at mid height.
 

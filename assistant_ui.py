@@ -203,7 +203,7 @@ from orb_tuck import (TUCK_CLOSE_SIZE, TUCK_FADE_IN_SECONDS, TUCK_FADE_OUT_SECON
 from orb_view import make_orb_view, orb_frame, orb_state
 from orb_motion import (  # PR 6a: expand from the orb, dock on the divider, collapse back
     EXPAND_START_SCALE, ORB_STATE_COLLAPSING, ORB_STATE_EXPANDING, ORB_STATE_IDLE, ORB_STATE_OPEN,
-    SPRING_EXPAND, collapse_target, dock_point, expand_rects, orb_window_next,
+    SPRING_EXPAND, collapse_target, dock_panel_level, dock_point, expand_rects, orb_window_next,
 )
 from area_hotkey import AreaCaptureHotKey
 from orb_motion import (
@@ -4440,14 +4440,40 @@ class AppDelegate(NSObject):
         if notification is not None and notification.object() == getattr(self, "model_field", None):
             self._save_model()
 
+    def windowWillMiniaturize_(self, notification):
+        """Yellow minimize on the full window (PR 8): a docked orb is handed back by running the normal collapse."""
+        if notification.object() != getattr(self, "full_window", None):
+            return
+        if self._orb_window_state_now() != ORB_STATE_OPEN:
+            return  # not docked, so the floating orb is already there
+        print("orb window: miniaturize -> collapse", flush=True)
+        self._collapse_orb_from_full()
+
     def windowDidMiniaturize_(self, notification):
         if notification.object() == self.panel:
             self._sync_mini_bar()
+            return
+        full = getattr(self, "full_window", None)
+        if full is not None and notification.object() == full and self._orb_window_state_now() == ORB_STATE_IDLE:
+            # The collapse already put the orb back, so the window must not sit in the Dock as a miniature.
+            self._orb_suppress_redock = True
+            if full.isMiniaturized():
+                full.deminiaturize_(None)
+            full.orderOut_(None)
+            self._orb_suppress_redock = False
 
     def windowDidDeminiaturize_(self, notification):
         if notification.object() == self.panel:
             self._main_closing = False
             self._sync_mini_bar()
+            return
+        full = getattr(self, "full_window", None)
+        if full is not None and notification.object() == full:
+            if getattr(self, "_orb_suppress_redock", False):
+                return
+            if self._orb_window_state_now() == ORB_STATE_IDLE:
+                print("orb window: deminiaturize -> dock", flush=True)
+                self._expand_orb_to_full("")  # PR 8: a restored full window re-docks the orb
 
     def windowWillClose_(self, notification):
         if notification.object() == getattr(self, "full_window", None):
@@ -5114,7 +5140,9 @@ class AppDelegate(NSObject):
         print("  orb expand: window frame={0} visible={1}".format(
             tuple(round(v, 1) for v in self._frame_tuple(full.frame())), bool(full.isVisible())))
         full.addChildWindow_ordered_(panel, NSWindowAbove)  # the orb follows the window from here on
+        panel.setLevel_(dock_panel_level(full.level()))  # PR 8: docked, the orb sits above its window (collapse restores BAR_LEVEL)
         panel.orderFront_(None)  # docked orb stays on screen while the window is open
+        print("  orb dock level: panel={0} window={1}".format(panel.level(), full.level()), flush=True)
         print("  orb expand: docked orb visible={0} child={1}".format(
             bool(panel.isVisible()), panel.parentWindow() is full))
         draft = getattr(self, "_orb_expand_draft", "")
