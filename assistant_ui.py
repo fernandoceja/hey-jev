@@ -13,6 +13,7 @@ import subprocess
 import sys
 import threading
 import time
+from datetime import datetime
 
 import objc
 from AppKit import (
@@ -24,9 +25,14 @@ from AppKit import (
     NSApplicationActivationPolicyRegular,
     NSBackingStoreBuffered,
     NSBezierPath,
+    NSBitmapImageFileTypePNG,
+    NSBitmapImageRep,
     NSBox,
     NSButton,
     NSColor,
+    NSCursor,
+    NSRoundLineCapStyle,
+    NSRoundLineJoinStyle,
     NSEvent,
     NSEventMaskFlagsChanged,
     NSEventMaskKeyDown,
@@ -103,6 +109,7 @@ from assistant_layout import (
 )
 from bubble import Bubble
 from dictation import HISTORY, read_vocab, save_vocab
+from markup import LINE_WIDTH_PT, Strokes, can_save, image_line_width, markup_folder, reference_rect, temp_capture_now, to_image_points
 from mini_bar import (
     ORIGIN_KEY,
     PEEK_PREF_KEY,
@@ -202,6 +209,7 @@ KeyablePanel = keyable_panel(NSPanel)
 
 NORMAL, FLOATING = 0, 3  # NSNormalWindowLevel, NSFloatingWindowLevel
 BAR_LEVEL = 28  # above NSStatusWindowLevel, so the capsule stays over status items
+MARKUP_LEVEL = 101  # NSPopUpMenuWindowLevel: the mark up overlay covers the menu bar and the Dock (PR 5b)
 SIDEBAR_MATERIAL = 7  # NSVisualEffectMaterialSidebar
 HINTS = {"ptt": "Hold right Option to talk", "wake": "Say “Hey Jev”, then your command"}
 MODES = ("ptt", "wake")
@@ -1126,6 +1134,104 @@ class ClickAwayView(NSView):
         on_resize = getattr(self, "onResize", None)
         if on_resize is not None:
             on_resize()
+
+
+class MarkupWindow(NSWindow):
+    """One per screen for Mark up. Borderless, so it can still become key and take Esc and ⌘Z."""
+
+    def canBecomeKeyWindow(self):
+        return True
+
+    def canBecomeMainWindow(self):
+        return False
+
+
+class MarkupView(NSView):
+    """Covers one screen. Draws every stroke in its own coordinates and passes mouse and keys to the delegate.
+
+    Strokes are kept in global screen points by the delegate. This view only offsets them by its own origin, so a
+    stroke that crosses two displays shows on both. Each stroke is one CAShapeLayer, and each layer has its own
+    contentsScale.
+    """
+
+    markup_owner = None
+    markup_origin = (0.0, 0.0)  # this screen's origin, in global points
+    markup_scale = 2.0  # backing scale of the window on this screen
+    markup_layers = None  # [CAShapeLayer, points drawn] for each stroke, in stroke order
+
+    def acceptsFirstMouse_(self, _event):
+        return True
+
+    def isOpaque(self):
+        return False
+
+    def resetCursorRects(self):
+        self.addCursorRect_cursor_(self.bounds(), NSCursor.crosshairCursor())
+
+    def mouseMoved_(self, _event):
+        NSCursor.crosshairCursor().set()
+
+    def mouseDown_(self, event):
+        if self.markup_owner is not None:
+            self.markup_owner._markup_begin(self._markup_global_point(event))
+
+    def mouseDragged_(self, event):
+        if self.markup_owner is not None:
+            self.markup_owner._markup_extend(self._markup_global_point(event))
+
+    def mouseUp_(self, _event):
+        if self.markup_owner is not None:
+            self.markup_owner._markup_end()
+
+    def keyDown_(self, event):
+        if self.markup_owner is not None and self.markup_owner._markup_key(event):
+            return
+        objc.super(MarkupView, self).keyDown_(event)
+
+    def performKeyEquivalent_(self, event):
+        # ⌘Z can belong to a menu item, so it is taken here before the menu sees it.
+        if self.markup_owner is not None and self.markup_owner._markup_key(event):
+            return True
+        return objc.super(MarkupView, self).performKeyEquivalent_(event)
+
+    @objc.python_method
+    def _markup_global_point(self, event):
+        loc = event.locationInWindow()
+        frame = self.window().frame()
+        return (float(frame.origin.x + loc.x), float(frame.origin.y + loc.y))
+
+    @objc.python_method
+    def sync_strokes(self, strokes):
+        """Make the layers match the strokes: add, remove, or rebuild the path of a stroke that grew."""
+        from Quartz import CAShapeLayer  # lazy, as in orb_layers.py
+        root = self.layer()
+        if self.markup_layers is None:
+            self.markup_layers = []
+        while len(self.markup_layers) > len(strokes):
+            layer, _count = self.markup_layers.pop()
+            layer.removeFromSuperlayer()
+        ox, oy = self.markup_origin
+        for index, stroke in enumerate(strokes):
+            if index >= len(self.markup_layers):
+                layer = CAShapeLayer.layer()
+                layer.setFillColor_(None)
+                layer.setStrokeColor_(NSColor.systemRedColor().CGColor())
+                layer.setLineWidth_(LINE_WIDTH_PT)
+                layer.setLineCap_("round")
+                layer.setLineJoin_("round")
+                layer.setContentsScale_(self.markup_scale)
+                layer.setFrame_(self.bounds())
+                root.addSublayer_(layer)
+                self.markup_layers.append([layer, 0])
+            entry = self.markup_layers[index]
+            if entry[1] != len(stroke):
+                path = NSBezierPath.bezierPath()
+                x, y = stroke[0]
+                path.moveToPoint_(NSMakePoint(x - ox, y - oy))
+                for x, y in stroke[1:]:
+                    path.lineToPoint_(NSMakePoint(x - ox, y - oy))
+                entry[0].setPath_(path.CGPath())
+                entry[1] = len(stroke)
 
 
 class AppDelegate(NSObject):
@@ -2732,12 +2838,15 @@ class AppDelegate(NSObject):
     def actionMenuPick_(self, sender):
         ident = "" if sender is None else str(sender.identifier() or "")
         self._close_action_menu()
+        if ident == "markup":
+            self._open_markup()  # PR 5b: the overlay, not an area capture
+            return
         if ident:
             threading.Thread(target=self._run_action_menu_capture, args=(ident,), daemon=True).start()
 
     @objc.python_method
     def _run_action_menu_capture(self, ident):
-        """Every menu action starts here, with take_screenshot(mode="area") on the captures book. Off the main thread.
+        """Every area-capture menu action starts here, with take_screenshot(mode="area") on the captures book. Off the main thread. Mark up never comes here: it opens its own overlay (PR 5b).
 
         Esc or a zero-size selection is "cancelled" and does nothing. Each action then runs on its own path. Find Image
         and Copy Image use the same functions as the Jev commands, and none of them opens the Jev window. Ask and the
@@ -2754,10 +2863,6 @@ class AppDelegate(NSObject):
                 return
             path = str((BOOK.last or {}).get("path") or "")
             print(f"  action menu: capture saved {os.path.basename(path)}")
-            if ident == "markup":
-                subprocess.run(["open", "-a", "Preview", path], check=False)  # until PR 5b's mark up overlay
-                print("  action menu: markup opened in Preview")
-                return
             if ident == "share_copy":
                 print(f"  action menu: copy image: {run_capture_menu('share_copy', book=BOOK)}")
                 return
@@ -2787,6 +2892,223 @@ class AppDelegate(NSObject):
             self._open_choice_question()
             return
         print(f"  action menu: no handler for {ident}")
+
+    # PR 5b: Mark up on screen. One overlay per screen at MARKUP_LEVEL. Return saves, Esc leaves with no file, ⌘Z undoes.
+    # Every step is logged to Hey Jev.log. Strokes are kept in global points, and nothing is uploaded.
+    @objc.python_method
+    def _open_markup(self):
+        if self._markup_live() or getattr(self, "_markup_saving", False):
+            return
+        screens = list(NSScreen.screens() or [])
+        if not screens:
+            print("  markup: no screen to draw on")
+            return
+        self._markup_strokes = Strokes()
+        self._markup_windows = []
+        self._markup_views = []
+        self._markup_saving = False
+        pointer = NSEvent.mouseLocation()
+        key_window = None
+        for screen in screens:
+            frame = screen.frame()
+            window = MarkupWindow.alloc().initWithContentRect_styleMask_backing_defer_(
+                frame, NSWindowStyleMaskBorderless, NSBackingStoreBuffered, False)
+            window.setLevel_(MARKUP_LEVEL)
+            window.setOpaque_(False)
+            window.setBackgroundColor_(NSColor.clearColor())
+            window.setHasShadow_(False)
+            window.setReleasedWhenClosed_(False)
+            window.setAcceptsMouseMovedEvents_(True)
+            window.setCollectionBehavior_(NSWindowCollectionBehaviorFullScreenAuxiliary)
+            view = MarkupView.alloc().initWithFrame_(NSMakeRect(0, 0, frame.size.width, frame.size.height))
+            view.markup_owner = self
+            view.markup_origin = (float(frame.origin.x), float(frame.origin.y))
+            view.markup_scale = float(window.backingScaleFactor())
+            view.setWantsLayer_(True)
+            view.layer().setContentsScale_(view.markup_scale)
+            view.markup_layers = []
+            window.setContentView_(view)
+            window.makeFirstResponder_(view)
+            window.orderFrontRegardless()
+            self._markup_windows.append(window)
+            self._markup_views.append(view)
+            fx, fy, fw, fh = float(frame.origin.x), float(frame.origin.y), float(frame.size.width), float(frame.size.height)
+            if key_window is None and fx <= pointer.x < fx + fw and fy <= pointer.y < fy + fh:
+                key_window = window
+        (key_window or self._markup_windows[0]).makeKeyAndOrderFront_(None)
+        NSApp.activateIgnoringOtherApps_(True)
+        for window in self._markup_windows:
+            window.invalidateCursorRectsForView_(window.contentView())
+        NSCursor.crosshairCursor().set()
+        print(f"  markup: opened on {len(self._markup_windows)} screen(s)")
+
+    @objc.python_method
+    def _markup_live(self):
+        return bool(getattr(self, "_markup_windows", None)) and not getattr(self, "_markup_saving", False)
+
+    @objc.python_method
+    def _markup_sync(self):
+        strokes = self._markup_strokes.all_strokes()
+        for view in self._markup_views:
+            view.sync_strokes(strokes)
+
+    @objc.python_method
+    def _markup_begin(self, point):
+        if self._markup_live():
+            self._markup_strokes.begin(point)
+            self._markup_sync()
+
+    @objc.python_method
+    def _markup_extend(self, point):
+        if self._markup_live() and self._markup_strokes.extend(point):
+            self._markup_sync()
+
+    @objc.python_method
+    def _markup_end(self):
+        if self._markup_live():
+            self._markup_strokes.end()
+            self._markup_sync()
+
+    @objc.python_method
+    def _markup_undo(self):
+        if not self._markup_live():
+            return
+        if self._markup_strokes.undo():
+            self._markup_sync()
+            print(f"  markup: undo, {self._markup_strokes.count()} stroke(s) left")
+
+    @objc.python_method
+    def _markup_key(self, event):
+        """True when the key was handled. ⌘Z undoes, Esc cancels, Return saves. Everything else goes on."""
+        if not getattr(self, "_markup_windows", None):
+            return False
+        flags = int(event.modifierFlags())
+        if flags & NSEventModifierFlagCommand and str(event.charactersIgnoringModifiers() or "").lower() == "z":
+            self._markup_undo()
+            return True
+        code = int(event.keyCode())
+        if code == 53:  # Esc
+            self._markup_cancel()
+            return True
+        if code in (36, 76):  # Return, keypad Enter
+            self._markup_save()
+            return True
+        return False
+
+    @objc.python_method
+    def _markup_cancel(self):
+        if not self._markup_live():
+            return
+        count = self._markup_strokes.count()
+        self._close_markup()
+        print(f"  markup: cancelled with {count} stroke(s), no file saved")
+
+    @objc.python_method
+    def _markup_save(self):
+        if not self._markup_live():
+            return
+        self._markup_strokes.end()
+        self._markup_sync()
+        if not can_save(self._markup_strokes):
+            print("  markup: save refused, no strokes drawn")
+            return
+        self._markup_saving = True
+        stroke_list = self._markup_strokes.all_strokes()
+        frames = []
+        for screen in NSScreen.screens() or []:  # screens()[0] is the menu bar screen, the fallback reference
+            frame = screen.frame()
+            frames.append((float(frame.origin.x), float(frame.origin.y), float(frame.size.width), float(frame.size.height)))
+        # The overlay leaves the screen first, so the capture underneath it is clean. The strokes go on afterwards.
+        for window in self._markup_windows:
+            window.orderOut_(None)
+        print(f"  markup: saving {len(stroke_list)} stroke(s)")
+        threading.Thread(target=self._run_markup_save, args=(stroke_list, frames), daemon=True).start()
+
+    @objc.python_method
+    def _run_markup_save(self, stroke_list, frames):
+        """Off the main thread: a silent full-screen capture into ~/Documents/.cos-tmp, composited with the strokes.
+
+        The result goes into the Captures folder as one PNG. The temp capture is removed in every case.
+        """
+        temp = None
+        sentence = "Couldn't save the mark up."
+        try:
+            time.sleep(0.15)  # give the overlay windows time to leave the screen
+            from commands.captures import BOOK, capture_name, captures_folder, permission_failure, screenshot_command, _saved_sentence
+            folder = markup_folder()
+            os.makedirs(folder, exist_ok=True)
+            temp = temp_capture_now(folder)
+            result = subprocess.run(screenshot_command("full", temp), capture_output=True, text=True, timeout=30)
+            if result.returncode or not os.path.exists(temp) or os.path.getsize(temp) == 0:
+                detail = (result.stderr or "").strip() or "screencapture failed"
+                if permission_failure(detail):
+                    sentence = "I couldn't take a screenshot. Allow Screen Recording for Hey Jev."
+                raise RuntimeError(detail)
+            rep = NSBitmapImageRep.imageRepWithContentsOfFile_(temp)
+            if rep is None:
+                raise RuntimeError("could not read the capture")
+            image_px = (int(rep.pixelsWide()), int(rep.pixelsHigh()))
+            ref = reference_rect(image_px, frames)
+            out_dir = captures_folder()
+            os.makedirs(out_dir, exist_ok=True)
+            out_path = os.path.join(out_dir, capture_name("screenshot", "full", datetime.now().astimezone()))
+            self._composite_markup(temp, out_path, to_image_points(stroke_list, ref, image_px), image_line_width(image_px, ref), image_px)
+            BOOK.remember(out_path, "screenshot")
+            sentence = _saved_sentence("full", out_path)
+            print(f"  markup: saved {os.path.basename(out_path)} with {len(stroke_list)} stroke(s)")
+        except Exception as exc:
+            print(f"  markup: save failed: {exc}")
+        finally:
+            if temp and os.path.exists(temp):
+                try:
+                    os.remove(temp)
+                    print(f"  markup: removed temp capture {os.path.basename(temp)}")
+                except OSError as exc:
+                    print(f"  markup: could not remove temp capture: {exc}")
+        self.performSelectorOnMainThread_withObject_waitUntilDone_("markupFinished:", sentence, False)
+
+    @objc.python_method
+    def _composite_markup(self, base_path, out_path, strokes_px, line_px, image_px):
+        """The capture with each stroke drawn over it in systemRed, round caps, then written as a PNG."""
+        base = NSImage.alloc().initWithContentsOfFile_(base_path)
+        if base is None:
+            raise RuntimeError("could not load the capture")
+        width, height = image_px
+        canvas = NSImage.alloc().initWithSize_(NSMakeSize(width, height))
+        canvas.lockFocus()
+        try:
+            base.drawInRect_(NSMakeRect(0, 0, width, height))
+            NSColor.systemRedColor().setStroke()
+            for stroke in strokes_px:
+                path = NSBezierPath.bezierPath()
+                path.setLineWidth_(line_px)
+                path.setLineCapStyle_(NSRoundLineCapStyle)
+                path.setLineJoinStyle_(NSRoundLineJoinStyle)
+                x, y = stroke[0]
+                path.moveToPoint_(NSMakePoint(x, y))
+                for x, y in stroke[1:]:
+                    path.lineToPoint_(NSMakePoint(x, y))
+                path.stroke()
+        finally:
+            canvas.unlockFocus()
+        rep = NSBitmapImageRep.imageRepWithData_(canvas.TIFFRepresentation())
+        data = rep.representationUsingType_properties_(NSBitmapImageFileTypePNG, None)
+        if data is None or not data.writeToFile_atomically_(out_path, True):
+            raise RuntimeError("could not write the PNG")
+
+    @objc.python_method
+    def _close_markup(self):
+        for window in getattr(self, "_markup_windows", None) or []:
+            window.orderOut_(None)
+        self._markup_windows = []
+        self._markup_views = []
+        self._markup_strokes = None
+        self._markup_saving = False
+        NSCursor.arrowCursor().set()
+
+    def markupFinished_(self, sentence):
+        self._close_markup()
+        self.showCaptureResult_(str(sentence or ""))
 
     # PR 5a: the Find Image hint. The same dark style as the result panel; nonactivating so Chrome keeps focus.
     @objc.python_method
