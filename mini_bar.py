@@ -544,9 +544,40 @@ def normalize_typed(text):
 # it on every Space, including over a full-screen app.
 # IgnoresCycle (64) keeps the capsule out of the Command-` window cycle.
 CAN_JOIN_ALL_SPACES = 1
+STATIONARY = 16
+IGNORES_CYCLE = 64
 FULL_SCREEN_AUXILIARY = 256
-BAR_COLLECTION = CAN_JOIN_ALL_SPACES | FULL_SCREEN_AUXILIARY | 16
-BAR_COLLECTION |= 64
+BAR_COLLECTION = CAN_JOIN_ALL_SPACES | STATIONARY | IGNORES_CYCLE | FULL_SCREEN_AUXILIARY
+# Above NSStatusWindowLevel (25), so the orb stays over status items and normal windows.
+ORB_WINDOW_LEVEL = 28
+
+
+def orb_window_config():
+    """Flags for the orb and popover window (one panel), so the desktop never sweeps it away.
+
+    Status-level and floating; on every Space and over full-screen apps; Stationary so Mission Control,
+    Show Desktop and the Sonoma "Click wallpaper to reveal desktop" sweep leave it put; out of the
+    Command-` cycle. It never hides on deactivate or with Hide Jev (Command-H). The popover still closes
+    on a click away; that is PillPresentation's job, not the window's.
+    """
+    return {
+        "level": ORB_WINDOW_LEVEL,
+        "collection": BAR_COLLECTION,
+        "floating": True,
+        "hides_on_deactivate": False,
+        "can_hide": False,
+    }
+
+
+def orb_should_reassert(should_show, panel_visible):
+    """Order the orb front again (orderFrontRegardless) after the popover closes or the app (de)activates.
+
+    'front' when the bar is wanted: it re-raises a visible orb and puts back one the system took away.
+    'none' when the bar is meant to be hidden (main window up, Hide Mini Bar, quitting).
+    """
+    if not should_show:
+        return "none"
+    return "front"
 
 
 def attachments_supported():

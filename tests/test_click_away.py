@@ -74,7 +74,7 @@ class TestClickAwayWiring(unittest.TestCase):
         ui = _ui()
         close = _func(ui, "_close_popover_on_click_away")
         self.assertIn("click_away()", close)
-        self.assertIn("_keep_orb_visible", close)
+        self.assertIn("_reassert_orb", close)
         self.assertIn("_popover_history_open = False", close)
         self.assertNotIn("_hide_bar", close)
         self.assertNotIn("orderOut_", close)
@@ -88,7 +88,7 @@ class TestClickAwayWiring(unittest.TestCase):
         self.assertIn("_sync_click_away_monitor(False)", ui)
 
     def test_resign_key_keeps_orb(self):
-        self.assertIn("_keep_orb_visible", _func(_ui(), "windowDidResignKey_"))
+        self.assertIn("_reassert_orb", _func(_ui(), "windowDidResignKey_"))
 
     def test_late_fade_out_does_not_hide_a_wanted_orb(self):
         ui = _ui()

@@ -149,6 +149,8 @@ from mini_bar import (
     choice_panel_box,
     pointer_inside,
     clicked_outside_popover,
+    orb_should_reassert,
+    orb_window_config,
     orb_after_click_away,
     migrate_saved_origin,
     place_bar,
@@ -187,7 +189,7 @@ from updates import check_upstream, safe_browser_url
 KeyablePanel = keyable_panel(NSPanel)
 
 NORMAL, FLOATING = 0, 3  # NSNormalWindowLevel, NSFloatingWindowLevel
-BAR_LEVEL = 28  # above NSStatusWindowLevel, so the capsule stays over status items
+BAR_LEVEL = 28  # above NSStatusWindowLevel, so the capsule stays over status items. Same as mini_bar.ORB_WINDOW_LEVEL.
 SIDEBAR_MATERIAL = 7  # NSVisualEffectMaterialSidebar
 HINTS = {"ptt": "Hold right Option to talk", "wake": "Say “Hey Jev”, then your command"}
 MODES = ("ptt", "wake")
@@ -1932,6 +1934,7 @@ class AppDelegate(NSObject):
 
     def activeSpaceDidChange_(self, _notification):
         self._force_ptt_release("space")
+        self._reassert_orb()
 
     @objc.python_method
     def _accessibility_trusted(self):
@@ -2081,27 +2084,12 @@ class AppDelegate(NSObject):
         self.mini_panel = KeyablePanel.alloc().initWithContentRect_styleMask_backing_defer_(
             NSMakeRect(0, 0, size[0], size[1]), style, NSBackingStoreBuffered, False
         )
-        self.mini_panel.setLevel_(BAR_LEVEL)
         self.mini_panel.setOpaque_(False)
         self.mini_panel.setBackgroundColor_(NSColor.clearColor())
         self.mini_panel.setHasShadow_(True)
-        self.mini_panel.setFloatingPanel_(True)
-        self.mini_panel.setHidesOnDeactivate_(False)
+        self._apply_orb_window_flags(self.mini_panel)
         self.mini_panel.setBecomesKeyOnlyIfNeeded_(PILL_BECOMES_KEY_ONLY_IF_NEEDED)
         self.mini_panel.setMovableByWindowBackground_(True)
-        # Every Space, including over full-screen apps. The numeric mask matches
-        # these AppKit flags; Stationary stops the pill hopping between Spaces.
-        self.mini_panel.setCollectionBehavior_(
-            NSWindowCollectionBehaviorCanJoinAllSpaces
-            | NSWindowCollectionBehaviorFullScreenAuxiliary
-            | NSWindowCollectionBehaviorStationary
-        )
-        if BAR_COLLECTION != (
-            int(NSWindowCollectionBehaviorCanJoinAllSpaces)
-            | int(NSWindowCollectionBehaviorFullScreenAuxiliary)
-            | int(NSWindowCollectionBehaviorStationary)
-        ):
-            self.mini_panel.setCollectionBehavior_(BAR_COLLECTION)
         self.mini_panel.setReleasedWhenClosed_(False)
         self.mini_panel.setRestorable_(False)
         # No forced Dark Aqua. Label colors and the glass follow light and dark.
@@ -2277,6 +2265,35 @@ class AppDelegate(NSObject):
                 self._sync_orb()
 
         self._fade_bar(0.0, done)
+
+    @objc.python_method
+    def _apply_orb_window_flags(self, panel):
+        """Status-level, every Space, Stationary, out of the window cycle, never hidden on deactivate or Hide."""
+        config = orb_window_config()
+        panel.setLevel_(config["level"])
+        panel.setFloatingPanel_(config["floating"])
+        panel.setHidesOnDeactivate_(config["hides_on_deactivate"])
+        panel.setCanHide_(config["can_hide"])
+        panel.setCollectionBehavior_(config["collection"])
+
+    @objc.python_method
+    def _reassert_orb(self):
+        """Re-show the orb with orderFrontRegardless when it should be visible."""
+        panel = getattr(self, "mini_panel", None)
+        if panel is None or not hasattr(self, "bar"):
+            return
+        if orb_should_reassert(self.bar.should_show(), bool(panel.isVisible())) != "front":
+            return
+        self._keep_orb_visible()
+        if panel.collectionBehavior() != orb_window_config()["collection"]:
+            self._apply_orb_window_flags(panel)
+        panel.orderFrontRegardless()
+
+    def applicationDidBecomeActive_(self, _notification):
+        self._reassert_orb()
+
+    def applicationDidResignActive_(self, _notification):
+        self._reassert_orb()
 
     @objc.python_method
     def _keep_orb_visible(self):
@@ -2573,7 +2590,7 @@ class AppDelegate(NSObject):
         pill.focus_lost()
         if pill.collapsed:
             self._apply_pill_presentation()
-            self._keep_orb_visible()
+            self._reassert_orb()
 
     def layoutMiniBar_(self, _sender):
         panel = getattr(self, "mini_panel", None)
@@ -2814,6 +2831,8 @@ class AppDelegate(NSObject):
         self._apply_mic_tint()
         self._sync_orb()
         self._sync_click_away_monitor(not self.pillCollapsed)
+        if self.pillCollapsed:
+            self._reassert_orb()  # every way the popover closes leaves the orb up front
 
     @objc.python_method
     def _sync_click_away_monitor(self, wanted):
@@ -2853,7 +2872,7 @@ class AppDelegate(NSObject):
             keys.release(NSApp, getattr(self, "mini_panel", None))
         self._refresh_trailing_symbol()
         self._apply_pill_presentation()
-        self._keep_orb_visible()
+        self._reassert_orb()
 
     @objc.python_method
     def _place_expanded_on_main_screen(self):

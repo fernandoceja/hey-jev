@@ -190,9 +190,9 @@ class TestPillKeyWindow(unittest.TestCase):
         self.assertIn("return pill_can_become_key()", bar)
         self.assertIn("NSWindowStyleMaskNonactivatingPanel", _func(ui, "_build_mini_bar"))
         self.assertIn("setBecomesKeyOnlyIfNeeded_(PILL_BECOMES_KEY_ONLY_IF_NEEDED)", ui)
-        self.assertIn("NSWindowCollectionBehaviorCanJoinAllSpaces", _func(ui, "_build_mini_bar"))
-        self.assertIn("NSWindowCollectionBehaviorFullScreenAuxiliary", _func(ui, "_build_mini_bar"))
-        self.assertIn("NSWindowCollectionBehaviorStationary", _func(ui, "_build_mini_bar"))
+        # CanJoinAllSpaces, FullScreenAuxiliary and Stationary are in BAR_COLLECTION, applied in one place.
+        self.assertIn("_apply_orb_window_flags(self.mini_panel)", _func(ui, "_build_mini_bar"))
+        self.assertIn('setCollectionBehavior_(config["collection"])', _func(ui, "_apply_orb_window_flags"))
         self.assertIn("setMovableByWindowBackground_(True)", _func(ui, "_build_mini_bar"))
         field_cls = ui[ui.index("class PillTextField"):ui.index("class ClickAwayView")]
         self.assertIn("def acceptsFirstMouse_", field_cls)

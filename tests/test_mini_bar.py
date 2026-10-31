@@ -268,9 +268,10 @@ class TestPlacement(unittest.TestCase):
         ui = open(os.path.join(ROOT, "assistant_ui.py"), encoding="utf-8").read()
         self.assertNotIn("performWindowDragWithEvent_", ui)
         self.assertIn("setMovableByWindowBackground_(True)", ui)
-        self.assertIn("NSWindowCollectionBehaviorCanJoinAllSpaces", ui)
-        self.assertIn("NSWindowCollectionBehaviorFullScreenAuxiliary", ui)
-        self.assertIn("self.mini_panel.setLevel_(BAR_LEVEL)", ui)
+        # The level and collection behavior come from mini_bar.orb_window_config (see tests/test_orb_window.py).
+        self.assertIn("self._apply_orb_window_flags(self.mini_panel)", ui)
+        self.assertIn('panel.setCollectionBehavior_(config["collection"])', ui)
+        self.assertIn('panel.setLevel_(config["level"])', ui)
         drag = _func(ui, "mouseDown_")
         self.assertIn("class MiniBarBackground", ui[:ui.index("def mouseDown_")])
         self.assertIn("drag_origin", drag)
