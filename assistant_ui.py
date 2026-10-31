@@ -209,6 +209,7 @@ from orb_motion import (  # PR 6a: expand from the orb, dock on the divider, col
     EXPAND_START_SCALE, ORB_STATE_COLLAPSING, ORB_STATE_EXPANDING, ORB_STATE_IDLE, ORB_STATE_OPEN,
     SPRING_EXPAND, collapse_target, dock_panel_level, dock_point, expand_rects, orb_window_next,
 )
+from commands.brief_offer import BRIEF_OFFER_LINE, OFFER_WINDOW_SECONDS
 from area_hotkey import CARBON_CONTROL, CARBON_OPTION, AreaCaptureHotKey, CarbonHotKey
 from orb_motion import (
     MENU_CORNER_RADIUS, MENU_FILL_HOVER, MENU_FILL_REST, MENU_FAN_START_SCALE, MENU_HOVER_SECONDS,
@@ -2490,6 +2491,58 @@ class AppDelegate(NSObject):
     def _type_hotkey_pressed(self):
         """Control-Option-J from any app: the orb and the input pill, never the full window (see focusTypeField_)."""
         self.focusTypeField_(None)
+
+    @objc.python_method
+    def _brief_offer_buttons(self):
+        """The two small buttons for the brief's offer. Built once, on the orb panel's content view, hidden until an offer."""
+        existing = getattr(self, "_brief_buttons", None)
+        if existing is not None:
+            return existing
+        root = self.mini_panel.contentView()
+        audio = NSButton.alloc().initWithFrame_(NSMakeRect(0, 0, 96, 24))
+        audio.setTitle_("Play audio")
+        audio.setTarget_(self)
+        audio.setAction_("briefPlayAudio:")
+        no_thanks = NSButton.alloc().initWithFrame_(NSMakeRect(0, 0, 96, 24))
+        no_thanks.setTitle_("No thanks")
+        no_thanks.setTarget_(self)
+        no_thanks.setAction_("briefNoThanks:")
+        for button in (audio, no_thanks):
+            button.setHidden_(True)
+            root.addSubview_(button)
+        self._brief_buttons = (audio, no_thanks)
+        return self._brief_buttons
+
+    @objc.python_method
+    def _show_brief_offer_buttons(self, show):
+        """Show the offer's buttons along the top right of the popover. They hide again when the window runs out."""
+        if not show and getattr(self, "_brief_buttons", None) is None:
+            return
+        audio, no_thanks = self._brief_offer_buttons()
+        if show:
+            bounds = self.mini_panel.contentView().bounds()
+            top = float(bounds.size.height) - 34.0
+            right = float(bounds.size.width) - 12.0
+            no_thanks.setFrameOrigin_(NSMakePoint(right - 96.0, top))
+            audio.setFrameOrigin_(NSMakePoint(right - 96.0 - 8.0 - 96.0, top))
+            self.performSelector_withObject_afterDelay_("hideBriefOfferButtons:", None, OFFER_WINDOW_SECONDS)
+        audio.setHidden_(not show)
+        no_thanks.setHidden_(not show)
+
+    def hideBriefOfferButtons_(self, _sender):
+        self._show_brief_offer_buttons(False)
+
+    def briefPlayAudio_(self, _sender):
+        self._answer_brief_offer("play it")
+
+    def briefNoThanks_(self, _sender):
+        self._answer_brief_offer("no thanks")
+
+    @objc.python_method
+    def _answer_brief_offer(self, phrase):
+        """A button answers the offer the same way typing or saying the phrase would."""
+        self._show_brief_offer_buttons(False)
+        self._dispatch_text_plan({"kind": "run", "control": ("text", phrase), "reveal_main": False})
 
     @objc.python_method
     def _note_turn_text(self, text):
@@ -6769,6 +6822,10 @@ class AppDelegate(NSObject):
         detail = str(payload.get("detail", ""))
         previous = str(self.status.stringValue()) if getattr(self, "status", None) is not None else ""
         self.status.setStringValue_(state)
+        if detail.rstrip().endswith(BRIEF_OFFER_LINE):
+            self._show_brief_offer_buttons(True)  # PR 8c: the brief's offer, with its two buttons
+        else:
+            self._show_brief_offer_buttons(False)
         reaction = reaction_for_status(previous, state, detail)  # PR 7b: success or failure
         if reaction is not None and getattr(self, "orb_view", None) is not None:
             self.orb_view.offerReaction(reaction)

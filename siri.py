@@ -9,6 +9,7 @@ import numpy as np, requests, sounddevice as sd, soundfile as sf
 from dotenv import load_dotenv
 from pynput import keyboard
 import commands
+from commands.brief_offer import BRIEF_OFFER_LINE, OFFER_WINDOW_SECONDS, BriefOffer, split_sentences
 from commands.model import (
     MAX_TOKENS_ANSWER,
     MAX_TOKENS_REMINDER,
@@ -1162,6 +1163,18 @@ def handle(text, stt_ms=None, notify=None, reply_sink=None, quiet=False):
         return
     if pending in ("expired", "other"):
         print(f"  confirm: {pending}, handling this as a new request")
+    # PR 8c: a reply to the brief's audio offer. A yes plays the audio. Any other reply dismisses the offer, and a reply
+    # that is not a yes or a no still runs as a request.
+    outcome, consumed = brief_offer.answer(text)
+    if outcome is not None:
+        print(f"brief: audio offer {outcome}", flush=True)
+        if outcome == "accepted":
+            BRIEF_AUDIO.play(notify)
+        else:
+            BRIEF_AUDIO.discard()
+        if consumed:
+            misses = 0
+            return
     # Local phrases, including message reads, are chosen before TypeSafe or Haiku.
     early = decide(None, text)
     if early is None and commands.is_private_message_request(text):
@@ -1335,6 +1348,109 @@ def _log_action_failure(action, exc, private=False):
     print(traceback.format_exc(), flush=True)
 
 
+# --------------------------------------------------------------------------- Brief as text, audio on request (PR 8c)
+brief_offer = BriefOffer()
+
+
+class BriefAudio:
+    """The brief's Fish audio. It is made in the background as soon as the text is shown, and played only when the user
+    says yes. Sentences are made in order. Playback starts with sentence 1 as soon as it is ready, then goes through the
+    rest in order, one afplay at a time, so nothing overlaps. Declined or expired audio is discarded and never played.
+    """
+
+    SENTENCE_WAIT_SECONDS = 30.0
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.generation = 0
+        self.paths = []
+        self.events = []
+
+    def prefetch(self, sentences):
+        if not sentences:
+            return
+        with self.lock:
+            self.generation += 1
+            generation = self.generation
+            paths = [None] * len(sentences)
+            events = [threading.Event() for _ in sentences]
+            self.paths, self.events = paths, events
+
+        def work():
+            begun = time.monotonic()
+            for index, sentence in enumerate(sentences):
+                path = None
+                if generation == self.generation:
+                    try:
+                        path, _ms, _cached = fetch_tts(sentence)  # the same cached Fish call as any reply
+                    except Exception:
+                        path = None
+                paths[index] = path if generation == self.generation else None
+                events[index].set()
+            if generation == self.generation:
+                print(f"brief: audio prefetch ready in {int((time.monotonic() - begun) * 1000)}ms", flush=True)
+
+        threading.Thread(target=work, name="brief-audio", daemon=True).start()
+
+    def discard(self):
+        with self.lock:
+            self.generation += 1
+            events = self.events
+            self.paths, self.events = [], []
+        for event in events:
+            event.set()  # release a player that is waiting; it sees the new generation and stops
+
+    def play(self, notify=None):
+        with self.lock:
+            paths, events, generation = self.paths, self.events, self.generation
+        if not events:
+            print("brief: audio unavailable", flush=True)
+            return
+        started = time.monotonic()
+
+        def player():
+            first = True
+            for index, event in enumerate(events):
+                event.wait(self.SENTENCE_WAIT_SECONDS)
+                if generation != self.generation:
+                    return
+                path = paths[index]
+                if not path:
+                    continue
+                if first:
+                    print(f"tts: first audio in {int((time.monotonic() - started) * 1000)}ms", flush=True)
+                    first = False
+                subprocess.run(["afplay", path])
+                if generation != self.generation:
+                    return
+            emit(notify, "Ready", "")
+
+        emit(notify, "Speaking", "Reading the brief")
+        threading.Thread(target=player, name="brief-play", daemon=True).start()
+
+
+BRIEF_AUDIO = BriefAudio()
+
+
+def _expire_brief_offer():
+    if brief_offer.expire_if_due() == "expired":
+        print("brief: audio offer expired", flush=True)
+        BRIEF_AUDIO.discard()
+
+
+def _deliver_brief(text, notify, reply_sink):
+    """The brief as text in the chat. It is not spoken. Its audio is made in the background and played only on a yes."""
+    if reply_sink is not None:
+        reply_sink.append(text)
+    emit(notify, "Ready", text + " " + BRIEF_OFFER_LINE)
+    print("brief: text shown", flush=True)
+    BRIEF_AUDIO.prefetch(split_sentences(text))
+    brief_offer.offer()
+    timer = threading.Timer(OFFER_WINDOW_SECONDS + 0.5, _expire_brief_offer)
+    timer.daemon = True
+    timer.start()
+
+
 def _run_local(payload, text, notify, reply_sink):
     """Run one command that decide() already chose with no network call."""
     if not payload:
@@ -1389,6 +1505,9 @@ def _run_local(payload, text, notify, reply_sink):
                 commands.play_memo_file(result.path)
             except Exception as exc:
                 print("  brief: {0}".format(type(exc).__name__))
+        return
+    if action == "info_brief" and isinstance(result, str):
+        _deliver_brief(result, notify, reply_sink)  # PR 8c: text first, audio only on a yes
         return
     _deliver(_speak_result(action, result, reply_key, fmt), notify, reply_sink)
 
