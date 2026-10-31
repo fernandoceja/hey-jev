@@ -454,3 +454,146 @@ def should_retract(cursor, orb_center, seconds_outside, busy):
     if seconds < PEEK_RETRACT_SECONDS:
         return False
     return math.hypot(cx - ox, cy - oy) > PEEK_RETRACT_DISTANCE
+
+
+# PR 5a: post-capture action menu. Opens after a real drop (R3). Pure geometry only.
+MENU_BUTTON = 40.0  # round button diameter
+MENU_GAP = 10.0  # vertical gap between buttons, and between the orb and the menu
+MENU_PAD = 10.0  # panel inset around the button column
+MENU_LABEL_GAP = 8.0  # button edge to label
+MENU_LABEL_WIDTH = 96.0
+MENU_SCREEN_INSET = 8.0  # keep the panel this far inside the visible frame
+MENU_STAGGER_SECONDS = 0.03  # each button starts 30 ms after the one above it
+MENU_FAN_START_SCALE = 0.6
+MENU_FILL_REST = 0.08  # white alpha of a button at rest
+MENU_FILL_HOVER = 0.18  # white alpha under the pointer
+MENU_HOVER_SECONDS = 0.12
+MENU_CORNER_RADIUS = 14.0
+
+
+def menu_layout(orb_frame, screen, n=6, button=MENU_BUTTON, gap=MENU_GAP):
+    """Frames for the action menu beside the orb.
+
+    Returns a dict: "panel" (x, y, w, h), "buttons" and "labels" (one (x, y, w, h) each, top row first),
+    "side" ("left" or "right", from mini_bar.popover_side), and "delays" (seconds, one per row).
+    Buttons always sit on the orb's side of the panel, so the fan-out starts at the orb's centre.
+    """
+    from mini_bar import popover_side  # lazy: mini_bar imports this module at load time
+    ox, oy, ow, oh = (float(v) for v in orb_frame)
+    sx, sy, sw, sh = (float(v) for v in screen)
+    count = max(1, int(n))
+    panel_w = 2.0 * MENU_PAD + button + MENU_LABEL_GAP + MENU_LABEL_WIDTH
+    panel_h = 2.0 * MENU_PAD + count * button + (count - 1) * gap
+    side = popover_side((ox, oy, ow, oh), panel_w, (sx, sy, sw, sh))
+    if side == "right":
+        px = ox + ow + gap
+    else:
+        px = ox - gap - panel_w
+    px = min(max(px, sx + MENU_SCREEN_INSET), sx + sw - MENU_SCREEN_INSET - panel_w)
+    py = oy + oh / 2.0 - panel_h / 2.0
+    py = min(max(py, sy + MENU_SCREEN_INSET), sy + sh - MENU_SCREEN_INSET - panel_h)
+    buttons = []
+    labels = []
+    for row in range(count):
+        top = py + panel_h - MENU_PAD - (row + 1) * button - row * gap
+        if side == "right":
+            bx = px + MENU_PAD
+            lx = bx + button + MENU_LABEL_GAP
+        else:
+            bx = px + panel_w - MENU_PAD - button
+            lx = px + MENU_PAD
+        buttons.append((bx, top, button, button))
+        labels.append((lx, top + (button - 18.0) / 2.0, MENU_LABEL_WIDTH, 18.0))
+    delays = [round(row * MENU_STAGGER_SECONDS, 6) for row in range(count)]
+    return {
+        "panel": (px, py, panel_w, panel_h),
+        "buttons": buttons,
+        "labels": labels,
+        "side": side,
+        "delays": delays,
+    }
+
+
+# PR 5a (extra direction): text actions. Summarize and Translate answer in a dark result panel beside the orb.
+RESULT_WIDTH = 300.0
+RESULT_PAD = 14.0  # inset, and also the corner radius of the panel
+RESULT_HEADING_HEIGHT = 20.0
+RESULT_HEADING_GAP = 8.0  # heading to body
+RESULT_LINE_HEIGHT = 17.0
+RESULT_CHARS_PER_LINE = 44  # rough count at 13 pt across RESULT_WIDTH minus the insets
+RESULT_MIN_LINES = 2
+RESULT_MAX_LINES = 12
+RESULT_PILL_HEIGHT = 28.0
+RESULT_PILL_WIDTH = 76.0
+RESULT_PILL_GAP = 8.0
+RESULT_BODY_PILL_GAP = 12.0  # body bottom to the pill row
+RESULT_FADE_SECONDS = 0.15  # fade and scale only; no spring on the result panel
+RESULT_SCALE_FROM = 0.96
+
+TEXT_ACTIONS = {
+    "summarize": ("Summary", "Summarize this"),
+    "translate": ("Translation", "Translate this to English"),
+}
+
+
+def result_body_lines(text):
+    """Estimated wrapped line count for the result body, clamped to RESULT_MIN_LINES..RESULT_MAX_LINES."""
+    lines = 0
+    for paragraph in str(text or "").split("\n"):
+        lines += max(1, -(-len(paragraph) // RESULT_CHARS_PER_LINE))
+    return min(RESULT_MAX_LINES, max(RESULT_MIN_LINES, lines))
+
+
+def result_height(text):
+    """Panel height: pad, pill row, gap, body, heading gap, heading, pad."""
+    body = result_body_lines(text) * RESULT_LINE_HEIGHT
+    return (2.0 * RESULT_PAD + RESULT_PILL_HEIGHT + RESULT_BODY_PILL_GAP + body
+            + RESULT_HEADING_GAP + RESULT_HEADING_HEIGHT)
+
+
+def result_frames(text, width=RESULT_WIDTH):
+    """Frames inside the result panel, in its own coordinates. Keys: heading, body, copy, close."""
+    height = result_height(text)
+    body_h = result_body_lines(text) * RESULT_LINE_HEIGHT
+    body_y = RESULT_PAD + RESULT_PILL_HEIGHT + RESULT_BODY_PILL_GAP
+    heading_y = body_y + body_h + RESULT_HEADING_GAP
+    inner = width - 2.0 * RESULT_PAD
+    return {
+        "panel": (width, height),
+        "heading": (RESULT_PAD, heading_y, inner, RESULT_HEADING_HEIGHT),
+        "body": (RESULT_PAD, body_y, inner, body_h),
+        "copy": (RESULT_PAD, RESULT_PAD, RESULT_PILL_WIDTH, RESULT_PILL_HEIGHT),
+        "close": (RESULT_PAD + RESULT_PILL_WIDTH + RESULT_PILL_GAP, RESULT_PAD,
+                  RESULT_PILL_WIDTH, RESULT_PILL_HEIGHT),
+    }
+
+
+def beside_orb(orb_frame, screen, pw, ph, gap=MENU_GAP):
+    """A pw x ph panel beside the orb, on the side popover_side picks, centred on the orb and clamped on screen."""
+    from mini_bar import popover_side  # lazy: mini_bar imports this module at load time
+    ox, oy, ow, oh = (float(v) for v in orb_frame)
+    sx, sy, sw, sh = (float(v) for v in screen)
+    side = popover_side((ox, oy, ow, oh), pw, (sx, sy, sw, sh))
+    px = ox + ow + gap if side == "right" else ox - gap - pw
+    px = min(max(px, sx + MENU_SCREEN_INSET), sx + sw - MENU_SCREEN_INSET - pw)
+    py = oy + oh / 2.0 - ph / 2.0
+    py = min(max(py, sy + MENU_SCREEN_INSET), sy + sh - MENU_SCREEN_INSET - ph)
+    return {"panel": (px, py, pw, ph), "side": side}
+
+
+def result_layout(orb_frame, screen, text, width=RESULT_WIDTH, gap=MENU_GAP):
+    """Result panel frame beside the orb, on the side popover_side picks, clamped on screen."""
+    pw, ph = result_frames(text, width)["panel"]
+    return beside_orb(orb_frame, screen, pw, ph, gap)
+
+
+# PR 5a: the Find Image hint. Shown only after the copy and the Lens open both succeed.
+HINT_WIDTH = 300.0
+HINT_HEIGHT = 52.0
+HINT_SECONDS = 5.0  # it fades out by itself after this
+HINT_TEXT_INSET = 14.0
+
+
+def hint_layout(orb_frame, screen, width=HINT_WIDTH, height=HINT_HEIGHT, gap=MENU_GAP):
+    """Hint bubble frame beside the orb, the same placement rule as the result panel."""
+    return beside_orb(orb_frame, screen, width, height, gap)

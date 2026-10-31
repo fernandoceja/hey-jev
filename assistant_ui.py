@@ -9,6 +9,7 @@ import math
 import os
 import re
 import queue
+import subprocess
 import sys
 import threading
 import time
@@ -184,6 +185,12 @@ from orb_motion import (
 )
 from orb_view import make_orb_view, orb_frame, orb_state
 from area_hotkey import AreaCaptureHotKey
+from orb_motion import (
+    MENU_CORNER_RADIUS, MENU_FILL_HOVER, MENU_FILL_REST, MENU_FAN_START_SCALE, MENU_HOVER_SECONDS,
+    HINT_SECONDS, HINT_TEXT_INSET, RESULT_FADE_SECONDS, RESULT_SCALE_FROM, SPRING_MENU_FAN, TEXT_ACTIONS,
+    hint_layout, menu_layout, result_frames, result_layout,
+)
+from mini_bar import FIND_IMAGE_HINT, capture_outcome, menu_on_drop, orb_action_menu
 import full_window as fw
 from ptt import PushToTalk
 from secrets_store import KEY_NAMES, OPTIONAL, get_secret, missing_secrets, save_secret
@@ -1026,6 +1033,89 @@ class PillTextField(NSTextField):
         objc.super(PillTextField, self).mouseDown_(event)
 
 
+def set_action_fill(layer, alpha):
+    """Animate a round action button's white fill to `alpha` over MENU_HOVER_SECONDS, easeOut (PR 5a hover)."""
+    from Quartz import CAMediaTimingFunction, CATransaction
+    if layer is None:
+        return
+    CATransaction.begin()
+    CATransaction.setAnimationDuration_(MENU_HOVER_SECONDS)
+    CATransaction.setAnimationTimingFunction_(CAMediaTimingFunction.functionWithName_("easeOut"))
+    layer.setBackgroundColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, alpha).CGColor())
+    CATransaction.commit()
+
+
+class ActionMenuButton(NSView):
+    """One row of the action menu: a round circle with its symbol, and the label beside it.
+
+    A plain NSView, not NSButton, so the circle is a layer we control. hitTest_ answers every point inside the
+    row with the row itself, so the symbol and label never take the click. Hover fills the circle only.
+    """
+
+    circle_layer = None
+    pick_target = None  # the delegate; its actionMenuPick_ takes this view, and identifier() is the action id
+
+    def acceptsFirstMouse_(self, _event):
+        return True  # the panel never becomes key, so a first click must still count
+
+    def hitTest_(self, point):
+        from AppKit import NSMouseInRect
+        superview = self.superview()
+        if superview is None:
+            return None
+        return self if NSMouseInRect(point, self.frame(), superview.isFlipped()) else None
+
+    def mouseDown_(self, _event):
+        if self.pick_target is not None:
+            self.pick_target.actionMenuPick_(self)
+
+    def updateTrackingAreas(self):
+        objc.super(ActionMenuButton, self).updateTrackingAreas()
+        areas = self.trackingAreas()
+        if areas is not None:
+            for area in list(areas):
+                self.removeTrackingArea_(area)
+        options = NSTrackingMouseEnteredAndExited | NSTrackingActiveAlways | NSTrackingInVisibleRect
+        area = NSTrackingArea.alloc().initWithRect_options_owner_userInfo_(NSMakeRect(0, 0, 0, 0), options, self, None)
+        self.addTrackingArea_(area)
+
+    def mouseEntered_(self, _event):
+        set_action_fill(self.circle_layer, MENU_FILL_HOVER)
+
+    def mouseExited_(self, _event):
+        set_action_fill(self.circle_layer, MENU_FILL_REST)
+
+
+class HintClickView(NSView):
+    """Covers the Find Image hint. A click on it dismisses the hint."""
+
+    dismiss_target = None
+
+    def acceptsFirstMouse_(self, _event):
+        return True
+
+    def mouseDown_(self, _event):
+        if self.dismiss_target is not None:
+            self.dismiss_target.hintDismiss_(self)
+
+
+def result_pill(title, frame, scale, target, action):
+    """Copy and Close on the result panel: a small rounded pill with a faint white fill."""
+    pill = NSButton.alloc().initWithFrame_(NSMakeRect(*frame))
+    pill.setBordered_(False)
+    pill.setTitle_(title)
+    pill.setFont_(NSFont.systemFontOfSize_weight_(12, 0.4))
+    pill.setContentTintColor_(NSColor.whiteColor())
+    pill.setWantsLayer_(True)
+    pill.layer().setCornerRadius_(frame[3] / 2.0)
+    pill.layer().setContentsScale_(scale)
+    pill.layer().setBackgroundColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.14).CGColor())
+    pill.setTarget_(target)
+    pill.setAction_(action)
+    pill.setAccessibilityLabel_(title)
+    return pill
+
+
 class ClickAwayView(NSView):
     def mouseDown_(self, event):
         self.window().makeFirstResponder_(None)  # clicking empty space takes focus out of the search and text boxes
@@ -1052,6 +1142,22 @@ class AppDelegate(NSObject):
     _peek_outside = 0.0  # seconds the cursor has been far from the orb
     _peek_last = None  # monotonic time of the last tick, or None after a pause
     _peek_latched = False  # tucked while the cursor was already at the edge: wait for it to leave first
+    # PR 5a action menu, opened after a real drop (R3). Closed by a click, Esc, a click away or CHOICE_SECONDS.
+    _action_menu_open = False
+    _action_menu_panel = None
+    _action_menu_buttons = ()  # (button, centre in the panel's own coordinates), one per row
+    _action_menu_monitors = ()
+    _action_menu_observing = False  # the workspace activation observer is registered
+    # Summarize and Translate answer in a dark panel beside the orb, not in the Jev window.
+    _result_panel = None
+    _result_open = False
+    _result_heading = ""
+    _result_text = ""
+    # PR 5a: the Find Image hint bubble. Nonactivating; closes on its own, on Esc, or on a click on it.
+    _hint_panel = None
+    _hint_open = False
+    _hint_shown_at = 0.0
+    _action_menu_shown_at = 0.0
     _orb_dragging = False
 
     def applicationDidFinishLaunching_(self, _notification):
@@ -1890,6 +1996,15 @@ class AppDelegate(NSObject):
             return None
 
         if event.keyCode() == 53:
+            if self._hint_open:
+                self._close_hint()
+                return None
+            if self._result_open:
+                self._close_result_panel()
+                return None
+            if self._action_menu_open:
+                self._close_action_menu()
+                return None
             choices = getattr(self, "choice_panel", None)
             if choices is not None and choices.isVisible():
                 self._close_capture_choices()
@@ -1904,6 +2019,10 @@ class AppDelegate(NSObject):
         return event
 
     def _global_type_key(self, event):
+        if event.keyCode() == 53 and self._hint_open:
+            self._close_hint()  # PR 5a: Esc closes the hint even while Chrome has focus
+        if event.keyCode() == 53 and self._action_menu_open:
+            self._close_action_menu()  # PR 5a: Esc closes the action menu even while another app is active
         flags = event.modifierFlags()
         if control_option_command_held(flags) and not event.isARepeat():
             # Diagnostic: proves the global monitor receives chords from other apps. Key code and flags only.
@@ -2408,6 +2527,483 @@ class AppDelegate(NSObject):
             NSUserDefaults.standardUserDefaults().setObject_forKey_(
                 format_origin(saved[0], saved[1]), ORIGIN_KEY)
         self._peek_consider()
+        # PR 5a (R3): this runs only after a real drag has landed on its snap target. A drop that tucked the orb
+        # into the edge does not open the menu.
+        if self._peek_edge is None and menu_on_drop(True):
+            self._open_action_menu()
+
+    # PR 5a: action menu. A panel beside the orb, fanned out after a drop. Its buttons reuse the post-capture ids.
+    @objc.python_method
+    def _build_action_menu(self):
+        style = NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel
+        panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
+            NSMakeRect(0, 0, 200, 200), style, NSBackingStoreBuffered, False)
+        panel.setLevel_(BAR_LEVEL)
+        panel.setFloatingPanel_(True)
+        panel.setHidesOnDeactivate_(False)
+        panel.setBecomesKeyOnlyIfNeeded_(True)
+        panel.setOpaque_(False)
+        panel.setBackgroundColor_(NSColor.clearColor())
+        panel.setHasShadow_(True)
+        panel.setCollectionBehavior_(BAR_COLLECTION)
+        panel.setReleasedWhenClosed_(False)
+        panel.setAccessibilityLabel_("Jev actions")
+        self._action_menu_panel = panel
+        return panel
+
+    @objc.python_method
+    def _fill_action_menu(self, layout):
+        panel = self._action_menu_panel
+        px, py, pw, ph = layout["panel"]
+        panel.setFrame_display_(NSMakeRect(px, py, pw, ph), False)
+        scale = float(panel.backingScaleFactor())
+        if NSWorkspace.sharedWorkspace().accessibilityDisplayShouldReduceTransparency():
+            content = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, pw, ph))
+            content.setWantsLayer_(True)
+            content.layer().setBackgroundColor_(NSColor.colorWithCalibratedWhite_alpha_(0.12, 0.96).CGColor())
+        else:
+            content = NSVisualEffectView.alloc().initWithFrame_(NSMakeRect(0, 0, pw, ph))
+            content.setMaterial_(NSVisualEffectMaterialHUDWindow)
+            content.setBlendingMode_(NSVisualEffectBlendingModeBehindWindow)
+            content.setState_(NSVisualEffectStateActive)
+            content.setWantsLayer_(True)
+        # The rounded corners clip the material. contentsScale matches the window on this screen.
+        content.layer().setCornerRadius_(MENU_CORNER_RADIUS)
+        content.layer().setMasksToBounds_(True)
+        content.layer().setContentsScale_(scale)
+        panel.setContentView_(content)
+        from Quartz import CALayer
+        buttons = []
+        for row, action in enumerate(orb_action_menu()):
+            bx, by, bw, bh = layout["buttons"][row]
+            lx, ly, lw, lh = layout["labels"][row]
+            x0 = min(bx, lx)
+            x1 = max(bx + bw, lx + lw)
+            item = ActionMenuButton.alloc().initWithFrame_(NSMakeRect(x0 - px, by - py, x1 - x0, bh))
+            item.setWantsLayer_(True)
+            item.layer().setContentsScale_(scale)
+            circle = CALayer.layer()
+            circle.setFrame_(NSMakeRect(bx - x0, 0.0, bw, bh))
+            circle.setCornerRadius_(bw / 2.0)
+            circle.setContentsScale_(scale)
+            circle.setBackgroundColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, MENU_FILL_REST).CGColor())
+            item.layer().addSublayer_(circle)
+            item.circle_layer = circle
+            image = None
+            try:
+                image = NSImage.imageWithSystemSymbolName_accessibilityDescription_(action["symbol"], action["title"])
+            except Exception:
+                image = None
+            if image is not None:
+                icon = NSImageView.alloc().initWithFrame_(NSMakeRect(bx - x0 + 10.0, 10.0, bw - 20.0, bh - 20.0))
+                icon.setImage_(image)
+                icon.setImageScaling_(NSImageScaleProportionallyUpOrDown)
+                icon.setContentTintColor_(NSColor.whiteColor())
+                item.addSubview_(icon)
+            text = label(action["title"], NSMakeRect(lx - x0, (bh - lh) / 2.0, lw, lh), 13, NSColor.whiteColor(), weight=0.5)
+            text.setAlignment_(2 if layout["side"] == "left" else 0)  # labels sit away from the orb
+            item.addSubview_(text)
+            item.setIdentifier_(action["id"])
+            item.pick_target = self
+            item.setAccessibilityElement_(True)
+            item.setAccessibilityRole_("AXButton")
+            item.setAccessibilityLabel_(action["title"])
+            item.setToolTip_(action["title"])
+            content.addSubview_(item)
+            end = (x0 - px + (x1 - x0) / 2.0, by - py + bh / 2.0)
+            buttons.append((item, end))
+        self._action_menu_buttons = tuple(buttons)
+
+    @objc.python_method
+    def _animate_action_menu_button(self, layer, start, end, delay):
+        """Scale 0.6 and alpha 0 at the orb's centre, to the slot on CASpring SPRING_MENU_FAN, after `delay` seconds."""
+        from Quartz import CABasicAnimation, CACurrentMediaTime, CASpringAnimation
+        from Foundation import NSValue
+        begin = CACurrentMediaTime() + float(delay)
+        stiffness, damping = SPRING_MENU_FAN
+        move = CASpringAnimation.animationWithKeyPath_("position")
+        move.setStiffness_(stiffness)
+        move.setDamping_(damping)
+        move.setMass_(1.0)
+        move.setFromValue_(NSValue.valueWithPoint_(NSMakePoint(start[0], start[1])))
+        move.setToValue_(NSValue.valueWithPoint_(NSMakePoint(end[0], end[1])))
+        move.setDuration_(move.settlingDuration())
+        move.setBeginTime_(begin)
+        move.setFillMode_("backwards")
+        grow = CASpringAnimation.animationWithKeyPath_("transform.scale")
+        grow.setStiffness_(stiffness)
+        grow.setDamping_(damping)
+        grow.setMass_(1.0)
+        grow.setFromValue_(MENU_FAN_START_SCALE)
+        grow.setToValue_(1.0)
+        grow.setDuration_(grow.settlingDuration())
+        grow.setBeginTime_(begin)
+        grow.setFillMode_("backwards")
+        fade = CABasicAnimation.animationWithKeyPath_("opacity")
+        fade.setFromValue_(0.0)
+        fade.setToValue_(1.0)
+        fade.setDuration_(0.18)
+        fade.setBeginTime_(begin)
+        fade.setFillMode_("backwards")
+        for anim, key in ((move, "menuFanMove"), (grow, "menuFanScale"), (fade, "menuFanFade")):
+            layer.addAnimation_forKey_(anim, key)
+
+    @objc.python_method
+    def _open_action_menu(self):
+        from AppKit import NSEventMaskLeftMouseDown, NSEventMaskRightMouseDown
+        window = getattr(self, "mini_panel", None)
+        if window is None or not window.isVisible():
+            return
+        self._close_action_menu()
+        frame = window.frame()
+        orb = (float(frame.origin.x), float(frame.origin.y), float(frame.size.width), float(frame.size.height))
+        screens = self._visible_screens() or [(0.0, 0.0, 1440.0, 900.0)]
+        screen = screen_for_frame(orb, screens) or screens[0]
+        layout = menu_layout(orb, screen)
+        if self._action_menu_panel is None:
+            self._build_action_menu()
+        self._fill_action_menu(layout)
+        self._action_menu_open = True
+        self._action_menu_shown_at = time.time()
+        # Clicks in Jev are seen by a local monitor. A click in any other app activates that app, so the
+        # workspace notification closes the menu. No global event monitor, so no new permission.
+        mask = NSEventMaskLeftMouseDown | NSEventMaskRightMouseDown
+        self._action_menu_monitors = (
+            NSEvent.addLocalMonitorForEventsMatchingMask_handler_(mask, self._action_menu_mouse_down),
+        )
+        NSWorkspace.sharedWorkspace().notificationCenter().addObserver_selector_name_object_(
+            self, "actionMenuAppActivated:", "NSWorkspaceDidActivateApplicationNotification", None)
+        self._action_menu_observing = True
+        orb_view = getattr(self, "orb_view", None)
+        if orb_view is None or not bool(getattr(orb_view, "reduceMotion", False)):
+            px, py = layout["panel"][0], layout["panel"][1]
+            start = (orb[0] + orb[2] / 2.0 - px, orb[1] + orb[3] / 2.0 - py)  # the orb's centre, in panel coordinates
+            for row, (item, end) in enumerate(self._action_menu_buttons):
+                self._animate_action_menu_button(item.layer(), start, end, layout["delays"][row])
+        self._action_menu_panel.orderFrontRegardless()
+
+    @objc.python_method
+    def _close_action_menu(self):
+        """Closes at once: no animation, so a click on an action never waits on the menu."""
+        for monitor in self._action_menu_monitors:
+            NSEvent.removeMonitor_(monitor)
+        self._action_menu_monitors = ()
+        if self._action_menu_observing:
+            NSWorkspace.sharedWorkspace().notificationCenter().removeObserver_name_object_(
+                self, "NSWorkspaceDidActivateApplicationNotification", None)
+            self._action_menu_observing = False
+        panel = self._action_menu_panel
+        if panel is not None and panel.isVisible():
+            panel.orderOut_(None)
+        self._action_menu_open = False
+        self._action_menu_shown_at = 0.0
+        self._action_menu_buttons = ()
+
+    @objc.python_method
+    def _action_menu_pointer_inside(self):
+        panel = self._action_menu_panel
+        if panel is None or not panel.isVisible():
+            return False
+        loc = NSEvent.mouseLocation()
+        frame = panel.frame()
+        return pointer_inside(
+            (float(loc.x), float(loc.y)),
+            (float(frame.origin.x), float(frame.origin.y), float(frame.size.width), float(frame.size.height)),
+        )
+
+    def _action_menu_mouse_down(self, event):
+        """A click in Jev outside the menu closes it. The click still goes on to whatever it hit."""
+        if self._action_menu_open and not self._action_menu_pointer_inside():
+            self._close_action_menu()
+        return event
+
+    def actionMenuAppActivated_(self, _notification):
+        """Another app came forward, so the click was away from the menu."""
+        if self._action_menu_open:
+            self._close_action_menu()
+
+    @objc.python_method
+    def _sync_action_menu_dismiss(self):
+        if not self._action_menu_open:
+            return
+        if choice_due(self._action_menu_shown_at, time.time(), self._action_menu_pointer_inside()):
+            self._close_action_menu()
+
+    def actionMenuPick_(self, sender):
+        ident = "" if sender is None else str(sender.identifier() or "")
+        self._close_action_menu()
+        if ident:
+            threading.Thread(target=self._run_action_menu_capture, args=(ident,), daemon=True).start()
+
+    @objc.python_method
+    def _run_action_menu_capture(self, ident):
+        """Every menu action starts here, with take_screenshot(mode="area") on the captures book. Off the main thread.
+
+        Esc or a zero-size selection is "cancelled" and does nothing. Each action then runs on its own path. Find Image
+        and Copy Image use the same functions as the Jev commands, and none of them opens the Jev window. Ask and the
+        two text actions go back to the main thread, because they show a panel.
+        """
+        print(f"  action menu: {ident} clicked")
+        try:
+            from commands.captures import BOOK, ask_plan, execute_ask, run_capture_menu, take_screenshot
+            print("  action menu: capture started (area)")
+            sentence = take_screenshot("area", book=BOOK)
+            outcome = capture_outcome(sentence)
+            if outcome != "saved":
+                print(f"  action menu: capture {outcome}")
+                return
+            path = str((BOOK.last or {}).get("path") or "")
+            print(f"  action menu: capture saved {os.path.basename(path)}")
+            if ident == "markup":
+                subprocess.run(["open", "-a", "Preview", path], check=False)  # until PR 5b's mark up overlay
+                print("  action menu: markup opened in Preview")
+                return
+            if ident == "share_copy":
+                print(f"  action menu: copy image: {run_capture_menu('share_copy', book=BOOK)}")
+                return
+            if ident == "ask_google":
+                # ask_plan + execute_ask: the copy and the Lens open each raise on failure, so no exception = both worked.
+                execute_ask(ask_plan("google", "capture", path=path))
+                print("  action menu: find image copied and opened Lens")
+                self.performSelectorOnMainThread_withObject_waitUntilDone_("findImageHint:", "", False)
+                return
+        except Exception as exc:
+            print(f"  action menu: {ident} failed: {exc}")
+            return
+        payload = json.dumps({"id": ident, "path": path})
+        self.performSelectorOnMainThread_withObject_waitUntilDone_("actionMenuCaptured:", payload, False)
+
+    def actionMenuCaptured_(self, payload):
+        try:
+            data = json.loads(str(payload))
+        except ValueError:
+            return
+        ident = str(data.get("id") or "")
+        if ident in TEXT_ACTIONS:
+            self._start_text_action(ident)
+            return
+        if ident == "ask_jev":
+            self._show_capture_choices()  # the usual thumbnail panel, with its question field open
+            self._open_choice_question()
+            return
+        print(f"  action menu: no handler for {ident}")
+
+    # PR 5a: the Find Image hint. The same dark style as the result panel; nonactivating so Chrome keeps focus.
+    @objc.python_method
+    def _build_hint_panel(self):
+        style = NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel
+        panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
+            NSMakeRect(0, 0, 300, 52), style, NSBackingStoreBuffered, False)
+        panel.setLevel_(BAR_LEVEL)
+        panel.setFloatingPanel_(True)
+        panel.setHidesOnDeactivate_(False)
+        panel.setBecomesKeyOnlyIfNeeded_(True)
+        panel.setOpaque_(False)
+        panel.setBackgroundColor_(NSColor.clearColor())
+        panel.setHasShadow_(True)
+        panel.setCollectionBehavior_(BAR_COLLECTION)
+        panel.setReleasedWhenClosed_(False)
+        panel.setAccessibilityLabel_("Jev hint")
+        self._hint_panel = panel
+        return panel
+
+    @objc.python_method
+    def _show_hint(self, text):
+        if self._hint_panel is None:
+            self._build_hint_panel()
+        window = getattr(self, "mini_panel", None)
+        if window is None:
+            return
+        frame = window.frame()
+        orb = (float(frame.origin.x), float(frame.origin.y), float(frame.size.width), float(frame.size.height))
+        screens = self._visible_screens() or [(0.0, 0.0, 1440.0, 900.0)]
+        screen = screen_for_frame(orb, screens) or screens[0]
+        layout = hint_layout(orb, screen)
+        px, py, pw, ph = layout["panel"]
+        panel = self._hint_panel
+        panel.setFrame_display_(NSMakeRect(px, py, pw, ph), False)
+        scale = float(panel.backingScaleFactor())
+        if NSWorkspace.sharedWorkspace().accessibilityDisplayShouldReduceTransparency():
+            content = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, pw, ph))
+            content.setWantsLayer_(True)
+            content.layer().setBackgroundColor_(NSColor.colorWithCalibratedWhite_alpha_(0.12, 0.96).CGColor())
+        else:
+            content = NSVisualEffectView.alloc().initWithFrame_(NSMakeRect(0, 0, pw, ph))
+            content.setMaterial_(NSVisualEffectMaterialHUDWindow)
+            content.setBlendingMode_(NSVisualEffectBlendingModeBehindWindow)
+            content.setState_(NSVisualEffectStateActive)
+            content.setWantsLayer_(True)
+        content.layer().setCornerRadius_(MENU_CORNER_RADIUS)
+        content.layer().setMasksToBounds_(True)
+        content.layer().setContentsScale_(scale)
+        inset = HINT_TEXT_INSET
+        body = NSTextField.wrappingLabelWithString_(text)
+        body.setFrame_(NSMakeRect(inset, 10.0, pw - 2.0 * inset, ph - 20.0))
+        body.setFont_(NSFont.systemFontOfSize_(13))
+        body.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(0.92, 1.0))
+        content.addSubview_(body)
+        click = HintClickView.alloc().initWithFrame_(NSMakeRect(0, 0, pw, ph))
+        click.dismiss_target = self
+        content.addSubview_(click)  # on top: a click on the hint dismisses it
+        panel.setContentView_(content)
+        self._hint_open = True
+        self._hint_shown_at = time.time()
+        panel.orderFrontRegardless()
+        orb_view = getattr(self, "orb_view", None)
+        if not bool(getattr(orb_view, "reduceMotion", False)):
+            self._animate_result_in(content.layer())
+
+    @objc.python_method
+    def _close_hint(self):
+        panel = self._hint_panel
+        if panel is not None and panel.isVisible():
+            panel.orderOut_(None)
+        self._hint_open = False
+        self._hint_shown_at = 0.0
+
+    def findImageHint_(self, _payload):
+        self._show_hint(FIND_IMAGE_HINT)
+        print("  action menu: find image hint shown")
+
+    def hintDismiss_(self, _sender):
+        self._close_hint()
+
+    @objc.python_method
+    def _sync_hint_dismiss(self):
+        if self._hint_open and time.time() - self._hint_shown_at >= HINT_SECONDS:
+            self._close_hint()
+
+    # PR 5a (extra direction): Summarize and Translate. A dark rounded panel beside the orb, calm fade and scale.
+    @objc.python_method
+    def _build_result_panel(self):
+        style = NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel
+        panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
+            NSMakeRect(0, 0, 300, 200), style, NSBackingStoreBuffered, False)
+        panel.setLevel_(BAR_LEVEL)
+        panel.setFloatingPanel_(True)
+        panel.setHidesOnDeactivate_(False)
+        panel.setBecomesKeyOnlyIfNeeded_(True)
+        panel.setOpaque_(False)
+        panel.setBackgroundColor_(NSColor.clearColor())
+        panel.setHasShadow_(True)
+        panel.setCollectionBehavior_(BAR_COLLECTION)
+        panel.setReleasedWhenClosed_(False)
+        panel.setAccessibilityLabel_("Jev result")
+        self._result_panel = panel
+        return panel
+
+    @objc.python_method
+    def _fill_result_panel(self, heading, text):
+        panel = self._result_panel
+        frames = result_frames(text)
+        pw, ph = frames["panel"]
+        scale = float(panel.backingScaleFactor())
+        if NSWorkspace.sharedWorkspace().accessibilityDisplayShouldReduceTransparency():
+            content = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, pw, ph))
+            content.setWantsLayer_(True)
+            content.layer().setBackgroundColor_(NSColor.colorWithCalibratedWhite_alpha_(0.12, 0.96).CGColor())
+        else:
+            content = NSVisualEffectView.alloc().initWithFrame_(NSMakeRect(0, 0, pw, ph))
+            content.setMaterial_(NSVisualEffectMaterialHUDWindow)
+            content.setBlendingMode_(NSVisualEffectBlendingModeBehindWindow)
+            content.setState_(NSVisualEffectStateActive)
+            content.setWantsLayer_(True)
+        content.layer().setCornerRadius_(MENU_CORNER_RADIUS)
+        content.layer().setMasksToBounds_(True)
+        content.layer().setContentsScale_(scale)
+        head = label(heading, NSMakeRect(*frames["heading"]), 14, NSColor.whiteColor(), weight=0.8)
+        body = NSTextField.wrappingLabelWithString_(text)
+        body.setFrame_(NSMakeRect(*frames["body"]))
+        body.setFont_(NSFont.systemFontOfSize_(13))
+        body.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(0.86, 1.0))
+        copy = result_pill("Copy", frames["copy"], scale, self, "resultCopy:")
+        close = result_pill("Close", frames["close"], scale, self, "resultClose:")
+        for view in (head, body, copy, close):
+            content.addSubview_(view)
+        panel.setContentView_(content)
+
+    @objc.python_method
+    def _present_result(self, heading, text, animate):
+        if self._result_panel is None:
+            self._build_result_panel()
+        window = getattr(self, "mini_panel", None)
+        if window is None:
+            return
+        frame = window.frame()
+        orb = (float(frame.origin.x), float(frame.origin.y), float(frame.size.width), float(frame.size.height))
+        screens = self._visible_screens() or [(0.0, 0.0, 1440.0, 900.0)]
+        screen = screen_for_frame(orb, screens) or screens[0]
+        layout = result_layout(orb, screen, text)
+        self._result_heading = heading
+        self._result_text = text
+        self._fill_result_panel(heading, text)
+        px, py, pw, ph = layout["panel"]
+        self._result_panel.setFrame_display_(NSMakeRect(px, py, pw, ph), True)
+        self._result_open = True
+        self._result_panel.orderFrontRegardless()
+        orb_view = getattr(self, "orb_view", None)
+        if animate and not bool(getattr(orb_view, "reduceMotion", False)):
+            self._animate_result_in(self._result_panel.contentView().layer())
+
+    @objc.python_method
+    def _animate_result_in(self, layer):
+        """Fade in and scale 0.96 to 1 over RESULT_FADE_SECONDS, easeOut. No spring: the result panel stays calm."""
+        from Quartz import CABasicAnimation, CAMediaTimingFunction
+        grow = CABasicAnimation.animationWithKeyPath_("transform.scale")
+        grow.setFromValue_(RESULT_SCALE_FROM)
+        grow.setToValue_(1.0)
+        grow.setDuration_(RESULT_FADE_SECONDS)
+        grow.setTimingFunction_(CAMediaTimingFunction.functionWithName_("easeOut"))
+        fade = CABasicAnimation.animationWithKeyPath_("opacity")
+        fade.setFromValue_(0.0)
+        fade.setToValue_(1.0)
+        fade.setDuration_(RESULT_FADE_SECONDS)
+        fade.setTimingFunction_(CAMediaTimingFunction.functionWithName_("easeOut"))
+        layer.addAnimation_forKey_(grow, "resultScale")
+        layer.addAnimation_forKey_(fade, "resultFade")
+
+    @objc.python_method
+    def _close_result_panel(self):
+        panel = self._result_panel
+        if panel is not None and panel.isVisible():
+            panel.orderOut_(None)
+        self._result_open = False
+
+    def resultClose_(self, _sender):
+        self._close_result_panel()
+
+    def resultCopy_(self, _sender):
+        pasteboard = NSPasteboard.generalPasteboard()
+        pasteboard.clearContents()
+        pasteboard.setString_forType_(self._result_text, NSPasteboardTypeString)
+        self._close_result_panel()
+
+    @objc.python_method
+    def _start_text_action(self, ident):
+        """The capture is saved. Show the panel at once, then ask Jev about the picture on the existing path."""
+        heading = TEXT_ACTIONS[ident][0]
+        self._present_result(heading, "Reading the capture...", True)
+        threading.Thread(target=self._run_text_action, args=(ident,), daemon=True).start()
+
+    @objc.python_method
+    def _run_text_action(self, ident):
+        _heading, prompt = TEXT_ACTIONS[ident]
+        try:
+            from commands.captures import ask_jev_from_text
+            answer = ask_jev_from_text("ask jev about this", question=prompt)
+        except Exception as exc:
+            answer = "I couldn't do that."
+            print(f"  text action failed: {exc}")
+        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+            "resultReady:", json.dumps({"text": str(answer or "")}), False)
+
+    def resultReady_(self, payload):
+        try:
+            text = str(json.loads(str(payload)).get("text") or "")
+        except ValueError:
+            return
+        if self._result_open:
+            self._present_result(self._result_heading, text, False)
 
     # PR 3b: peek-dock. A snapped orb on a free screen edge tucks most of itself off-screen, and slides back
     # in when the cursor comes near. Reduce Motion fades in place instead of sliding. A tucked orb is never busy.
@@ -2421,8 +3017,8 @@ class AppDelegate(NSObject):
         """Popover, menu, drag, listening, thinking or speaking. Busy keeps the orb out."""
         if not getattr(self, "pillCollapsed", False) or self._orb_dragging:
             return True
-        if getattr(self, "_pill_menu_open", False):
-            return True
+        if getattr(self, "_pill_menu_open", False) or self._action_menu_open:
+            return True  # PR 5a: a tuck waits while the action menu is open
         pill = getattr(self, "pill", None)
         if pill is not None and pill.busy:
             return True
@@ -3917,7 +4513,8 @@ class AppDelegate(NSObject):
         try:
             import commands
             sentence = commands.choose_video()
-            chosen = getattr(commands.BOOK, "video", None)
+            from commands.captures import BOOK
+            chosen = getattr(BOOK, "video", None)
         except Exception as exc:
             sentence = "I couldn't open the video picker."
             chosen = None
@@ -3963,7 +4560,8 @@ class AppDelegate(NSObject):
     def _show_capture_choices(self):
         """Floating thumbnail and actions. Shown even when the main window is up and the pill is hidden."""
         import commands
-        last = commands.BOOK.last or {}
+        from commands.captures import BOOK
+        last = BOOK.last or {}
         path = last.get("path") or ""
         if not path:
             return
@@ -4069,14 +4667,21 @@ class AppDelegate(NSObject):
     def captureChoice_(self, sender):
         ident = "" if sender is None else str(sender.identifier() or "")
         if ident == "ask_jev":
-            self.choice_question.setHidden_(False)
-            self.choice_ask.setHidden_(False)
-            panel = self.choice_panel
-            panel.makeKeyAndOrderFront_(None)
-            panel.makeFirstResponder_(self.choice_question)
-            self._choice_shown_at = time.time()
+            self._open_choice_question()
             return
         self._queue_choice(ident)
+
+    @objc.python_method
+    def _open_choice_question(self):
+        """Ask Jev on the post-capture panel: reveal the question field and focus it."""
+        if getattr(self, "choice_panel", None) is None or not hasattr(self, "choice_question"):
+            return
+        self.choice_question.setHidden_(False)
+        self.choice_ask.setHidden_(False)
+        panel = self.choice_panel
+        panel.makeKeyAndOrderFront_(None)
+        panel.makeFirstResponder_(self.choice_question)
+        self._choice_shown_at = time.time()
 
     def choiceAsk_(self, _sender):
         question = self.choice_question.stringValue() if hasattr(self, "choice_question") else ""
@@ -4452,6 +5057,8 @@ class AppDelegate(NSObject):
                 self.pill.keep_typing()
         self._sync_recording_ui()
         self._sync_choice_dismiss()
+        self._sync_action_menu_dismiss()
+        self._sync_hint_dismiss()
         self._sync_zoe_ui()
         self._sync_orb()
 

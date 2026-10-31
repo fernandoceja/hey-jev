@@ -671,6 +671,20 @@ def capture_saved(sentence):
     return text.startswith(("Saved a ", "Saved an ")) or text.startswith("Saved the recording")
 
 
+# Shown after Find Image copies the capture and opens Lens. The command key is U+2318.
+FIND_IMAGE_HINT = "Image copied. Press \u2318V in Lens to search."
+
+
+def capture_outcome(sentence):
+    """What a menu capture ended with, for the log: "saved", "cancelled" (Esc or a zero-size selection), or "failed"."""
+    text = " ".join(str(sentence or "").split())
+    if text == "Cancelled.":
+        return "cancelled"
+    if capture_saved(text):
+        return "saved"
+    return "failed"
+
+
 def choice_due(shown_at, now, hovered):
     """The choices panel closes after CHOICE_SECONDS unless the pointer is over it."""
     if hovered:
@@ -737,6 +751,27 @@ def capture_choice_actions(ask_jev=True, video=False):
         {"id": "captures_open", "title": "Open Captures Folder", "primary": False, "phrase": "open my screenshots"},
     )
     return rows
+
+
+def orb_action_menu():
+    """The rows of the action menu that fans out after a drop (PR 5a), in order top to bottom.
+
+    Ask, Copy Image and Find Image reuse the ids of the post-capture panel. Summarize and Translate answer in
+    the result panel beside the orb. Mark up has no panel row yet (PR 5b).
+    """
+    return [
+        {"id": "ask_jev", "title": "Ask", "symbol": "bubble.left"},
+        {"id": "summarize", "title": "Summarize", "symbol": "text.alignleft"},
+        {"id": "translate", "title": "Translate", "symbol": "character.bubble"},
+        {"id": "share_copy", "title": "Copy Image", "symbol": "doc.on.doc"},
+        {"id": "ask_google", "title": "Find Image", "symbol": "magnifyingglass"},
+        {"id": "markup", "title": "Mark up", "symbol": "pencil.tip"},
+    ]
+
+
+def menu_on_drop(moved):
+    """The action menu opens only after a real drag (past the click threshold). A click never opens it."""
+    return moved
 
 
 def choice_button_frames(actions, width=300.0, margin=12.0):
