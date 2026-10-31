@@ -200,6 +200,7 @@ from orb_motion import (
     spring, spring_done,
 )
 from orb_motion import peek_edge_allowed  # PR 8: a tuck never sits on a shared display edge
+from orb_motion import dock_strip, rects_overlap
 from orb_character import disk_check, is_thanks, reaction_for_status, rough_drag
 from orb_tuck import (TUCK_CLOSE_SIZE, TUCK_FADE_IN_SECONDS, TUCK_FADE_OUT_SECONDS, TUCK_KEY, TUCK_SECONDS,
                       decode_tuck, encode_tuck, tuck_close_centre, tuck_edge, tuck_eye_centres, tucked_frame,
@@ -4819,10 +4820,82 @@ class AppDelegate(NSObject):
         if hasattr(self, "zoe_label"):
             _place(self.zoe_label, (cx + field[0] + field[2] - 46.0, cy + field[1], 44.0, field[3]))
         self._layout_popover_footer(layout)
+        self._apply_dock_visibility()  # PR 8c: a layout pass never shows the popover's views beside a docked orb
         self._sync_capsule(width, height, popover=True, panel_rect=layout.get("panel"))
         self._sync_recording_ui()
         self._style_pill_field()
         self._refresh_trailing_symbol()
+
+    @objc.python_method
+    def _clear_dock_strays(self):
+        """On dock: log every window beside the orb, and close the ones that are not the orb or the full window."""
+        panel, full = getattr(self, "mini_panel", None), getattr(self, "full_window", None)
+        if panel is None or full is None:
+            return
+        orb = self._frame_tuple(panel.frame())
+        strip = dock_strip(orb)
+        print("dock: orb={0} strip={1}".format(tuple(round(v, 1) for v in orb), tuple(round(v, 1) for v in strip)),
+              flush=True)
+        for child in list(panel.childWindows() or []):
+            print("dock: child window {0} frame={1} visible={2}".format(
+                type(child).__name__, tuple(round(v, 1) for v in self._frame_tuple(child.frame())),
+                bool(child.isVisible())), flush=True)
+            if child is not full:
+                child.orderOut_(None)
+        for window in list(NSApp.windows() or []):
+            if window is panel or window is full or not window.isVisible():
+                continue
+            frame = self._frame_tuple(window.frame())
+            if not rects_overlap(frame, strip):
+                continue
+            print("dock: stray window {0} title={1!r} frame={2} level={3}".format(
+                type(window).__name__, str(window.title() or ""), tuple(round(v, 1) for v in frame),
+                int(window.level())), flush=True)
+            window.orderOut_(None)
+        for name, closer in (("hint", "_close_hint"), ("result", "_close_result_panel")):
+            fn = getattr(self, closer, None)
+            if callable(fn):
+                fn()
+        self._close_orb_spotlight("dock")
+
+    @objc.python_method
+    def _apply_dock_visibility(self):
+        """While docked, the orb is the only view in its panel. Every other view is hidden, and its state is saved and
+        restored on collapse. Each one hidden for the first time is logged, with its frame and any label."""
+        panel, orb = getattr(self, "mini_panel", None), getattr(self, "orb_view", None)
+        if panel is None or orb is None:
+            return
+        saved = getattr(self, "_dock_saved", None) or {}
+        if not self._orb_bubble_docked():
+            if saved:
+                for view, was_hidden in saved.values():
+                    view.setHidden_(was_hidden)
+                self._dock_saved = {}
+                print("dock: popover views restored", flush=True)
+                self._layout_mini_bar(float(panel.frame().size.width), float(panel.frame().size.height))
+            return
+        keep = set()
+        view = orb
+        while view is not None:
+            keep.add(id(view))
+            view = view.superview()
+        containers = {id(v): v for v in (orb.superview(), panel.contentView()) if v is not None}
+        for container in containers.values():
+            for view in list(container.subviews() or []):
+                if id(view) in keep:
+                    continue
+                if id(view) not in saved:
+                    saved[id(view)] = (view, bool(view.isHidden()))
+                    text = ""
+                    try:
+                        text = str(view.stringValue() or "") if hasattr(view, "stringValue") else ""
+                    except Exception:
+                        text = ""
+                    print("dock: hid {0} frame={1} label={2!r}".format(
+                        type(view).__name__, tuple(round(v, 1) for v in self._frame_tuple(view.frame())), text[:40]),
+                        flush=True)
+                view.setHidden_(True)
+        self._dock_saved = saved
 
     @objc.python_method
     def _orb_bubble_docked(self):
@@ -4878,6 +4951,7 @@ class AppDelegate(NSObject):
         stop = getattr(self, "rec_stop", None)
         recording = stop is not None and not stop.isHidden()
         self.mini_mic.setHidden_(collapsed or recording)
+        self._apply_dock_visibility()
 
     @objc.python_method
     def _place_mic_level(self, mic_frame):
@@ -5381,7 +5455,9 @@ class AppDelegate(NSObject):
         full.makeFirstResponder_(self.full_field)
         self._remove_orb_ghost()
         self._set_orb_window_state("landed")
+        self._clear_dock_strays()  # PR 8c: log and close anything beside the orb that is not the orb
         self._sync_orb()
+        self._apply_dock_visibility()
         self._log_orb_dock("dock")
         print("  orb expand: done after {0:.3f}s ticks={1}".format(
             time.monotonic() - getattr(self, "_orb_started", time.monotonic()), getattr(self, "_orb_ticks", 0)))
@@ -5437,6 +5513,7 @@ class AppDelegate(NSObject):
         self._remove_orb_ghost()
         self._orb_undocked_frame = None
         self._set_orb_window_state("landed")
+        self._apply_dock_visibility()  # PR 8c: the popover's views come back before the orb settles
         self._sync_orb()  # not docked any more, so the bob resumes
         self._peek_consider()
         print("  orb collapse: done after {0:.3f}s ticks={1}".format(

@@ -186,7 +186,7 @@ class TestSubmit(unittest.TestCase):
         start = source.index('command[0] == "text"')
         branch = source[start:source.index("if rec.wake:", start)]
         self.assertIn("target=run_turn, args=(typed, None)", branch)
-        handle = _func(source, "handle")
+        handle = _func(source, "_handle_turn")
         self.assertIn('emit(notify, "Thinking"', handle)
         self.assertNotIn("local_only", handle)
 

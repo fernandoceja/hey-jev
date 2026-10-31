@@ -161,11 +161,12 @@ class SiriWiringTests(unittest.TestCase):
         self.siri = _source("siri.py")
 
     def test_the_brief_is_delivered_as_text_not_spoken(self):
-        deliver = _func(self.siri, "_deliver_brief")
-        self.assertNotIn("say(", deliver)
-        self.assertIn('emit(notify, "Ready", text + " " + BRIEF_OFFER_LINE)', deliver)
-        self.assertIn('print("brief: text shown", flush=True)', deliver)
-        self.assertIn("BRIEF_AUDIO.prefetch(speech_chunks(text))", deliver)
+        self.assertIn("_deliver(text, notify, reply_sink)", _func(self.siri, "_deliver_brief"))
+        offer = _func(self.siri, "_offer_reply")
+        self.assertNotIn("say(", offer)
+        self.assertIn('emit(notify, state, text + " " + BRIEF_OFFER_LINE)', offer)
+        self.assertIn('print("reply: text shown, audio offered", flush=True)', offer)
+        self.assertIn("BRIEF_AUDIO.prefetch(speech_chunks(text))", offer)
 
     def test_the_local_runner_sends_info_brief_to_text_first(self):
         run_local = _func(self.siri, "_run_local")
@@ -173,7 +174,7 @@ class SiriWiringTests(unittest.TestCase):
         self.assertIn("_deliver_brief(result, notify, reply_sink)", run_local)
 
     def test_a_reply_to_the_offer_is_checked_before_routing(self):
-        handle = _func(self.siri, "handle")
+        handle = _func(self.siri, "_handle_turn")
         self.assertLess(handle.index("brief_offer.answer(text)"), handle.index("decide(None, text)"))
         self.assertIn('print(f"brief: audio offer {outcome}", flush=True)', handle)
         self.assertIn("BRIEF_AUDIO.play(notify)", handle)
@@ -182,7 +183,7 @@ class SiriWiringTests(unittest.TestCase):
         expire = _func(self.siri, "_expire_brief_offer")
         self.assertIn('print("brief: audio offer expired", flush=True)', expire)
         self.assertIn("BRIEF_AUDIO.discard()", expire)
-        self.assertIn("threading.Timer(OFFER_WINDOW_SECONDS + 0.5", _func(self.siri, "_deliver_brief"))
+        self.assertIn("threading.Timer(OFFER_WINDOW_SECONDS + 0.5", _func(self.siri, "_offer_reply"))
 
     def test_only_the_first_chunk_is_made_when_the_text_is_shown(self):
         audio = _func(self.siri, "BriefAudio")
@@ -212,7 +213,7 @@ class SiriWiringTests(unittest.TestCase):
         self.assertNotIn("commands.synthesize_speech", audio)
 
     def test_a_declined_offer_clears_its_buttons(self):
-        handle = _func(self.siri, "handle")
+        handle = _func(self.siri, "_handle_turn")
         self.assertIn('emit(notify, "Ready", "")  # clears the offer', handle)
 
     def test_zoe_and_the_bridge_do_not_get_the_brief_offer(self):

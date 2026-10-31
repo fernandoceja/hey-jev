@@ -3,13 +3,13 @@
 Messages from My Love are the exception: they are spoken with the macOS say command
 and are never sent to Fish, TypeSafe, or an LLM.
 """
-import os, re, sys, json, time, queue, random, argparse, subprocess, tempfile, threading, collections, traceback
+import os, re, sys, json, time, queue, random, argparse, subprocess, tempfile, threading, collections, traceback, contextlib
 from datetime import datetime
 import numpy as np, requests, sounddevice as sd, soundfile as sf
 from dotenv import load_dotenv
 from pynput import keyboard
 import commands
-from commands.brief_offer import BRIEF_OFFER_LINE, OFFER_WINDOW_SECONDS, BriefOffer, speech_chunks
+from commands.brief_offer import BRIEF_OFFER_LINE, OFFER_WINDOW_SECONDS, BriefOffer, audio_request_kind, speech_chunks
 from commands.model import (
     MAX_TOKENS_ANSWER,
     MAX_TOKENS_REMINDER,
@@ -1091,11 +1091,9 @@ def _finish_confirmed(notify):
     except Exception as e:
         _log_action_failure(action, e)
         line = say_line("unsupported")
-        say(line, notify)
-        emit(notify, "Something went wrong", line)  # a failed action plays the failure reaction
+        _deliver(line, notify, failed=True)  # a failed action plays the failure reaction
         return
-    say(line, notify)
-    emit(notify, "Ready", line)
+    _deliver(line, notify)
 
 
 def _run_zoe_allowed(action, text, notify, reply_sink):
@@ -1120,6 +1118,16 @@ def _run_zoe_allowed(action, text, notify, reply_sink):
 
 
 def handle(text, stt_ms=None, notify=None, reply_sink=None, quiet=False):
+    kind = audio_request_kind(text)
+    if kind == "last" and not brief_offer.pending():
+        return _read_last_reply(notify, reply_sink)
+    if kind == "brief":
+        with direct_speech():  # "play my morning brief" plays the audio itself
+            return _handle_turn(text, stt_ms, notify, reply_sink, quiet)
+    return _handle_turn(text, stt_ms, notify, reply_sink, quiet)
+
+
+def _handle_turn(text, stt_ms=None, notify=None, reply_sink=None, quiet=False):
     global misses
     fixed = fix_names(text)
     # The site name stays in the reply. The raw line can also contain a dictated
@@ -1142,10 +1150,11 @@ def handle(text, stt_ms=None, notify=None, reply_sink=None, quiet=False):
         guard = commands.zoe_guard(text)
         misses = 0
         if guard is not None:
-            if guard.get("kind") == "run":
-                return _run_zoe_allowed(guard.get("action"), text, notify, reply_sink)
-            line = guard.get("line") or commands.KID_REFUSAL
-            _deliver(line, notify, reply_sink)
+            with direct_speech():  # Zoe keeps spoken replies
+                if guard.get("kind") == "run":
+                    return _run_zoe_allowed(guard.get("action"), text, notify, reply_sink)
+                line = guard.get("line") or commands.KID_REFUSAL
+                _deliver(line, notify, reply_sink)
             return
     # A pending yes/no is decided here, before Jev or any other request.
     pending = commands.confirmation_status(text)
@@ -1158,8 +1167,7 @@ def handle(text, stt_ms=None, notify=None, reply_sink=None, quiet=False):
         misses = 0
         print("  confirm: no (local, no api)")
         line = say_line("confirm_no")
-        say(line, notify)
-        emit(notify, "Ready", line)
+        _deliver(line, notify)
         return
     if pending in ("expired", "other"):
         print(f"  confirm: {pending}, handling this as a new request")
@@ -1283,13 +1291,16 @@ def handle(text, stt_ms=None, notify=None, reply_sink=None, quiet=False):
                 line = say_line("unsupported")
             else:
                 line = default_line()
-    say(line, notify)
-    for memo_path in brief_paths:
-        try:
-            commands.play_memo_file(memo_path)
-        except Exception as exc:
-            print("  brief: {0}".format(type(exc).__name__))
-    emit(notify, "Something went wrong" if not done else "Ready", line)  # nothing that ran is a failure
+    if brief_paths:  # a memo is playing, so this reply is spoken with it, as before
+        with direct_speech():
+            _deliver(line, notify, failed=not done)
+        for memo_path in brief_paths:
+            try:
+                commands.play_memo_file(memo_path)
+            except Exception as exc:
+                print("  brief: {0}".format(type(exc).__name__))
+    else:
+        _deliver(line, notify, failed=not done)  # nothing that ran is a failure
     if armed:
         # The 10 seconds start after the prompt, so speaking it doesn't eat the window.
         commands.refresh_confirmation()
@@ -1303,8 +1314,7 @@ def _ask_jev_turn(question, notify):
     except Exception as exc:
         print("  capture ask failed: {0}".format(exc))
         line = "I couldn't ask about that picture. Check the network and try again."
-    say(line, notify)
-    emit(notify, "Ready", line)
+    _deliver(line, notify)
 
 
 def say(line, notify):
@@ -1336,8 +1346,12 @@ def _deliver(line, notify, reply_sink=None, private=False, failed=False):
         return
     if reply_sink is not None:
         reply_sink.append(line)
-    say(line, notify)
-    emit(notify, "Something went wrong" if failed else "Ready", line)
+    _remember_reply(line)
+    if _direct_speech_on():
+        say(line, notify)  # bridge, Zoe, and an explicit audio ask keep the spoken reply
+        emit(notify, "Something went wrong" if failed else "Ready", line)
+        return
+    _offer_reply(line, notify, failed=failed)  # PR 8c: text first, audio only on a yes
 
 
 def _log_action_failure(action, exc, private=False):
@@ -1473,16 +1487,60 @@ def _expire_brief_offer():
 
 
 def _deliver_brief(text, notify, reply_sink):
-    """The brief as text in the chat. It is not spoken. Its audio is made in the background and played only on a yes."""
-    if reply_sink is not None:
-        reply_sink.append(text)
-    emit(notify, "Ready", text + " " + BRIEF_OFFER_LINE)
-    print("brief: text shown", flush=True)
+    """The brief goes through the same reply path as every other reply: text first, audio only on a yes."""
+    _deliver(text, notify, reply_sink)
+
+
+def _offer_reply(line, notify, failed=False):
+    """A reply as text, with the offer to read it aloud. Its audio is made in the background and played only on a yes."""
+    text = " ".join(str(line or "").split())
+    state = "Something went wrong" if failed else "Ready"
+    if not text:
+        emit(notify, state, "")
+        return
+    emit(notify, state, text + " " + BRIEF_OFFER_LINE)
+    print("reply: text shown, audio offered", flush=True)
     BRIEF_AUDIO.prefetch(speech_chunks(text))
     brief_offer.offer()
     timer = threading.Timer(OFFER_WINDOW_SECONDS + 0.5, _expire_brief_offer)
     timer.daemon = True
     timer.start()
+
+
+_DIRECT = threading.local()
+LAST_REPLY_TEXT = ""  # the latest reply, so "read it" can read it aloud on request
+
+
+@contextlib.contextmanager
+def direct_speech():
+    """Inside this block replies are spoken directly, not offered: bridge turns, Zoe, and explicit audio asks."""
+    prior = getattr(_DIRECT, "on", False)
+    _DIRECT.on = True
+    try:
+        yield
+    finally:
+        _DIRECT.on = prior
+
+
+def _direct_speech_on():
+    return bool(getattr(_DIRECT, "on", False))
+
+
+def _remember_reply(line):
+    global LAST_REPLY_TEXT
+    text = " ".join(str(line or "").split())
+    if text:
+        LAST_REPLY_TEXT = text
+
+
+def _read_last_reply(notify, reply_sink=None):
+    """"read it" with no open offer: read the latest reply aloud now."""
+    if not LAST_REPLY_TEXT:
+        _deliver("I don't have a reply to read yet.", notify, reply_sink)
+        return
+    print("reply: read aloud on request", flush=True)
+    with direct_speech():
+        _deliver(LAST_REPLY_TEXT, notify, reply_sink)
 
 
 def _run_local(payload, text, notify, reply_sink):
@@ -1504,7 +1562,8 @@ def _run_local(payload, text, notify, reply_sink):
     )
     if action in SPEAK_FIRST:
         line = say_line(reply_key, **fmt) if reply_key in REPLIES else "Okay."
-        _deliver(line, notify, reply_sink)
+        with direct_speech():  # spoken before the action, which may mute the Mac or lock the screen
+            _deliver(line, notify, reply_sink)
         try:
             emit(notify, "Doing it", text)
             ACTIONS[action](arg, text)
@@ -1533,7 +1592,8 @@ def _run_local(payload, text, notify, reply_sink):
         return
     if isinstance(result, commands.BriefPlayback):
         if result.line:
-            _deliver(result.line, notify, reply_sink)
+            with direct_speech():  # the memo plays its own audio, so its line is spoken with it
+                _deliver(result.line, notify, reply_sink)
         if result.path:
             try:
                 commands.play_memo_file(result.path)
@@ -1731,7 +1791,7 @@ def run_voice_assistant(notify=None, controls=None, mode="ptt", mic=""):
     def start_dictation():
         print(f"\n> dictation started")
         if not (OA_KEY or OR_KEY):
-            say("Add an OpenRouter or OpenAI key first.", notify)
+            _deliver("Add an OpenRouter or OpenAI key first.", notify)
             emit(notify, "Ready", "Dictation needs an OpenRouter or OpenAI key")
             return
         MIC_LEVELS.clear()
@@ -1895,7 +1955,8 @@ def run_voice_assistant(notify=None, controls=None, mode="ptt", mic=""):
         with busy:
             rec.paused = True
             try:
-                handle(command, reply_sink=spoken)
+                with direct_speech():  # the phone's command is spoken on this Mac, as before
+                    handle(command, reply_sink=spoken)
             except Exception as exc:
                 print(f"  bridge turn: {type(exc).__name__}")
             finally:

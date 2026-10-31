@@ -13,6 +13,16 @@ OFFER_WINDOW_SECONDS = 60.0
 _YES = {
     "yes", "yes please", "yeah", "yep", "yup", "sure", "sure thing", "read it", "read it out loud", "read it aloud",
     "play it", "play it out loud", "play audio", "play it please", "read it please", "yes read it", "yes play it",
+    "say it out loud", "say it aloud", "read that out loud", "read that aloud", "say that out loud", "say that aloud",
+}
+# Explicit asks for audio. "last" reads the latest reply aloud; "brief" plays the morning brief's audio directly.
+_LAST_ASKS = {
+    "read it", "read it out loud", "read it aloud", "say it out loud", "say it aloud", "read that out loud",
+    "read that aloud", "say that out loud", "say that aloud",
+}
+_BRIEF_ASKS = {
+    "play my morning brief", "play the morning brief", "play my brief", "read the brief out loud",
+    "read the brief aloud", "play the brief",
 }
 _NO = {"no", "no thanks", "no thank you", "nope", "not now", "no please"}
 
@@ -31,6 +41,16 @@ def answer_kind(text):
     if words in _NO:
         return "no"
     return "other"
+
+
+def audio_request_kind(text):
+    """"last", "brief", or None. An explicit ask for audio plays directly and is not offered."""
+    words = _words(text)
+    if words in _LAST_ASKS:
+        return "last"
+    if words in _BRIEF_ASKS:
+        return "brief"
+    return None
 
 
 def split_sentences(text):

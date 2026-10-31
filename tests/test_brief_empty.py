@@ -221,6 +221,14 @@ class FailedActionTests(unittest.TestCase):
         }
         exec(compile(_siri_function("_log_action_failure"), "siri.py", "exec"), ns)
         exec(compile(_siri_function("_deliver"), "siri.py", "exec"), ns)
+        # The reply path's helpers: the direct-speech flag, the remembered reply, and the offer (stubbed here).
+        ns["threading"], ns["contextlib"] = __import__("threading"), __import__("contextlib")
+        ns["_DIRECT"] = ns["threading"].local()
+        for name in ("direct_speech", "_direct_speech_on", "_remember_reply"):
+            exec(compile(_siri_function(name), "siri.py", "exec"), ns)
+        ns["LAST_REPLY_TEXT"] = ""
+        ns["_offer_reply"] = lambda line, notify, failed=False: emits.append(
+            ("Something went wrong" if failed else "Ready", line + " Want me to read it out loud?"))
         return ns
 
     def test_a_failed_action_ends_as_something_went_wrong_and_not_ready(self):
@@ -262,8 +270,8 @@ class FailedActionTests(unittest.TestCase):
     def test_the_failure_paths_in_siri_use_the_failed_flag(self):
         source = open(os.path.join(ROOT, "siri.py"), encoding="utf-8").read()
         self.assertIn('_deliver(say_line("unsupported"), notify, reply_sink, failed=True)', source)
-        self.assertIn('emit(notify, "Something went wrong" if not done else "Ready", line)', source)
-        self.assertIn('emit(notify, "Something went wrong", line)  # a failed action plays the failure reaction', source)
+        self.assertIn("_deliver(line, notify, failed=not done)", source)
+        self.assertIn("_deliver(line, notify, failed=True)  # a failed action plays the failure reaction", source)
 
 
 class FailureReactionTests(unittest.TestCase):
