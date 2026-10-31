@@ -217,6 +217,7 @@ from orb_motion import (
     hint_layout, menu_layout, result_frames, result_layout,
 )
 from mini_bar import FIND_IMAGE_HINT, TYPE_KEY_CODE, capture_outcome, menu_on_drop, orb_action_menu
+from mini_bar import greeting_bubble_frame, orb_bubble_log_line
 import full_window as fw
 from ptt import PushToTalk
 from secrets_store import KEY_NAMES, OPTIONAL, get_secret, missing_secrets, save_secret
@@ -4774,6 +4775,12 @@ class AppDelegate(NSObject):
         gx, gy, gw, gh = layout["greeting"]
         bubble = getattr(self, "greeting_bubble", None)
         label = getattr(self, "greeting_label", None)
+        # PR 8c: the bubble is kept inside the popover's own bounds, so an edge never clips it.
+        bounds = self.mini_panel.contentView().bounds() if getattr(self, "mini_panel", None) is not None else None
+        if bounds is not None:
+            gx, gy, gw, gh = greeting_bubble_frame(
+                (gx, gy, gw, gh), (bounds.origin.x, bounds.origin.y, bounds.size.width, bounds.size.height))
+        docked = self._orb_bubble_docked()
         if bubble is not None:
             bubble.setHidden_(True)
             _place(bubble, (gx, gy, gw, gh))
@@ -4781,9 +4788,10 @@ class AppDelegate(NSObject):
             bubble.solidFill = chrome.get("material") == "solid"
             bubble.setNeedsDisplay_(True)
         if label is not None:
-            label.setHidden_(False)
+            label.setHidden_(docked)  # PR 8c: a docked orb has no bubble; the full-window chat shows the message
             label.setStringValue_(greeting_text())
             _place(label, (gx + 8.0, gy + 6.0, max(40.0, gw - 16.0), max(16.0, gh - 12.0)))
+        self._log_orb_bubble(greeting_text(), docked)
         cx, cy, cw, ch = layout["composer"]
         self.mini_plus.setHidden_(False)
         self.mini_field.setHidden_(False)
@@ -4817,6 +4825,21 @@ class AppDelegate(NSObject):
         self._refresh_trailing_symbol()
 
     @objc.python_method
+    def _orb_bubble_docked(self):
+        """True while the orb is docked, or the full window is open: the bubble is then held back."""
+        full = getattr(self, "full_window", None)
+        return bool(self._orb_docked_now() or (full is not None and full.isVisible()))
+
+    @objc.python_method
+    def _log_orb_bubble(self, text, docked):
+        """Logs the bubble's text and whether it was held back, once per change, not on every layout pass."""
+        key = (bool(docked), str(text))
+        if getattr(self, "_orb_bubble_log_key", None) == key:
+            return
+        self._orb_bubble_log_key = key
+        print(orb_bubble_log_line(text, docked), flush=True)
+
+    @objc.python_method
     def _sync_orb(self):
         orb = getattr(self, "orb_view", None)
         panel = getattr(self, "mini_panel", None)
@@ -4830,6 +4853,10 @@ class AppDelegate(NSObject):
         docked = self._orb_docked_now() or (full is not None and bool(full.isVisible()))
         # While the window is open the docked orb stays up, whatever the bar's show/hide rules say.
         visible = (panel.isVisible() or docked) and (self.bar.should_show() or docked)
+        label = getattr(self, "greeting_label", None)
+        if label is not None:
+            label.setHidden_(docked or bool(getattr(self, "pillCollapsed", False)))
+            self._log_orb_bubble(greeting_text(), docked)
         orb.configure(state, bool(getattr(self, "option_down", False)),
                       getattr(self, "_meter_unit", 0.0), visible,
                       flags.get("motion", True), flags.get("material") == "solid",

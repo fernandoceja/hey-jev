@@ -1374,6 +1374,26 @@ def greeting_bubble_size(text=None):
     return (width, height)
 
 
+def greeting_bubble_frame(frame, bounds, inset=ORB_EDGE_INSET):
+    """The greeting bubble's frame kept wholly inside the popover's own bounds, so an edge never clips it.
+
+    frame and bounds are (x, y, w, h) in the same view's coordinates. A bubble wider than the bounds keeps its
+    width and sits at the inset; the window is clamped on screen separately.
+    """
+    x, y, w, h = (float(v) for v in frame)
+    bx, by, bw, bh = (float(v) for v in bounds)
+    x = min(max(x, bx + inset), max(bx + inset, bx + bw - inset - w))
+    y = min(max(y, by + inset), max(by + inset, by + bh - inset - h))
+    return (x, y, w, h)
+
+
+def orb_bubble_log_line(text, docked):
+    """What the orb's speech bubble would show, and whether it was held back because the orb is docked."""
+    if docked:
+        return "orb bubble: suppressed while docked, would show: {0!r}".format(str(text))
+    return "orb bubble: shown: {0!r}".format(str(text))
+
+
 def popover_content_width(composer_size=None):
     cw, _ch = clamp_size(*(composer_size or default_size()))
     gw, _gh = greeting_bubble_size()
