@@ -200,6 +200,7 @@ from orb_motion import (
     spring, spring_done,
 )
 from orb_motion import peek_edge_allowed  # PR 8: a tuck never sits on a shared display edge
+from orb_motion import dock_strip, rects_overlap
 from orb_character import disk_check, is_thanks, reaction_for_status, rough_drag
 from orb_tuck import (TUCK_CLOSE_SIZE, TUCK_FADE_IN_SECONDS, TUCK_FADE_OUT_SECONDS, TUCK_KEY, TUCK_SECONDS,
                       decode_tuck, encode_tuck, tuck_close_centre, tuck_edge, tuck_eye_centres, tucked_frame,
@@ -209,6 +210,7 @@ from orb_motion import (  # PR 6a: expand from the orb, dock on the divider, col
     EXPAND_START_SCALE, ORB_STATE_COLLAPSING, ORB_STATE_EXPANDING, ORB_STATE_IDLE, ORB_STATE_OPEN,
     SPRING_EXPAND, collapse_target, dock_panel_level, dock_point, expand_rects, orb_window_next,
 )
+from commands.brief_offer import BRIEF_OFFER_LINE, OFFER_WINDOW_SECONDS
 from area_hotkey import CARBON_CONTROL, CARBON_OPTION, AreaCaptureHotKey, CarbonHotKey
 from orb_motion import (
     MENU_CORNER_RADIUS, MENU_FILL_HOVER, MENU_FILL_REST, MENU_FAN_START_SCALE, MENU_HOVER_SECONDS,
@@ -216,6 +218,7 @@ from orb_motion import (
     hint_layout, menu_layout, result_frames, result_layout,
 )
 from mini_bar import FIND_IMAGE_HINT, TYPE_KEY_CODE, capture_outcome, menu_on_drop, orb_action_menu
+from mini_bar import greeting_bubble_frame, orb_bubble_log_line
 import full_window as fw
 from ptt import PushToTalk
 from secrets_store import KEY_NAMES, OPTIONAL, get_secret, missing_secrets, save_secret
@@ -2492,6 +2495,89 @@ class AppDelegate(NSObject):
         self.focusTypeField_(None)
 
     @objc.python_method
+    def _offer_button_pair(self, root, attr):
+        """The two small buttons for the brief's offer, on one root view. Built once, hidden until an offer."""
+        existing = getattr(self, attr, None)
+        if existing is not None:
+            return existing
+        audio = NSButton.alloc().initWithFrame_(NSMakeRect(0, 0, 96, 24))
+        audio.setTitle_("Play audio")
+        audio.setTarget_(self)
+        audio.setAction_("briefPlayAudio:")
+        no_thanks = NSButton.alloc().initWithFrame_(NSMakeRect(0, 0, 96, 24))
+        no_thanks.setTitle_("No thanks")
+        no_thanks.setTarget_(self)
+        no_thanks.setAction_("briefNoThanks:")
+        for button in (audio, no_thanks):
+            button.setHidden_(True)
+            root.addSubview_(button)
+        setattr(self, attr, (audio, no_thanks))
+        return audio, no_thanks
+
+    @objc.python_method
+    def _show_brief_offer_buttons(self, show):
+        """The offer's buttons, on the popover (and pill) and on the full window. They hide again when the window runs out."""
+        self._brief_offer_showing = bool(show)
+        if show or getattr(self, "_brief_buttons", None) is not None:
+            root = self.mini_panel.contentView()
+            audio, no_thanks = self._offer_button_pair(root, "_brief_buttons")
+            if show:
+                bounds = root.bounds()
+                top = float(bounds.size.height) - 34.0
+                right = float(bounds.size.width) - 12.0
+                no_thanks.setFrameOrigin_(NSMakePoint(right - 96.0, top))
+                audio.setFrameOrigin_(NSMakePoint(right - 96.0 - 8.0 - 96.0, top))
+            audio.setHidden_(not show)
+            no_thanks.setHidden_(not show)
+        if show or getattr(self, "_full_brief_buttons", None) is not None:
+            full_audio, full_no = self._offer_full_pair()
+            if full_audio is not None:
+                if show:
+                    self._place_full_offer_buttons()
+                full_audio.setHidden_(not show)
+                full_no.setHidden_(not show)
+        if show:
+            self.performSelector_withObject_afterDelay_("hideBriefOfferButtons:", None, OFFER_WINDOW_SECONDS)
+
+    @objc.python_method
+    def _offer_full_pair(self):
+        """The full window's pair sits above the input field, so it reads as the end of the conversation."""
+        full = getattr(self, "full_window", None)
+        field_bg = getattr(self, "full_input_bg", None)
+        if full is None or field_bg is None:
+            return None, None
+        return self._offer_button_pair(field_bg.superview(), "_full_brief_buttons")
+
+    @objc.python_method
+    def _place_full_offer_buttons(self):
+        field_bg = getattr(self, "full_input_bg", None)
+        pair = getattr(self, "_full_brief_buttons", None)
+        if field_bg is None or pair is None:
+            return
+        frame = field_bg.frame()
+        audio, no_thanks = pair
+        y = float(frame.origin.y) + float(frame.size.height) + 6.0
+        x = float(frame.origin.x) + 8.0
+        audio.setFrameOrigin_(NSMakePoint(x, y))
+        no_thanks.setFrameOrigin_(NSMakePoint(x + 96.0 + 8.0, y))
+
+    def hideBriefOfferButtons_(self, _sender):
+        self._show_brief_offer_buttons(False)
+
+    def briefPlayAudio_(self, _sender):
+        self._answer_brief_offer("play it")
+
+    def briefNoThanks_(self, _sender):
+        self._answer_brief_offer("no thanks")
+
+    @objc.python_method
+    def _answer_brief_offer(self, phrase):
+        """A button answers the offer the same way typing or saying the phrase would."""
+        self._show_brief_offer_buttons(False)
+        self._dispatch_text_plan({"kind": "run", "control": ("text", phrase), "reveal_main": False})
+        self._refresh_full_window()
+
+    @objc.python_method
     def _note_turn_text(self, text):
         """A turn whose text thanks Jev plays heart eyes (PR 7b). Matched on the text only; nothing is sent."""
         if is_thanks(text) and getattr(self, "orb_view", None) is not None:
@@ -4690,6 +4776,12 @@ class AppDelegate(NSObject):
         gx, gy, gw, gh = layout["greeting"]
         bubble = getattr(self, "greeting_bubble", None)
         label = getattr(self, "greeting_label", None)
+        # PR 8c: the bubble is kept inside the popover's own bounds, so an edge never clips it.
+        bounds = self.mini_panel.contentView().bounds() if getattr(self, "mini_panel", None) is not None else None
+        if bounds is not None:
+            gx, gy, gw, gh = greeting_bubble_frame(
+                (gx, gy, gw, gh), (bounds.origin.x, bounds.origin.y, bounds.size.width, bounds.size.height))
+        docked = self._orb_bubble_docked()
         if bubble is not None:
             bubble.setHidden_(True)
             _place(bubble, (gx, gy, gw, gh))
@@ -4697,9 +4789,10 @@ class AppDelegate(NSObject):
             bubble.solidFill = chrome.get("material") == "solid"
             bubble.setNeedsDisplay_(True)
         if label is not None:
-            label.setHidden_(False)
+            label.setHidden_(docked)  # PR 8c: a docked orb has no bubble; the full-window chat shows the message
             label.setStringValue_(greeting_text())
             _place(label, (gx + 8.0, gy + 6.0, max(40.0, gw - 16.0), max(16.0, gh - 12.0)))
+        self._log_orb_bubble(greeting_text(), docked)
         cx, cy, cw, ch = layout["composer"]
         self.mini_plus.setHidden_(False)
         self.mini_field.setHidden_(False)
@@ -4727,10 +4820,97 @@ class AppDelegate(NSObject):
         if hasattr(self, "zoe_label"):
             _place(self.zoe_label, (cx + field[0] + field[2] - 46.0, cy + field[1], 44.0, field[3]))
         self._layout_popover_footer(layout)
+        self._apply_dock_visibility()  # PR 8c: a layout pass never shows the popover's views beside a docked orb
         self._sync_capsule(width, height, popover=True, panel_rect=layout.get("panel"))
         self._sync_recording_ui()
         self._style_pill_field()
         self._refresh_trailing_symbol()
+
+    @objc.python_method
+    def _clear_dock_strays(self):
+        """On dock: log every window beside the orb, and close the ones that are not the orb or the full window."""
+        panel, full = getattr(self, "mini_panel", None), getattr(self, "full_window", None)
+        if panel is None or full is None:
+            return
+        orb = self._frame_tuple(panel.frame())
+        strip = dock_strip(orb)
+        print("dock: orb={0} strip={1}".format(tuple(round(v, 1) for v in orb), tuple(round(v, 1) for v in strip)),
+              flush=True)
+        for child in list(panel.childWindows() or []):
+            print("dock: child window {0} frame={1} visible={2}".format(
+                type(child).__name__, tuple(round(v, 1) for v in self._frame_tuple(child.frame())),
+                bool(child.isVisible())), flush=True)
+            if child is not full:
+                child.orderOut_(None)
+        for window in list(NSApp.windows() or []):
+            if window is panel or window is full or not window.isVisible():
+                continue
+            frame = self._frame_tuple(window.frame())
+            if not rects_overlap(frame, strip):
+                continue
+            print("dock: stray window {0} title={1!r} frame={2} level={3}".format(
+                type(window).__name__, str(window.title() or ""), tuple(round(v, 1) for v in frame),
+                int(window.level())), flush=True)
+            window.orderOut_(None)
+        for name, closer in (("hint", "_close_hint"), ("result", "_close_result_panel")):
+            fn = getattr(self, closer, None)
+            if callable(fn):
+                fn()
+        self._close_orb_spotlight("dock")
+
+    @objc.python_method
+    def _apply_dock_visibility(self):
+        """While docked, the orb is the only view in its panel. Every other view is hidden, and its state is saved and
+        restored on collapse. Each one hidden for the first time is logged, with its frame and any label."""
+        panel, orb = getattr(self, "mini_panel", None), getattr(self, "orb_view", None)
+        if panel is None or orb is None:
+            return
+        saved = getattr(self, "_dock_saved", None) or {}
+        if not self._orb_bubble_docked():
+            if saved:
+                for view, was_hidden in saved.values():
+                    view.setHidden_(was_hidden)
+                self._dock_saved = {}
+                print("dock: popover views restored", flush=True)
+                self._layout_mini_bar(float(panel.frame().size.width), float(panel.frame().size.height))
+            return
+        keep = set()
+        view = orb
+        while view is not None:
+            keep.add(id(view))
+            view = view.superview()
+        containers = {id(v): v for v in (orb.superview(), panel.contentView()) if v is not None}
+        for container in containers.values():
+            for view in list(container.subviews() or []):
+                if id(view) in keep:
+                    continue
+                if id(view) not in saved:
+                    saved[id(view)] = (view, bool(view.isHidden()))
+                    text = ""
+                    try:
+                        text = str(view.stringValue() or "") if hasattr(view, "stringValue") else ""
+                    except Exception:
+                        text = ""
+                    print("dock: hid {0} frame={1} label={2!r}".format(
+                        type(view).__name__, tuple(round(v, 1) for v in self._frame_tuple(view.frame())), text[:40]),
+                        flush=True)
+                view.setHidden_(True)
+        self._dock_saved = saved
+
+    @objc.python_method
+    def _orb_bubble_docked(self):
+        """True while the orb is docked, or the full window is open: the bubble is then held back."""
+        full = getattr(self, "full_window", None)
+        return bool(self._orb_docked_now() or (full is not None and full.isVisible()))
+
+    @objc.python_method
+    def _log_orb_bubble(self, text, docked):
+        """Logs the bubble's text and whether it was held back, once per change, not on every layout pass."""
+        key = (bool(docked), str(text))
+        if getattr(self, "_orb_bubble_log_key", None) == key:
+            return
+        self._orb_bubble_log_key = key
+        print(orb_bubble_log_line(text, docked), flush=True)
 
     @objc.python_method
     def _sync_orb(self):
@@ -4746,6 +4926,10 @@ class AppDelegate(NSObject):
         docked = self._orb_docked_now() or (full is not None and bool(full.isVisible()))
         # While the window is open the docked orb stays up, whatever the bar's show/hide rules say.
         visible = (panel.isVisible() or docked) and (self.bar.should_show() or docked)
+        label = getattr(self, "greeting_label", None)
+        if label is not None:
+            label.setHidden_(docked or bool(getattr(self, "pillCollapsed", False)))
+            self._log_orb_bubble(greeting_text(), docked)
         orb.configure(state, bool(getattr(self, "option_down", False)),
                       getattr(self, "_meter_unit", 0.0), visible,
                       flags.get("motion", True), flags.get("material") == "solid",
@@ -4767,6 +4951,7 @@ class AppDelegate(NSObject):
         stop = getattr(self, "rec_stop", None)
         recording = stop is not None and not stop.isHidden()
         self.mini_mic.setHidden_(collapsed or recording)
+        self._apply_dock_visibility()
 
     @objc.python_method
     def _place_mic_level(self, mic_frame):
@@ -5270,7 +5455,9 @@ class AppDelegate(NSObject):
         full.makeFirstResponder_(self.full_field)
         self._remove_orb_ghost()
         self._set_orb_window_state("landed")
+        self._clear_dock_strays()  # PR 8c: log and close anything beside the orb that is not the orb
         self._sync_orb()
+        self._apply_dock_visibility()
         self._log_orb_dock("dock")
         print("  orb expand: done after {0:.3f}s ticks={1}".format(
             time.monotonic() - getattr(self, "_orb_started", time.monotonic()), getattr(self, "_orb_ticks", 0)))
@@ -5326,6 +5513,7 @@ class AppDelegate(NSObject):
         self._remove_orb_ghost()
         self._orb_undocked_frame = None
         self._set_orb_window_state("landed")
+        self._apply_dock_visibility()  # PR 8c: the popover's views come back before the orb settles
         self._sync_orb()  # not docked any more, so the bob resumes
         self._peek_consider()
         print("  orb collapse: done after {0:.3f}s ticks={1}".format(
@@ -5579,6 +5767,8 @@ class AppDelegate(NSObject):
         self.full_convo.textStorage().setAttributedString_(text)
         self.full_convo.scrollToEndOfDocument_(None)
         self._layout_full_window()
+        if getattr(self, "_brief_offer_showing", False):
+            self._place_full_offer_buttons()  # PR 8c: keep the offer's buttons above the input after a re-layout
 
     @objc.python_method
     def _show_full_window(self, draft=""):
@@ -6769,6 +6959,10 @@ class AppDelegate(NSObject):
         detail = str(payload.get("detail", ""))
         previous = str(self.status.stringValue()) if getattr(self, "status", None) is not None else ""
         self.status.setStringValue_(state)
+        if detail.rstrip().endswith(BRIEF_OFFER_LINE):
+            self._show_brief_offer_buttons(True)  # PR 8c: the brief's offer, with its two buttons
+        else:
+            self._show_brief_offer_buttons(False)
         reaction = reaction_for_status(previous, state, detail)  # PR 7b: success or failure
         if reaction is not None and getattr(self, "orb_view", None) is not None:
             self.orb_view.offerReaction(reaction)

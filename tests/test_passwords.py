@@ -332,7 +332,7 @@ class TestPasswordHandler(unittest.TestCase):
         decide = source.split("def decide(", 1)[1].split("\ndef ", 1)[0]
         self.assertLess(decide.index("route_before_api"), decide.index("jev(") if "jev(" in decide else len(decide))
         self.assertIn("route_before_api", decide)
-        handle = source.split("def handle(", 1)[1].split("\ndef ", 1)[0]
+        handle = source.split("def _handle_turn(", 1)[1].split("\ndef ", 1)[0]
         runner = source.split("def _run_local(", 1)[1].split("\ndef ", 1)[0]
         self.assertLess(handle.index("is_password_lookup"), handle.index("zoe_claims"))
         self.assertLess(handle.index("decide(None, text)"), handle.index("jev(text)"))

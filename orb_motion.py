@@ -856,3 +856,22 @@ def wav_envelope(path, hz=ENVELOPE_HZ):
         return [level / peak for level in levels]
     except Exception:
         return []
+
+
+# PR 8c: on dock, anything drawn beside the orb that is not the orb is logged and closed. The strip reaches further to
+# the left, where the stray square was seen.
+DOCK_STRIP_LEFT = 260.0
+DOCK_STRIP_Y = 80.0
+
+
+def dock_strip(orb_frame, left=DOCK_STRIP_LEFT, pad_y=DOCK_STRIP_Y):
+    """(x, y, w, h) of the area beside and around the docked orb where no other window should be."""
+    ox, oy, ow, oh = (float(v) for v in orb_frame)
+    return (ox - left, oy - pad_y, left + ow + 20.0, oh + 2.0 * pad_y)
+
+
+def rects_overlap(a, b):
+    """True when two (x, y, w, h) rects share any area."""
+    ax, ay, aw, ah = (float(v) for v in a)
+    bx, by, bw, bh = (float(v) for v in b)
+    return ax < bx + bw and bx < ax + aw and ay < by + bh and by < ay + ah

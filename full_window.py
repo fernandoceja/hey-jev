@@ -55,7 +55,7 @@ GET_STARTED = (
     ("plan", "Plan my day", "brief me"),
 )
 CATEGORIES = (
-    ("Today", (("weather", "Weather", "what's the weather"), ("eta_home", "ETA home", "eta home"))),
+    ("Today", (("start_day", "Start my day", "start my day"), ("weather", "Weather", "what's the weather"), ("eta_home", "ETA home", "eta home"))),
     ("Captures", (("shots", "Open my screenshots", "open my screenshots"),)),
     ("Games", (("games", "List games", "list games"),)),
     ("Mac", (("mac", "CleanMyMac scan", "cleanmymac scan"),)),

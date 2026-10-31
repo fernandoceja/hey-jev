@@ -64,6 +64,7 @@ POPOVER_CHIPS = {
     "eta_home": {"title": "ETA home", "subtitle": "", "phrase": "eta home"},
     "hazard_check": {"title": "Hazard Check", "subtitle": "", "phrase": "hazard check"},
     "plan_day": {"title": "Plan my day", "subtitle": "Today's brief", "phrase": "brief me"},
+    "start_day": {"title": "Start my day", "subtitle": "Today's brief", "phrase": "start my day"},  # PR 8c
     "mac_health": {"title": "Mac health", "subtitle": "CleanMyMac scan only.", "phrase": "cleanmymac scan"},
     "weather": {"title": "Weather", "subtitle": "Local forecast", "phrase": "what's the weather"},
     "time": {"title": "Time", "subtitle": "Clock check", "phrase": "what time is it"},
@@ -72,7 +73,7 @@ POPOVER_CHIPS = {
     "eta_work": {"title": "ETA work", "subtitle": "Commute", "phrase": "what's my ETA to work"},
 }
 POPOVER_CHIP_PAGES = (
-    ("eta_home", "hazard_check", "plan_day", "mac_health"),
+    ("eta_home", "hazard_check", "start_day", "mac_health"),  # PR 8c: replaces Plan my day in the popover
     ("weather", "time", "games", "eta_work"),
 )
 # Template-image tint while right Option is held for push-to-talk, and after.
@@ -1371,6 +1372,26 @@ def greeting_bubble_size(text=None):
     width = min(300.0, max(168.0, len(line) * 6.8 + 24.0))
     height = 34.0
     return (width, height)
+
+
+def greeting_bubble_frame(frame, bounds, inset=ORB_EDGE_INSET):
+    """The greeting bubble's frame kept wholly inside the popover's own bounds, so an edge never clips it.
+
+    frame and bounds are (x, y, w, h) in the same view's coordinates. A bubble wider than the bounds keeps its
+    width and sits at the inset; the window is clamped on screen separately.
+    """
+    x, y, w, h = (float(v) for v in frame)
+    bx, by, bw, bh = (float(v) for v in bounds)
+    x = min(max(x, bx + inset), max(bx + inset, bx + bw - inset - w))
+    y = min(max(y, by + inset), max(by + inset, by + bh - inset - h))
+    return (x, y, w, h)
+
+
+def orb_bubble_log_line(text, docked):
+    """What the orb's speech bubble would show, and whether it was held back because the orb is docked."""
+    if docked:
+        return "orb bubble: suppressed while docked, would show: {0!r}".format(str(text))
+    return "orb bubble: shown: {0!r}".format(str(text))
 
 
 def popover_content_width(composer_size=None):
