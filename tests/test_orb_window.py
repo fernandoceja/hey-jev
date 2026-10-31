@@ -91,7 +91,8 @@ class TestOrbWindowWiring(unittest.TestCase):
         ui = _ui()
         ensure = _func(ui, "_ensure_orb_window_flags")
         self.assertIn("orb_window_needs_fix", ensure)
-        self.assertIn("sys.stderr.write(orb_window_log_line(", ensure)
+        self.assertIn("line = orb_window_log_line(", ensure)
+        self.assertIn("sys.stderr.write(line", ensure)
         for name in ("_reassert_orb", "_order_bar_front", "_finalize_mini_bar_drag", "_focus_pill_field",
                      "_keep_orb_visible", "_apply_pill_presentation"):
             self.assertIn("_ensure_orb_window_flags(", _func(ui, name), name)

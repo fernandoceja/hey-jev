@@ -289,6 +289,45 @@ def make_orb_view(frame):
                 return self.tree.drop_jiggle()
 
             @objc.python_method
+            def renderLayers(self):
+                """(tree_attached, {name: (opacity, width, height)}) for orb_health.render_problems."""
+                tree = getattr(self, "tree", None)
+                host = self.layer()
+                if tree is None:
+                    return False, {}
+                attached = host is not None and tree.root.superlayer() is host
+                layers = {}
+                for name in ("root", "squash", "body_group", "body"):
+                    layer = getattr(tree, name, None)
+                    if layer is None:
+                        continue
+                    size = layer.bounds().size
+                    layers[name] = (float(layer.opacity()), float(size.width), float(size.height))
+                return attached, layers
+
+            @objc.python_method
+            def healRender(self):
+                """Re-attach the layer tree if AppKit replaced the backing layer, restore opacity, and refit.
+
+                Transforms and animations are left alone, so the squash, stretch, jiggle and spring are untouched.
+                """
+                tree = getattr(self, "tree", None)
+                if tree is None:
+                    return
+                self.setHidden_(False)
+                if self.layer() is None:
+                    self.setWantsLayer_(True)
+                host = self.layer()
+                if host is not None and tree.root.superlayer() is not host:
+                    tree.root.removeFromSuperlayer()
+                    host.addSublayer_(tree.root)
+                for name in ("root", "squash", "body_group", "body"):
+                    layer = getattr(tree, name, None)
+                    if layer is not None and float(layer.opacity()) < 0.99:
+                        layer.setOpacity_(1.0)
+                self.refreshLook()
+
+            @objc.python_method
             def stop(self):
                 self.halted = True
                 self.syncMotion()

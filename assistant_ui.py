@@ -180,6 +180,7 @@ from mini_bar import (
     is_our_app,
 )
 from orb_motion import DRAG_TICK_SECONDS, SPRING_FOLLOW, SPRING_SNAP, drag_roughness, drag_stretch, follow_step, spring, spring_done
+from orb_health import render_problems, render_summary
 from orb_view import make_orb_view, orb_frame
 import full_window as fw
 from ptt import PushToTalk
@@ -2280,7 +2281,7 @@ class AppDelegate(NSObject):
         panel.setLevel_(config["level"])
 
     @objc.python_method
-    def _ensure_orb_window_flags(self, reason):
+    def _ensure_orb_window_flags(self, reason, quiet=False):
         """Put the live orb window back on orb_window_config if anything changed it, then log it to stderr."""
         panel = getattr(self, "mini_panel", None)
         if panel is None:
@@ -2288,11 +2289,64 @@ class AppDelegate(NSObject):
         if orb_window_needs_fix(panel.level(), panel.collectionBehavior(),
                                 panel.hidesOnDeactivate(), panel.canHide()):
             self._apply_orb_window_flags(panel)
+        wanted = hasattr(self, "bar") and self.bar.should_show() and bool(panel.isVisible())
+        snapshot = self._orb_render_snapshot() if wanted else None
+        problems = render_problems(snapshot) if snapshot is not None else []
+        if quiet and not problems:
+            return
         try:
-            sys.stderr.write(orb_window_log_line(reason, panel.windowNumber(), panel.level(),
-                                                 panel.collectionBehavior(), panel.isVisible()) + "\n")
+            line = orb_window_log_line(reason, panel.windowNumber(), panel.level(),
+                                       panel.collectionBehavior(), panel.isVisible())
+            if snapshot is not None:
+                line += " " + render_summary(snapshot, problems)  # values before any heal below
+            sys.stderr.write(line + "\n")
         except Exception:
             pass
+        if problems:
+            self._heal_orb_render(problems)
+
+    @objc.python_method
+    def _orb_render_snapshot(self):
+        """What the orb window, its content view and the orb layers look like right now."""
+        panel = self.mini_panel
+        content = panel.contentView()
+        orb = getattr(self, "orb_view", None)
+        if content is None or orb is None:
+            return None
+        def rect(r):
+            return (float(r.origin.x), float(r.origin.y), float(r.size.width), float(r.size.height))
+        layer = content.layer()
+        attached, layers = orb.renderLayers() if hasattr(orb, "renderLayers") else (True, {})
+        return {
+            "content_hidden": bool(content.isHidden()),
+            "content_alpha": float(content.alphaValue()),
+            "content_layer_opacity": None if layer is None else float(layer.opacity()),
+            "content_bounds": rect(content.bounds()),
+            "orb_hidden": bool(orb.isHidden()),
+            "orb_frame": rect(orb.frame()),
+            "tree_attached": attached,
+            "layers": layers,
+        }
+
+    @objc.python_method
+    def _heal_orb_render(self, problems):
+        """Undo whatever render_problems found, so the orb draws again at its current spot."""
+        panel = self.mini_panel
+        content = panel.contentView()
+        if content is not None:
+            content.setHidden_(False)
+            content.setAlphaValue_(1.0)
+            layer = content.layer()
+            if layer is not None and float(layer.opacity()) < 0.99:
+                layer.removeAnimationForKey_("pillAppear")
+                layer.setOpacity_(1.0)
+        if any(p.startswith("orb_frame") for p in problems):
+            size = panel.frame().size
+            self._layout_mini_bar(float(size.width), float(size.height))
+        orb = getattr(self, "orb_view", None)
+        if orb is not None and hasattr(orb, "healRender"):
+            orb.healRender()
+        self._sync_orb()
 
     @objc.python_method
     def _reassert_orb(self):
@@ -4268,6 +4322,10 @@ class AppDelegate(NSObject):
         self._sync_choice_dismiss()
         self._sync_zoe_ui()
         self._sync_orb()
+        # Catches an orb that stopped drawing between re-shows (for example after the show fade turns on
+        # the content view's layer). Logs only when it finds and heals a problem.
+        if hasattr(self, "pill") and self.pill.collapsed:
+            self._ensure_orb_window_flags("tick", quiet=True)
 
     @objc.python_method
     def _sync_choice_dismiss(self):
