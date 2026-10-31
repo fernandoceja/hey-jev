@@ -8,6 +8,8 @@ import re
 from collections import namedtuple
 
 from orb_motion import (
+    ROUGH_REVERSALS,
+    ROUGH_SECONDS,
     BREATH_FRAMES,
     BREATH_SCALE_X,
     BREATH_SCALE_Y,
@@ -335,8 +337,6 @@ REACTIONS = {
 
 LOW_DISK_BYTES = 10 * 1024 ** 3  # 10 GB
 LOW_DISK_FRACTION = 0.05
-ROUGH_REVERSALS = 4  # lowered from 6: a hard shake of the orb made fewer direction flips than that in testing
-ROUGH_SECONDS = 0.3  # lowered from 0.5, with the fast speed now 2500 pt/s
 
 
 def reaction_body_tracks(name):
@@ -376,10 +376,13 @@ def is_thanks(text):
     return bool(re.search(r"\bthanks\b|\bthank you\b|\blove you jev\b", words))
 
 
-def rough_drag(reversals, seconds_fast):
-    """A drop after a rough drag: at least 4 direction reversals, or at least 0.3 s above 2,500 pt/s."""
+def rough_drag(peak_window, seconds_fast):
+    """A drop after a rough drag: ROUGH_REVERSALS reversals inside any ROUGH_WINDOW_SECONDS, or ROUGH_SECONDS above ROUGH_SPEED.
+
+    peak_window is Roughness.peak_window (the most reversals in any window), seconds_fast is Roughness.seconds_fast.
+    """
     try:
-        return int(reversals) >= ROUGH_REVERSALS or float(seconds_fast) >= ROUGH_SECONDS
+        return int(peak_window) >= ROUGH_REVERSALS or float(seconds_fast) >= ROUGH_SECONDS
     except (TypeError, ValueError):
         return False
 

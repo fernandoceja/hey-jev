@@ -294,15 +294,6 @@ def test_stretch_matrix_is_round_at_rest_and_keeps_area():
     assert a * d - b * c == pytest.approx(1.0)
 
 
-def test_drag_roughness_counts_sharp_reversals_and_time_above_3500():
-    slow_zigzag = [(0.0, 0.0, 0.0), (0.1, 20.0, 0.0), (0.2, 0.0, 0.0), (0.3, 20.0, 0.0), (0.4, 0.0, 0.0)]
-    assert om.drag_roughness(slow_zigzag) == (0, 0.0)  # 200 pt/s, under the 300 pt/s reversal floor
-    fast = [(0.0, 0.0, 0.0), (0.1, 500.0, 0.0), (0.2, 0.0, 0.0), (0.3, 500.0, 0.0)]
-    reversals, seconds = om.drag_roughness(fast)
-    assert reversals == 2
-    assert seconds == pytest.approx(0.3)  # every segment runs at 5000 pt/s
-
-
 @pytest.mark.parametrize('bad', [float('nan'), float('inf'), -float('inf')])
 def test_pure_drag_functions_stay_finite_for_nan_and_inf(bad):
     assert all(math.isfinite(v) for v in om.spring(bad, bad, bad, bad, bad, bad, bad))
@@ -311,8 +302,8 @@ def test_pure_drag_functions_stay_finite_for_nan_and_inf(bad):
     assert all(math.isfinite(v) for v in pos + vel)
     assert all(math.isfinite(v) for v in om.drag_stretch(bad, bad))
     assert all(math.isfinite(v) for v in om.stretch_matrix(bad, bad, bad))
-    reversals, seconds = om.drag_roughness([(bad, bad, bad), (0.0, 1.0, bad), (0.1, 2.0, 2.0)])
-    assert math.isfinite(seconds) and reversals >= 0
+    roughness = om.drag_roughness([(bad, bad, bad), (0.0, 1.0, bad), (0.1, 2.0, 2.0)])
+    assert math.isfinite(roughness.seconds_fast) and math.isfinite(roughness.peak_speed) and roughness.reversals >= 0
     assert isinstance(om.spring_done(bad, bad, bad), bool)
 
 

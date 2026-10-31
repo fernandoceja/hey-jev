@@ -4,6 +4,7 @@ Every number here is in the 72 pt design space that orb_view scales to the view.
 orb_layers reads these constants to build the Core Animation tree.
 """
 import math
+from collections import namedtuple
 
 from full_window import DOCK_ORB
 
@@ -183,8 +184,12 @@ PRESS_SCALE = (1.12, 0.88)  # x, y of the body group while the mouse is down
 PRESS_SECONDS = 0.10
 STRETCH_MAX = 0.22  # sx is at most 1.22
 STRETCH_SPEED = 3000.0  # pt/s for the full stretch
-ROUGH_SPEED = 2500.0  # pt/s above which a drag counts as fast (PR 7b dizzy; lowered from 3500 after a real shake never reached it)
-REVERSAL_MIN_SPEED = 300.0  # pt/s a segment must reach before a direction flip counts as a reversal
+# Rough drags (PR 7b dizzy), retuned from real hand-test drops. Measured on the RAW cursor, not the window's spring path.
+ROUGH_SPEED = 1800.0  # pt/s: time above this counts toward ROUGH_SECONDS
+ROUGH_SECONDS = 0.1  # s above ROUGH_SPEED that makes a drag rough
+ROUGH_REVERSALS = 3  # direction reversals inside any ROUGH_WINDOW_SECONDS that make a drag rough
+ROUGH_WINDOW_SECONDS = 1.5
+REVERSAL_MIN_TRAVEL = 12.0  # pt the cursor must retrace on an axis to count one reversal (x or y)
 DRAG_TICK_SECONDS = 1.0 / 60.0
 SETTLE_EPS = 0.25  # pt
 SETTLE_SPEED_PER_EPS = 8.0  # a settled spring is also slower than eps × this, in pt/s
@@ -322,11 +327,17 @@ def stretch_matrix(sx, sy, angle):
     return (a, b, b, d)
 
 
-def drag_roughness(samples):
-    """(direction_reversals, seconds_above_ROUGH_SPEED) for a drag. samples are (t, x, y) in order, in seconds and points.
+Roughness = namedtuple("Roughness", "reversals peak_window seconds_fast peak_speed samples")
 
-    A reversal is a segment whose direction flips against the one before, with both moving at REVERSAL_MIN_SPEED or
-    faster. Non-finite samples and segments with no time between them are skipped.
+
+def drag_roughness(samples):
+    """Roughness of one drag from its RAW cursor samples, (t, x, y) in seconds and points, in order.
+
+    reversals: the number of direction reversals. A reversal is an axis (x or y) where the cursor retraces at least
+    REVERSAL_MIN_TRAVEL from its furthest point in the current direction. One sample counts once, even if both axes flip.
+    peak_window: the most reversals inside any ROUGH_WINDOW_SECONDS window.
+    seconds_fast: time spent moving faster than ROUGH_SPEED. peak_speed: the fastest segment, in pt/s.
+    Non-finite samples are skipped. Segments with no time between them are skipped too.
     """
     points = []
     for sample in samples or ():
@@ -335,27 +346,49 @@ def drag_roughness(samples):
         except (TypeError, ValueError, IndexError):
             continue
         if math.isfinite(t) and math.isfinite(x) and math.isfinite(y):
-            points.append((t, x, y))
-    reversals = 0
+            if not points or t > points[-1][0]:
+                points.append((t, x, y))
     seconds_fast = 0.0
-    previous = None  # (vx, vy, speed) of the last segment that had time in it
+    peak_speed = 0.0
+    if not points:
+        return Roughness(0, 0, 0.0, 0.0, 0)
+    # Per axis: direction (0 until the axis has moved REVERSAL_MIN_TRAVEL), and the extreme since the last reversal.
+    axes = {0: {"dir": 0, "ext": points[0][1]}, 1: {"dir": 0, "ext": points[0][2]}}
+    reversal_times = []
     for (t0, x0, y0), (t1, x1, y1) in zip(points, points[1:]):
         dt = t1 - t0
-        if dt <= 0.0:
-            continue
-        vx, vy = (x1 - x0) / dt, (y1 - y0) / dt
-        speed = math.hypot(vx, vy)
+        speed = math.hypot(x1 - x0, y1 - y0) / dt
+        peak_speed = max(peak_speed, speed)
         if speed > ROUGH_SPEED:
             seconds_fast += dt
-        if previous is not None:
-            pvx, pvy, pspeed = previous
-            if (speed >= REVERSAL_MIN_SPEED and pspeed >= REVERSAL_MIN_SPEED
-                    and vx * pvx + vy * pvy < 0.0):
-                reversals += 1
-        previous = (vx, vy, speed)
-    if not math.isfinite(seconds_fast):
-        seconds_fast = 0.0
-    return (reversals, seconds_fast)
+        flipped = False
+        for axis, position in ((0, x1), (1, y1)):
+            state = axes[axis]
+            if state["dir"] == 0:
+                if abs(position - state["ext"]) >= REVERSAL_MIN_TRAVEL:
+                    state["dir"] = 1 if position > state["ext"] else -1
+                    state["ext"] = position
+            elif state["dir"] > 0:
+                if position > state["ext"]:
+                    state["ext"] = position
+                elif state["ext"] - position >= REVERSAL_MIN_TRAVEL:
+                    state["dir"], state["ext"] = -1, position
+                    flipped = True
+            else:
+                if position < state["ext"]:
+                    state["ext"] = position
+                elif position - state["ext"] >= REVERSAL_MIN_TRAVEL:
+                    state["dir"], state["ext"] = 1, position
+                    flipped = True
+        if flipped:
+            reversal_times.append(t1)
+    peak_window = 0
+    for i, start in enumerate(reversal_times):
+        count = sum(1 for t in reversal_times[i:] if t - start <= ROUGH_WINDOW_SECONDS)
+        peak_window = max(peak_window, count)
+    if not math.isfinite(seconds_fast) or not math.isfinite(peak_speed):
+        return Roughness(len(reversal_times), peak_window, 0.0, 0.0, len(points))
+    return Roughness(len(reversal_times), peak_window, seconds_fast, peak_speed, len(points))
 
 
 # Peek-dock (PR 3b). A snapped orb on a free screen edge tucks most of itself off-screen.

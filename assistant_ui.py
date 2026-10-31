@@ -102,6 +102,7 @@ from AppKit import (
     NSWindowStyleMaskTitled,
 )
 from Foundation import NSSelectorFromString, NSStringFromSelector
+from Foundation import NSProcessInfo
 from Foundation import NSInsetRect, NSAttributedString, NSMutableAttributedString, NSString, NSMakeSize, NSObject, NSURL, NSTimer, NSUserDefaults, NSDate, NSDefaultRunLoopMode
 from assistant_layout import (
     DEFAULT_H,
@@ -645,6 +646,11 @@ def _notify_pill_drag(delegate, began):
         hook()
 
 
+def _drag_clock():
+    """Seconds since boot, the same base as NSEvent timestamps, so drag samples share one clock (PR 7b dizzy)."""
+    return float(NSProcessInfo.processInfo().systemUptime())
+
+
 class MiniBarBackground(NSView):
     """Capsule behind the controls. The background moves it. The outer edge resizes it.
 
@@ -775,7 +781,7 @@ class MiniBarBackground(NSView):
             if moved:
                 x, y = drag_origin(origin, start, point)
                 window.setFrameOrigin_(NSMakePoint(x, y))
-                samples.append((time.monotonic(), x, y))  # PR 7b: the roughness of this drag, for dizzy
+                samples.append((_drag_clock(), point[0], point[1]))  # PR 7b: RAW cursor samples, for dizzy
         if moved:
             _notify_pill_drag(window.delegate(), began=False)  # PR 8: the pill slides back out from the orb's side
             delegate = window.delegate()
@@ -815,7 +821,7 @@ class MiniBarBackground(NSView):
             smoothed = (smooth(smoothed[0], vel[0]), smooth(smoothed[1], vel[1]))
             window.setFrameOrigin_(NSMakePoint(pos[0], pos[1]))
             orb.dragStretch(*drag_stretch(smoothed[0], smoothed[1]))
-            samples.append((stamp, pos[0], pos[1]))
+            samples.append((_drag_clock(), point[0], point[1]))  # PR 7b: RAW cursor samples, not the spring path
         if not moved:
             return False
         _notify_pill_drag(delegate, began=False)  # PR 8: the pill slides back out from the orb's side
@@ -948,6 +954,7 @@ class MiniBarBackground(NSView):
         start = (float(down.x), float(down.y))
         origin = (float(frame.origin.x), float(frame.origin.y))
         began = False
+        samples = []
         mask = NSEventMaskLeftMouseDragged | NSEventMaskLeftMouseUp
         while True:
             nxt = window.nextEventMatchingMask_(mask)
@@ -957,10 +964,14 @@ class MiniBarBackground(NSView):
             if not began:
                 began = True
                 _notify_pill_drag(window.delegate(), began=True)  # PR 8: the input pill hides at once
+            samples.append((_drag_clock(), float(now.x), float(now.y)))  # PR 7b: RAW cursor, for dizzy
             x, y = drag_origin(origin, start, (float(now.x), float(now.y)))
             window.setFrameOrigin_(NSMakePoint(x, y))
         if began:
             _notify_pill_drag(window.delegate(), began=False)  # PR 8: the pill slides back out from the orb's side
+            delegate = window.delegate()
+            if delegate is not None:
+                delegate.last_drag_roughness = drag_roughness(samples)
         delegate = window.delegate()
         if delegate is not None and hasattr(delegate, "_finalize_mini_bar_drag"):
             delegate._finalize_mini_bar_drag(window)
@@ -3254,11 +3265,12 @@ class AppDelegate(NSObject):
     def _finalize_mini_bar_drag(self, window):
         """Clamp and snap when a drag ends. Dragging never opens the typing pill."""
         self._orb_dragging = False
-        reversals, seconds_fast = getattr(self, "last_drag_roughness", (0, 0.0)) or (0, 0.0)
-        self.last_drag_roughness = (0, 0.0)
-        rough = rough_drag(reversals, seconds_fast)
-        print("orb drag: end reversals={0} fast_s={1:.2f} rough={2}".format(int(reversals), float(seconds_fast), rough),
-              flush=True)
+        roughness = getattr(self, "last_drag_roughness", None) or drag_roughness([])
+        self.last_drag_roughness = None
+        rough = rough_drag(roughness.peak_window, roughness.seconds_fast)
+        print("orb drag: end reversals={0} fast_s={1:.2f} rough={2}".format(
+            roughness.reversals, roughness.seconds_fast, rough), flush=True)
+        print("orb drag: samples={0} peak_speed={1:.0f}".format(roughness.samples, roughness.peak_speed), flush=True)
         if rough and getattr(self, "orb_view", None) is not None:
             self.orb_view.offerReaction("dizzy")  # PR 7b: a rough drop plays before the tuck or dock moves
         self._peek_disengage(move=False)
