@@ -5,6 +5,8 @@ orb_layers reads these constants to build the Core Animation tree.
 """
 import math
 
+from full_window import DOCK_ORB, SIDEBAR_W, TITLEBAR_H
+
 DESIGN_SIZE = 72.0
 DESIGN_EXTENT = 70.0  # orb + listening ring, with a hair of margin; the fit scale divides by this
 DESIGN_CENTER = DESIGN_SIZE / 2.0
@@ -597,3 +599,86 @@ HINT_TEXT_INSET = 14.0
 def hint_layout(orb_frame, screen, width=HINT_WIDTH, height=HINT_HEIGHT, gap=MENU_GAP):
     """Hint bubble frame beside the orb, the same placement rule as the result panel."""
     return beside_orb(orb_frame, screen, width, height, gap)
+
+
+# PR 6a: expand from the orb into the full window, dock on its divider, and collapse back.
+EXPAND_START_SCALE = 0.10  # the ghost starts at a tenth of the window, centred on the orb
+EXPAND_FADE_SECONDS = 0.18  # opacity 0 to 1 (expand), 1 to 0 (collapse), easeOut
+REDUCE_CROSSFADE_SECONDS = 0.15  # Reduce Motion: a crossfade, and the orb jumps
+DOCK_GAP = 12.0  # the docked orb hangs this far below the window's titlebar
+ORB_STATE_IDLE = "idle"
+ORB_STATE_EXPANDING = "expanding"
+ORB_STATE_OPEN = "open"
+ORB_STATE_COLLAPSING = "collapsing"
+_ORB_TRANSITIONS = {
+    (ORB_STATE_IDLE, "expand"): ORB_STATE_EXPANDING,
+    (ORB_STATE_EXPANDING, "landed"): ORB_STATE_OPEN,
+    (ORB_STATE_OPEN, "collapse"): ORB_STATE_COLLAPSING,
+    (ORB_STATE_COLLAPSING, "landed"): ORB_STATE_IDLE,
+}
+
+
+def orb_window_next(state, event):
+    """Next state for an event, or None when the event is ignored in this state.
+
+    Clicks and window closes that arrive mid-transition are dropped, so repeated
+    clicks never stack a second animation. Every transition ends in idle.
+    """
+    return _ORB_TRANSITIONS.get((state, event))
+
+
+def tracking_active(visible, motion, asleep):
+    """Pupils follow the cursor while the orb is on screen, even when it is docked."""
+    return bool(visible and motion and not asleep)
+
+
+def expand_rects(orb_frame, target_frame, screen=None):
+    """(start_rect, end_rect) for the expand ghost.
+
+    The start is EXPAND_START_SCALE of the target's size, centred on the orb's centre. It is
+    pulled inside `screen` (or the target when no screen is given) so it stays on-screen.
+    The end is the full target frame.
+    """
+    ox, oy, ow, oh = (float(v) for v in orb_frame)
+    tx, ty, tw, th = (float(v) for v in target_frame)
+    sw, sh = tw * EXPAND_START_SCALE, th * EXPAND_START_SCALE
+    x = ox + ow / 2.0 - sw / 2.0
+    y = oy + oh / 2.0 - sh / 2.0
+    bx, by, bw, bh = (float(v) for v in (screen or target_frame))
+    x = min(max(x, bx), max(bx, bx + bw - sw))
+    y = min(max(y, by), max(by, by + bh - sh))
+    return (x, y, sw, sh), (tx, ty, tw, th)
+
+
+def dock_point(window_frame, dock=DOCK_ORB):
+    """Orb frame (x, y, w, h) docked on the sidebar/chat divider of a full window.
+
+    The centre sits on the divider line (x = win.x + SIDEBAR_W), and DOCK_GAP below the titlebar,
+    so the orb never overlaps the titlebar.
+    """
+    wx, wy, ww, wh = (float(v) for v in window_frame)
+    half = float(dock) / 2.0
+    cx = wx + SIDEBAR_W
+    cy = wy + wh - TITLEBAR_H - half - DOCK_GAP
+    return (cx - half, cy - half, float(dock), float(dock))
+
+
+def collapse_target(saved_origin, screens, size=None):
+    """Origin the orb returns to on collapse: the saved origin if it still lands on a screen.
+
+    Otherwise the fallback from mini_bar.place_bar. place_bar clamps sizes to the bar's minimum,
+    so for the orb itself the fallback is re-centred on the orb's own width. mini_bar is imported
+    lazily because it already imports this module.
+    """
+    from mini_bar import DOCK_GAP as BAR_DOCK_GAP
+    from mini_bar import _as_screens, place_bar
+
+    orb_w, orb_h = (float(v) for v in (size or (DOCK_ORB * 2.0, DOCK_ORB * 2.0)))
+    placed = place_bar(saved_origin, screens, size=(orb_w, orb_h))
+    if saved_origin is not None and placed == (float(saved_origin[0]), float(saved_origin[1])):
+        return placed
+    frames = _as_screens(screens)
+    if not frames:
+        return placed
+    vx, vy, vw, _vh = frames[0]
+    return (vx + (vw - orb_w) / 2.0, vy + BAR_DOCK_GAP)

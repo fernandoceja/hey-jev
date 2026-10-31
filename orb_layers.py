@@ -525,3 +525,68 @@ class OrbLayers:
             work()
         finally:
             CATransaction.commit()
+
+
+# PR 6a: the expand and collapse ghost. A snapshot of the full window, grown from the orb's centre (or shrunk back).
+
+def _spring_on(keypath, constants):
+    from Quartz import CASpringAnimation
+    stiffness, damping = constants
+    anim = CASpringAnimation.animationWithKeyPath_(keypath)
+    anim.setStiffness_(float(stiffness))
+    anim.setDamping_(float(damping))
+    anim.setMass_(1.0)
+    anim.setInitialVelocity_(0.0)
+    anim.setDuration_(anim.settlingDuration())
+    return anim
+
+
+def ghost_layer(image, size, backing_scale):
+    """A layer holding the snapshot, sized to the window, anchored at its centre so scale and position line up."""
+    from Quartz import CALayer, CGPointMake, CGRectMake
+    layer = CALayer.layer()
+    layer.setContents_(image)
+    layer.setContentsScale_(float(backing_scale))
+    layer.setBounds_(CGRectMake(0, 0, float(size[0]), float(size[1])))
+    layer.setAnchorPoint_(CGPointMake(0.5, 0.5))
+    layer.setPosition_(CGPointMake(float(size[0]) / 2.0, float(size[1]) / 2.0))
+    return layer
+
+
+def animate_ghost(layer, size, start_center, end_center, start_scale, end_scale, fade_from, fade_to,
+                  reduce_motion=False, spring=None):
+    """Play one ghost move, and return how long it takes to land.
+
+    Motion: transform.scale and position share the same spring (SPRING_EXPAND by default), so the
+    centre travels along the line that the scale implies. Opacity uses a 0.18 s easeOut.
+    Reduce Motion: no scale or position change, only a 0.15 s crossfade.
+    Model values are set to the end state, so the layer rests there when the animations are removed.
+    """
+    from Foundation import NSValue
+    from Quartz import CABasicAnimation, CAMediaTimingFunction, CATransform3DIdentity, CATransform3DMakeScale
+    from Quartz import CGPointMake
+    from orb_motion import EXPAND_FADE_SECONDS, REDUCE_CROSSFADE_SECONDS, SPRING_EXPAND
+    spring = spring or SPRING_EXPAND
+    fade = CABasicAnimation.animationWithKeyPath_("opacity")
+    fade.setFromValue_(float(fade_from))
+    fade.setToValue_(float(fade_to))
+    fade.setTimingFunction_(CAMediaTimingFunction.functionWithName_("easeOut"))
+    layer.setOpacity_(float(fade_to))
+    if reduce_motion:
+        fade.setDuration_(REDUCE_CROSSFADE_SECONDS)
+        layer.addAnimation_forKey_(fade, "ghostFade")
+        return REDUCE_CROSSFADE_SECONDS
+    fade.setDuration_(EXPAND_FADE_SECONDS)
+    scale = _spring_on("transform.scale", spring)
+    scale.setFromValue_(float(start_scale))
+    scale.setToValue_(float(end_scale))
+    move = _spring_on("position", spring)
+    move.setFromValue_(NSValue.valueWithPoint_(CGPointMake(float(start_center[0]), float(start_center[1]))))
+    move.setToValue_(NSValue.valueWithPoint_(CGPointMake(float(end_center[0]), float(end_center[1]))))
+    layer.setPosition_(CGPointMake(float(end_center[0]), float(end_center[1])))
+    layer.setTransform_(CATransform3DIdentity if float(end_scale) == 1.0
+                        else CATransform3DMakeScale(float(end_scale), float(end_scale), 1.0))
+    layer.addAnimation_forKey_(scale, "ghostScale")
+    layer.addAnimation_forKey_(move, "ghostMove")
+    layer.addAnimation_forKey_(fade, "ghostFade")
+    return max(float(scale.duration()), EXPAND_FADE_SECONDS)

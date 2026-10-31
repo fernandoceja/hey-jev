@@ -4,6 +4,7 @@ The window is resizable. Frames come from assistant_layout so a smaller window
 reflows instead of clipping. The frame is saved under HeyJevMainWindow, and a
 missing or offscreen frame is centered.
 """
+import functools
 import json
 import math
 import os
@@ -13,6 +14,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 from datetime import datetime
 
 import objc
@@ -194,6 +196,10 @@ from orb_motion import (
     spring, spring_done,
 )
 from orb_view import make_orb_view, orb_frame, orb_state
+from orb_motion import (  # PR 6a: expand from the orb, dock on the divider, collapse back
+    EXPAND_START_SCALE, ORB_STATE_COLLAPSING, ORB_STATE_EXPANDING, ORB_STATE_IDLE, ORB_STATE_OPEN,
+    SPRING_EXPAND, collapse_target, dock_point, expand_rects, orb_window_next,
+)
 from area_hotkey import AreaCaptureHotKey
 from orb_motion import (
     MENU_CORNER_RADIUS, MENU_FILL_HOVER, MENU_FILL_REST, MENU_FAN_START_SCALE, MENU_HOVER_SECONDS,
@@ -375,6 +381,26 @@ def hid_modifier_flags():
         return int(Quartz.CGEventSourceFlagsState(Quartz.kCGEventSourceStateHIDSystemState))
     except Exception:
         return None
+
+
+def orb_guarded(fn):
+    """Log a traceback instead of letting an error in an orb transition take the app down.
+
+    On failure the orb settles on what is really on screen, so the state is never left stuck.
+    """
+    @functools.wraps(fn)
+    def wrapper(self, *args, **kwargs):
+        try:
+            return fn(self, *args, **kwargs)
+        except Exception:
+            print("  orb transition failed in {0}:".format(fn.__name__))
+            traceback.print_exc()
+            try:
+                self._orb_recover()
+            except Exception:
+                traceback.print_exc()
+            return None
+    return wrapper
 
 
 class CenteredFieldCell(NSTextFieldCell):
@@ -566,6 +592,9 @@ class MiniBarBackground(NSView):
         Press squashes the orb. A drag trails the cursor on a spring, stretches along its travel, then
         jiggles and springs to the snap target on release. Reduce Motion keeps the exact-follow drag.
         """
+        if delegate is not None and getattr(delegate, "_orb_docked_now", lambda: False)():
+            self._docked_click(window, delegate)  # PR 6a: a docked orb never drags off the divider
+            return
         self._finish_drag_settle()
         if delegate is not None and hasattr(delegate, "_peek_before_drag"):
             delegate._peek_before_drag()  # a tucked orb comes out to its inset before the drag starts
@@ -590,8 +619,27 @@ class MiniBarBackground(NSView):
             delegate._orb_dragging = False  # only a press that never moved gets here; a real drag clears it on finalize
         if animate:
             orb.releaseSquash()
-        if not moved and delegate is not None and hasattr(delegate, "expandMiniBar_"):
+        if not moved and delegate is not None and hasattr(delegate, "expandOrbToFull_"):
+            delegate.expandOrbToFull_(self)  # PR 6a (R2): a single click on the idle orb opens the full window
+
+    @objc.python_method
+    def _docked_click(self, window, delegate):
+        """Wait for the release, then collapse. Drags are ignored so the docked orb stays on the divider."""
+        while True:
+            nxt = window.nextEventMatchingMask_(NSEventMaskLeftMouseUp)
+            if nxt is None or nxt.type() == NSEventTypeLeftMouseUp:
+                break
+        delegate.collapseOrbFromFull_(self)
+
+    def rightMouseDown_(self, event):
+        """Right-click on the idle orb opens the quick popover (PR 6a). A docked orb ignores it."""
+        window = self.window()
+        delegate = window.delegate() if window is not None else None
+        docked = getattr(delegate, "_orb_docked_now", lambda: False)()
+        if delegate is not None and getattr(delegate, "pillCollapsed", False) and not docked:
             delegate.expandMiniBar_(self)
+            return
+        objc.super(MiniBarBackground, self).rightMouseDown_(event)
 
     @objc.python_method
     def _drag_exactly(self, window, start, origin):
@@ -3433,7 +3481,7 @@ class AppDelegate(NSObject):
     @objc.python_method
     def _peek_consider(self):
         """Tuck the orb when it sits on an allowed edge, the pref is on, and nothing is busy."""
-        if self._peek_edge is not None:
+        if self._peek_edge is not None or self._orb_docked_now():
             return
         panel = getattr(self, "mini_panel", None)
         if panel is None or not panel.isVisible() or not self.bar.should_show():
@@ -3758,7 +3806,8 @@ class AppDelegate(NSObject):
 
     def windowWillClose_(self, notification):
         if notification.object() == getattr(self, "full_window", None):
-            # Closing the full window hands back to the orb; nothing else changes.
+            # Closing the full window collapses the orb back out of the divider (PR 6a), then hands back to the orb.
+            self._collapse_orb_from_full()
             self._sync_mini_bar()
             return
         if notification.object() == self.panel:
@@ -3774,6 +3823,8 @@ class AppDelegate(NSObject):
         panel = getattr(self, "mini_panel", None)
         if panel is None or notification.object() != panel or not panel.isVisible():
             return
+        if self._orb_docked_now():
+            return  # PR 6a: the docked orb moves with the window, so it must not save its origin
         if getattr(self, "_suppress_size_save", False):
             return
         self._sync_expanded_from_window()
@@ -3790,6 +3841,8 @@ class AppDelegate(NSObject):
         panel = getattr(self, "mini_panel", None)
         if panel is None or notification.object() != panel:
             return
+        if self._orb_docked_now():
+            return  # PR 6a: the transition sets the orb's frame itself
         size = panel.frame().size
         self._layout_mini_bar(float(size.width), float(size.height))
         if getattr(self, "_suppress_size_save", False) or not panel.isVisible():
@@ -3902,9 +3955,10 @@ class AppDelegate(NSObject):
         flags = getattr(self, "_pill_chrome", {})
         status = getattr(self, "status", None)
         state = str(status.stringValue()) if status is not None else "Ready"
-        visible = panel.isVisible() and self.bar.should_show()
         full = getattr(self, "full_window", None)
-        docked = full is not None and bool(full.isVisible())
+        docked = self._orb_docked_now() or (full is not None and bool(full.isVisible()))
+        # While the window is open the docked orb stays up, whatever the bar's show/hide rules say.
+        visible = (panel.isVisible() or docked) and (self.bar.should_show() or docked)
         orb.configure(state, bool(getattr(self, "option_down", False)),
                       getattr(self, "_meter_unit", 0.0), visible,
                       flags.get("motion", True), flags.get("material") == "solid",
@@ -4091,12 +4145,330 @@ class AppDelegate(NSObject):
         """A click on the idle capsule opens the typing pill and shows the caret."""
         if not hasattr(self, "pill"):
             return
+        if self._orb_docked_now():
+            # PR 6a: while the window is docked, the typing field is the window's own. A popover would resize the orb.
+            self._focus_docked_window()
+            return
         if self.pill.expanded and not getattr(self, "pillCollapsed", False):
             self._focus_pill_field()
             return
         self.pill.click()
         self._apply_pill_presentation(animate_open=True)
         self._focus_pill_field()
+
+    # PR 6a: expand from the orb, dock on the sidebar/chat divider, and collapse back. The state machine lives in
+    # orb_motion.orb_window_next: idle, expanding, open, collapsing. Clicks that arrive mid-transition are ignored.
+    @objc.python_method
+    def _orb_window_state_now(self):
+        return getattr(self, "_orb_window_state", ORB_STATE_IDLE)
+
+    @objc.python_method
+    def _orb_docked_now(self):
+        """True while the orb is moving to, sitting on, or leaving the divider. Its bob stays off the whole time."""
+        return self._orb_window_state_now() != ORB_STATE_IDLE
+
+    @objc.python_method
+    def _set_orb_window_state(self, event):
+        nxt = orb_window_next(self._orb_window_state_now(), event)
+        if nxt is None:
+            return False
+        self._orb_window_state = nxt
+        return True
+
+    def expandOrbToFull_(self, _sender):
+        """A single click on the orb (R2). On a docked orb it collapses instead, the same as a click on the orb."""
+        if self._orb_docked_now():
+            self._collapse_orb_from_full()
+            return
+        self._expand_orb_to_full("")
+
+    def collapseOrbFromFull_(self, _sender):
+        self._collapse_orb_from_full()
+
+    @objc.python_method
+    def _frame_tuple(self, frame):
+        return (float(frame.origin.x), float(frame.origin.y), float(frame.size.width), float(frame.size.height))
+
+    @objc.python_method
+    def _snapshot_full_window(self):
+        """A bitmap of the full window's content, and the backing scale it was made at.
+
+        A window that was never ordered in has not rendered its layers yet, so it is ordered in at alpha 0
+        for the snapshot and taken back out. Nothing is visible while that happens.
+        """
+        win = self.full_window
+        was_visible = bool(win.isVisible())
+        if not was_visible:
+            win.setAlphaValue_(0.0)
+            win.orderFront_(None)
+            win.contentView().displayIfNeeded()
+        view = win.contentView()
+        bounds = view.bounds()
+        rep = view.bitmapImageRepForCachingDisplayInRect_(bounds)
+        if rep is not None:
+            view.cacheDisplayInRect_toBitmapImageRep_(bounds, rep)
+        if not was_visible:
+            win.orderOut_(None)
+            win.setAlphaValue_(1.0)
+        image = rep.CGImage() if rep is not None else None
+        return image, float(win.backingScaleFactor())
+
+    @objc.python_method
+    def _make_orb_ghost(self, frame, image, scale):
+        """Borderless, click-through panel at the bar level, holding the snapshot. Returns (panel, layer)."""
+        import orb_layers
+        x, y, w, h = frame
+        style = NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel
+        panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
+            NSMakeRect(x, y, w, h), style, NSBackingStoreBuffered, False)
+        panel.setLevel_(BAR_LEVEL)
+        panel.setOpaque_(False)
+        panel.setBackgroundColor_(NSColor.clearColor())
+        panel.setHasShadow_(False)
+        panel.setIgnoresMouseEvents_(True)
+        panel.setReleasedWhenClosed_(False)
+        panel.setCollectionBehavior_(BAR_COLLECTION)
+        view = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, w, h))
+        view.setWantsLayer_(True)
+        view.layer().setContentsScale_(float(scale))
+        panel.setContentView_(view)
+        layer = orb_layers.ghost_layer(image, (w, h), scale)
+        view.layer().addSublayer_(layer)
+        return panel, layer
+
+    @objc.python_method
+    def _focus_docked_window(self):
+        """Typing while the window is open goes to its field. A transition in progress has nothing to focus."""
+        full = getattr(self, "full_window", None)
+        if full is None or not full.isVisible():
+            return
+        NSApp.activateIgnoringOtherApps_(True)
+        full.makeKeyAndOrderFront_(None)
+        full.makeFirstResponder_(self.full_field)
+
+    @objc.python_method
+    def _remove_orb_ghost(self):
+        ghost = getattr(self, "_orb_ghost", None)
+        if ghost is not None:
+            ghost.orderOut_(None)
+        self._orb_ghost = None
+        self._orb_ghost_layer = None
+
+    @objc.python_method
+    def _place_orb_rect(self, rect):
+        """Frame the orb panel, its content and the orb view together. Its window's resize hook is skipped mid-motion."""
+        panel = getattr(self, "mini_panel", None)
+        orb = getattr(self, "orb_view", None)
+        if panel is None or orb is None:
+            return
+        x, y, w, h = (float(v) for v in rect)
+        panel.setFrame_display_(NSMakeRect(x, y, w, h), True)
+        view = panel.contentView()
+        if view is not None:
+            view.setFrame_(NSMakeRect(0, 0, w, h))
+        orb.setFrame_(NSMakeRect(0, 0, w, h))
+
+    @objc.python_method
+    def _start_orb_spring(self, target):
+        """Spring the orb panel's x, y, width and height to target (60 Hz, the same springs as the drag)."""
+        self._stop_orb_spring()
+        self._orb_spring = {"from": self._frame_tuple(self.mini_panel.frame()), "to": tuple(target),
+                            "started": time.monotonic()}
+        self._orb_ticks = 0
+        self._orb_spring_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            DRAG_TICK_SECONDS, self, "orbSpringTick:", None, True)
+
+    @orb_guarded
+    def orbSpringTick_(self, _timer):
+        state = getattr(self, "_orb_spring", None)
+        if state is None:
+            self._stop_orb_spring()
+            return
+        elapsed = time.monotonic() - state["started"]
+        self._orb_ticks = getattr(self, "_orb_ticks", 0) + 1
+        axes = [spring(elapsed, state["from"][i], state["to"][i], *SPRING_EXPAND) for i in range(4)]
+        done = all(spring_done(axes[i][0], axes[i][1], state["to"][i]) for i in range(4))
+        rect = state["to"] if done else tuple(axes[i][0] for i in range(4))
+        self._place_orb_rect(rect)
+        if done:
+            self._stop_orb_spring()
+
+    @objc.python_method
+    def _orb_recover(self):
+        """After a failed transition: stop the motion and settle the state on what is really on screen."""
+        self._stop_orb_spring()
+        self._remove_orb_ghost()
+        full = getattr(self, "full_window", None)
+        self._orb_window_state = ORB_STATE_OPEN if (full is not None and full.isVisible()) else ORB_STATE_IDLE
+        print("  orb recovered to {0}".format(self._orb_window_state))
+        self._sync_orb()
+
+    @objc.python_method
+    def _stop_orb_spring(self):
+        timer = getattr(self, "_orb_spring_timer", None)
+        if timer is not None:
+            timer.invalidate()
+        self._orb_spring_timer = None
+        self._orb_spring = None
+
+    @objc.python_method
+    def _schedule_orb_landing(self, seconds):
+        """One single-shot timer lands whichever transition is running. A stuck animation cannot hold the state."""
+        timer = getattr(self, "_orb_land_timer", None)
+        if timer is not None:
+            timer.invalidate()
+        self._orb_land_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            max(0.01, float(seconds)), self, "orbTransitionLanded:", None, False)
+
+    @orb_guarded
+    def orbTransitionLanded_(self, _timer):
+        self._orb_land_timer = None
+        state = self._orb_window_state_now()
+        if state == ORB_STATE_EXPANDING:
+            self._land_orb_expand()
+        elif state == ORB_STATE_COLLAPSING:
+            self._land_orb_collapse()
+
+    @objc.python_method
+    @orb_guarded
+    def _expand_orb_to_full(self, draft=""):
+        """The window grows out of the orb. The orb springs to the divider at half size and stops bobbing."""
+        panel = getattr(self, "mini_panel", None)
+        orb = getattr(self, "orb_view", None)
+        if panel is None or orb is None:
+            return
+        full = getattr(self, "full_window", None)
+        if full is not None and full.isVisible():
+            self._show_full_window(draft)
+            return
+        if not self._set_orb_window_state("expand"):
+            return
+        print("  orb expand: start")
+        self._peek_disengage(move=False)  # a click has already brought a tucked orb out
+        if getattr(self, "full_window", None) is None:
+            self._build_full_window()
+        self._apply_full_chrome()
+        self._layout_full_window()
+        self._refresh_full_window()
+        self._orb_expand_draft = draft
+        if draft:
+            self.full_field.setStringValue_(draft)
+        window_frame = self._frame_tuple(self.full_window.frame())
+        self._orb_window_target = window_frame  # the real window lands on exactly this frame
+        orb_rect = self._frame_tuple(panel.frame())
+        self._orb_undocked_frame = orb_rect
+        screen = screen_for_frame(orb_rect, self._visible_screens())
+        start, end = expand_rects(orb_rect, window_frame, screen)
+        reduce = bool(getattr(orb, "reduceMotion", False))
+        image, scale = self._snapshot_full_window()
+        ghost, layer = self._make_orb_ghost(end, image, scale)
+        self._orb_ghost = ghost
+        self._orb_ghost_layer = layer
+        ghost.orderWindow_relativeTo_(NSWindowBelow, panel.windowNumber())
+        ex, ey, ew, eh = end
+        local = lambda x, y: (x - ex, y - ey)
+        import orb_layers
+        duration = orb_layers.animate_ghost(
+            layer, (ew, eh),
+            start_center=local(start[0] + start[2] / 2.0, start[1] + start[3] / 2.0),
+            end_center=(ew / 2.0, eh / 2.0),
+            start_scale=start[2] / ew, end_scale=1.0,
+            fade_from=0.0, fade_to=1.0, reduce_motion=reduce)
+        print("  orb expand: path={0} image={1} ghost={2} visible={3} duration={4:.3f}s orb={5}".format(
+            "reduce-motion" if reduce else "spring", "yes" if image is not None else "NO",
+            tuple(round(v, 1) for v in end), bool(ghost.isVisible()), duration,
+            tuple(round(v, 1) for v in orb_rect)))
+        self._orb_started = time.monotonic()
+        self._sync_orb()  # docked now, so the bob stops before the orb moves
+        if reduce:
+            self._place_orb_rect(dock_point(window_frame))
+        else:
+            self._start_orb_spring(dock_point(window_frame))
+        self._schedule_orb_landing(duration)
+
+    @objc.python_method
+    @orb_guarded
+    def _land_orb_expand(self):
+        self._stop_orb_spring()
+        full = self.full_window
+        panel = self.mini_panel
+        target = getattr(self, "_orb_window_target", None)
+        if target is not None:
+            full.setFrame_display_(NSMakeRect(*target), False)  # land exactly where the ghost ended
+        self._place_orb_rect(dock_point(self._frame_tuple(full.frame())))
+        NSApp.activateIgnoringOtherApps_(True)
+        full.makeKeyAndOrderFront_(None)
+        print("  orb expand: window frame={0} visible={1}".format(
+            tuple(round(v, 1) for v in self._frame_tuple(full.frame())), bool(full.isVisible())))
+        full.addChildWindow_ordered_(panel, NSWindowAbove)  # the orb follows the window from here on
+        panel.orderFront_(None)  # docked orb stays on screen while the window is open
+        print("  orb expand: docked orb visible={0} child={1}".format(
+            bool(panel.isVisible()), panel.parentWindow() is full))
+        draft = getattr(self, "_orb_expand_draft", "")
+        if draft:
+            self.full_field.setStringValue_(draft)
+        full.makeFirstResponder_(self.full_field)
+        self._remove_orb_ghost()
+        self._set_orb_window_state("landed")
+        self._sync_orb()
+        print("  orb expand: done after {0:.3f}s ticks={1}".format(
+            time.monotonic() - getattr(self, "_orb_started", time.monotonic()), getattr(self, "_orb_ticks", 0)))
+
+    @objc.python_method
+    @orb_guarded
+    def _collapse_orb_from_full(self):
+        """The exact reverse of the expand: snapshot, hide the window, shrink the ghost into the orb's origin."""
+        if not self._set_orb_window_state("collapse"):
+            return
+        full = self.full_window
+        panel = self.mini_panel
+        orb = self.orb_view
+        print("  orb collapse: start path={0}".format("reduce-motion" if bool(getattr(orb, "reduceMotion", False)) else "spring"))
+        window_frame = self._frame_tuple(full.frame())
+        saved = getattr(self, "_orb_undocked_frame", None) or self._frame_tuple(panel.frame())
+        origin = collapse_target((saved[0], saved[1]), self._visible_screens(), size=(saved[2], saved[3]))
+        target = (origin[0], origin[1], saved[2], saved[3])
+        self._orb_collapse_to = target
+        reduce = bool(getattr(orb, "reduceMotion", False))
+        image, scale = self._snapshot_full_window()
+        ghost, layer = self._make_orb_ghost(window_frame, image, scale)
+        self._orb_ghost = ghost
+        self._orb_ghost_layer = layer
+        wx, wy, ww, wh = window_frame
+        full.removeChildWindow_(panel)  # hand the orb back before the window goes
+        panel.setLevel_(BAR_LEVEL)
+        full.orderOut_(None)
+        ghost.orderWindow_relativeTo_(NSWindowBelow, panel.windowNumber())
+        import orb_layers
+        tx, ty, tw, th = target
+        duration = orb_layers.animate_ghost(
+            layer, (ww, wh),
+            start_center=(ww / 2.0, wh / 2.0),
+            end_center=(tx + tw / 2.0 - wx, ty + th / 2.0 - wy),
+            start_scale=1.0, end_scale=EXPAND_START_SCALE,
+            fade_from=1.0, fade_to=0.0, reduce_motion=reduce)
+        print("  orb collapse: ghost={0} visible={1} duration={2:.3f}s image={3}".format(
+            tuple(round(v, 1) for v in window_frame), bool(ghost.isVisible()), duration,
+            "yes" if image is not None else "NO"))
+        self._orb_started = time.monotonic()
+        if reduce:
+            self._place_orb_rect(target)
+        else:
+            self._start_orb_spring(target)
+        self._schedule_orb_landing(duration)
+
+    @objc.python_method
+    @orb_guarded
+    def _land_orb_collapse(self):
+        self._stop_orb_spring()
+        self._place_orb_rect(self._orb_collapse_to)
+        self._remove_orb_ghost()
+        self._orb_undocked_frame = None
+        self._set_orb_window_state("landed")
+        self._sync_orb()  # not docked any more, so the bob resumes
+        self._peek_consider()
+        print("  orb collapse: done after {0:.3f}s ticks={1}".format(
+            time.monotonic() - getattr(self, "_orb_started", time.monotonic()), getattr(self, "_orb_ticks", 0)))
 
     def miniExpandHome_(self, _sender):
         """Expand the popover into the full Jev window, keeping the draft."""

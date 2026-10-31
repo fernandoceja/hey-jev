@@ -150,7 +150,7 @@ def test_a_click_never_opens_the_menu():
     ui = _ui()
     click = _body(ui, "    def _collapsed_click_or_drag(self, window, delegate, _event):")
     assert "_open_action_menu" not in click
-    assert "expandMiniBar_" in click  # a still click still opens the window
+    assert "expandOrbToFull_" in click  # a still click still opens the window (PR 6a)
 
 
 def test_tuck_waits_while_the_menu_is_open():
