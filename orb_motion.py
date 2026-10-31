@@ -17,7 +17,7 @@ BODY_ORIGIN = (DESIGN_SIZE - BODY_SIZE) / 2.0
 EYE_SIZE = 11.0  # the eye's own frame; the cream bar inside it is EYE_BAR_W wide
 EYE_BAR_W = 4.0  # restored from 1c63b74: cream bars, 4 x 10 pt
 EYE_SPACING = 8.0  # each eye sits this far left or right of the body centre
-EYE_OFFSET_X = 2.0  # PR 8: both eyes sit this far right of centre, so the orb looks turned a little to its right
+EYE_OFFSET_X = 4.5  # PR 8: both eyes sit this far right of centre, so the orb looks turned clearly to its right
 # PR 8: perspective. The left eye is a touch wider and taller than the right, as if it is nearer. (x, y) scale.
 EYE_PERSPECTIVE = {"L": (1.12, 1.08), "R": (1.0, 1.0)}
 EYE_CENTER_Y = 40.0  # restored from 1c63b74 (bars span y 35-45)

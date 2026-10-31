@@ -31,7 +31,8 @@ class PillEyeTests(unittest.TestCase):
         left = geo["eyeL"][0] + geo["eyeL"][2] / 2.0
         right = geo["eyeR"][0] + geo["eyeR"][2] / 2.0
         self.assertGreater((left + right) / 2.0, om.DESIGN_CENTER)
-        self.assertEqual(om.EYE_OFFSET_X, 2.0)
+        self.assertEqual(om.EYE_OFFSET_X, 4.5)
+        self.assertGreaterEqual(om.EYE_OFFSET_X, 4.0)
 
     def test_left_eye_is_a_little_larger_and_the_right_is_the_reference(self):
         kx, ky = om.EYE_PERSPECTIVE["L"]
@@ -86,6 +87,20 @@ class DragAndMenuWiringTests(unittest.TestCase):
         for title in ("Open Jev", "New Chat", "Capture Area", "Mark Up", "Type to Jev", "Settings", "Quit Jev"):
             self.assertIn(title, menu)
         self.assertIn("NSApp", menu)
+
+    def test_presentation_pass_holds_the_docked_orb(self):
+        ui = _source("assistant_ui.py")
+        self.assertIn("_docked_frame_held", _func(ui, "_apply_pill_presentation"))
+        self.assertIn("ORB_STATE_OPEN", _func(ui, "_docked_frame_held"))
+        self.assertIn("dock_point", _func(ui, "_docked_frame_held"))
+
+    def test_landing_logs_the_dock_point_and_frame(self):
+        self.assertIn("orb dock: landed", _func(_source("assistant_ui.py"), "_land_orb_expand"))
+
+    def test_press_and_stretch_act_on_the_body_shell_only(self):
+        layers = _source("orb_layers.py")
+        self.assertIn("self.squash.setSublayers_([self.body, self.highlight])", layers)
+        self.assertIn("self.body_group.setSublayers_([self.squash, self.ring, self.eyes", layers)
 
     def test_popover_still_reachable_from_control_option_j(self):
         mini = _source("mini_bar.py")

@@ -2480,24 +2480,70 @@ class AppDelegate(NSObject):
 
     @objc.python_method
     def _pill_drag_views(self):
-        """The typing pill's views: everything in the orb panel except the orb and the recording stop button."""
+        """Every visible view in the orb panel's tree, except the orb, its ancestors and the recording stop button.
+
+        Walks the whole tree, so a pill nested in a container is found. Returns the outermost visible views, so
+        hiding one hides what is inside it.
+        """
         panel = getattr(self, "mini_panel", None)
-        if panel is None:
+        orb = getattr(self, "orb_view", None)
+        if panel is None or orb is None:
             return []
-        keep = [v for v in (getattr(self, "orb_view", None), getattr(self, "rec_stop", None)) if v is not None]
-        return [v for v in panel.contentView().subviews() if not any(v is k for k in keep)]
+        rec = getattr(self, "rec_stop", None)
+        chain = []
+        view = orb
+        while view is not None:
+            chain.append(view)
+            view = view.superview()
+        found = []
+
+        def walk(parent):
+            for sub in parent.subviews() or []:
+                if sub.isEqual_(orb) or (rec is not None and sub.isEqual_(rec)):
+                    continue
+                if any(sub.isEqual_(c) for c in chain):
+                    walk(sub)  # an ancestor of the orb: keep it, and look inside
+                    continue
+                if not sub.isHidden():
+                    found.append(sub)
+
+        walk(panel.contentView())
+        return found
+
+    @objc.python_method
+    def _docked_frame_held(self):
+        """Once the full window is open and the orb is docked, the panel stays on dock_point. Returns True if it did.
+
+        Mid-transition states are left alone, so the expand and collapse springs are not fought.
+        """
+        full = getattr(self, "full_window", None)
+        panel = getattr(self, "mini_panel", None)
+        if full is None or panel is None or not full.isVisible():
+            return False
+        if self._orb_window_state_now() != ORB_STATE_OPEN:
+            return False
+        frame = dock_point(self._frame_tuple(full.frame()))
+        self._place_orb_rect(frame)
+        print("  orb dock: held at dock_point={0} panel={1}".format(
+            tuple(round(v, 1) for v in frame), tuple(round(v, 1) for v in self._frame_tuple(panel.frame()))),
+            flush=True)
+        return True
 
     @objc.python_method
     def _pill_drag_began(self):
-        """An orb drag started: hide the typing pill at once."""
+        """An orb drag started: hide the typing pill at once. Logs what it hid, or that nothing was visible."""
         if getattr(self, "_pill_drag_hidden", None):
             return
-        views = [v for v in self._pill_drag_views() if not v.isHidden()]
+        views = self._pill_drag_views()
         for v in views:
             v.setHidden_(True)
         self._pill_drag_hidden = views
-        if views:
-            print("  orb drag: input pill hidden ({0} views)".format(len(views)), flush=True)
+        described = ", ".join("{0} {1}".format(str(v.className()),
+                                               tuple(round(float(c), 1) for c in (
+                                                   v.frame().origin.x, v.frame().origin.y,
+                                                   v.frame().size.width, v.frame().size.height)))
+                              for v in views) or "none visible"
+        print("  orb drag: input pill hidden ({0} views: {1})".format(len(views), described), flush=True)
 
     @objc.python_method
     def _pill_drag_ended(self):
@@ -4274,6 +4320,8 @@ class AppDelegate(NSObject):
         panel = getattr(self, "mini_panel", None)
         if panel is None or not hasattr(self, "pill"):
             return
+        if self._docked_frame_held():
+            return  # PR 8: docked on the window's left edge; a presentation pass must not move it back
         self.pillCollapsed = bool(self.pill.collapsed)
         target = self._target_pill_frame()
         if self.pillCollapsed:
@@ -4643,7 +4691,11 @@ class AppDelegate(NSObject):
         target = getattr(self, "_orb_window_target", None)
         if target is not None:
             full.setFrame_display_(NSMakeRect(*target), False)  # land exactly where the ghost ended
-        self._place_orb_rect(dock_point(self._frame_tuple(full.frame())))
+        landed = dock_point(self._frame_tuple(full.frame()))
+        self._place_orb_rect(landed)
+        print("  orb dock: landed, dock_point={0} window={1}".format(
+            tuple(round(v, 1) for v in landed), tuple(round(v, 1) for v in self._frame_tuple(full.frame()))),
+            flush=True)
         NSApp.activateIgnoringOtherApps_(True)
         full.makeKeyAndOrderFront_(None)
         print("  orb expand: window frame={0} visible={1}".format(

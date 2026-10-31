@@ -408,13 +408,15 @@ class OrbLayers:
         self.highlight.setPath_(_ellipse_path(0, 0, hw, hh))
 
         self.body_group = place(CALayer.layer(), (0, 0, DESIGN_SIZE, DESIGN_SIZE))
-        self.body_group.setSublayers_([self.body, self.ring, self.eyes["L"], self.eyes["R"],
-                                       self.mouth, self.glyph, self.glyph_stroke, self.spinner])
         # Press squash and drag stretch live on their own layer, so they never fight the bob, breath and accents
         # on the body group. The highlight goes in too, so the shine squashes with the body.
+        # PR 8: the press squash and drag stretch act on the body and its shine only. The eyes, mouth and glyphs
+        # are siblings of that shell inside the body group, so they never move with the pointer.
         self.squash = place(CALayer.layer(), (0, 0, DESIGN_SIZE, DESIGN_SIZE))
-        self.squash.setSublayers_([self.body_group, self.highlight])
-        self.root.setSublayers_([self.shadow, self.squash])
+        self.squash.setSublayers_([self.body, self.highlight])
+        self.body_group.setSublayers_([self.squash, self.ring, self.eyes["L"], self.eyes["R"],
+                                       self.mouth, self.glyph, self.glyph_stroke, self.spinner])
+        self.root.setSublayers_([self.shadow, self.body_group])
 
     def fit(self, width, height):
         """Centre the design space in the view and scale it like the old drawRect_ path."""
