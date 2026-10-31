@@ -787,6 +787,28 @@ def choice_panel_box(actions, width=300.0):
     }
 
 
+AREA_CAPTURE_KEY_CODE = 13  # W
+AREA_CAPTURE_FLAG_SHIFT = 1 << 17
+
+
+def area_capture_hotkey(key_code, flags):
+    """Control-Option-Command-W, with no Shift, starts the area capture from any app.
+
+    It is a different chord from Command-W, which stays the in-app menu key equivalent.
+    """
+    try:
+        code = int(key_code)
+        bits = int(flags)
+    except (TypeError, ValueError):
+        return False
+    if code != AREA_CAPTURE_KEY_CODE:
+        return False
+    needed = TYPE_FLAG_CONTROL | TYPE_FLAG_OPTION | TYPE_FLAG_COMMAND
+    if bits & needed != needed:
+        return False
+    return not bits & AREA_CAPTURE_FLAG_SHIFT
+
+
 def type_focus_hotkey(key_code, flags):
     """Control-Option-J, without Command, focuses the type field."""
     try:

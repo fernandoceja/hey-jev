@@ -167,7 +167,7 @@ from mini_bar import (
     smooth,
     submission,
     trailing_symbol,
-    type_focus_hotkey,
+    area_capture_hotkey, type_focus_hotkey,
     TypedHistory,
     PillKeyFocus,
     caret_range,
@@ -1883,6 +1883,9 @@ class AppDelegate(NSObject):
         if type_focus_hotkey(event.keyCode(), event.modifierFlags()):
             self.focusTypeField_(None)
             return None
+        if area_capture_hotkey(event.keyCode(), event.modifierFlags()):
+            self.captureAreaWand_(None)  # Control-Option-Command-W while Jev is active
+            return None
         if event.keyCode() == 53:
             choices = getattr(self, "choice_panel", None)
             if choices is not None and choices.isVisible():
@@ -1900,6 +1903,10 @@ class AppDelegate(NSObject):
     def _global_type_key(self, event):
         if type_focus_hotkey(event.keyCode(), event.modifierFlags()):
             self.performSelectorOnMainThread_withObject_waitUntilDone_("focusTypeField:", None, False)
+            return
+        if area_capture_hotkey(event.keyCode(), event.modifierFlags()):
+            # Control-Option-Command-W from any app: the same area capture as the Capture Area menu item.
+            self.performSelectorOnMainThread_withObject_waitUntilDone_("captureAreaWand:", None, False)
             return
         if getattr(self, "ptt", None) is not None and self.ptt.on_key(event.keyCode(), time.monotonic()) == "cancel":
             self._cancel_ptt()
