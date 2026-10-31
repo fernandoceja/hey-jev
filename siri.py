@@ -439,6 +439,8 @@ ACTIONS = {
     "nx_play": lambda _arg, text: commands.nx_play_from_text(text),
     # Scan only: opens CleanMyMac and presses Scan. Never cleans. Not bridged.
     "cleanmymac_scan": lambda _arg, text: commands.cleanmymac_scan_from_text(text),
+    # PR 8d: list Downloads or Desktop by type, age, old installers, duplicates and large files. Reads only. Not bridged.
+    "tidy_scan": lambda _arg, text: commands.tidy_scan_from_text(text),
     # REA analyze of the front app. Read-only. LocalSpeech, so no paid API. Not bridged.
     "rea_analyze": lambda _arg, text: commands.analyze_front_app(text),
     # Offline brain: fm serve on 127.0.0.1:1976 only, on command. Not bridged.
@@ -888,6 +890,8 @@ def decide(ans, text=""):
         local = commands.route_before_api(text)
         if not local:
             local = commands.start_my_day_action(text)  # PR 8c: Mac voice and typed path only, never the bridge
+        if not local and commands.tidy_folder_key(text):  # PR 8d: Mac voice and typed path only, never the bridge
+            local = "tidy_scan"
         if local:
             return ("actions", [_picked(local)])
         return None

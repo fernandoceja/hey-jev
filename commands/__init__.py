@@ -636,6 +636,7 @@ from .bridge import (
 )
 
 from .start_my_day import START_MY_DAY_KEY, start_my_day_action  # PR 8c: aliases for the brief, Mac path only
+from .tidy_downloads import tidy_folder_key, tidy_scan_from_text  # PR 8d: scan only, Mac path only
 from .brief import (
     speak_today,
     _count_today_events,
