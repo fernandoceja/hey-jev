@@ -635,6 +635,7 @@ from .bridge import (
     start_bridge_thread,
 )
 
+from .start_my_day import START_MY_DAY_KEY, start_my_day_action  # PR 8c: aliases for the brief, Mac path only
 from .brief import (
     speak_today,
     _count_today_events,

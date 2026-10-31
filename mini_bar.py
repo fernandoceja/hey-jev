@@ -64,6 +64,7 @@ POPOVER_CHIPS = {
     "eta_home": {"title": "ETA home", "subtitle": "", "phrase": "eta home"},
     "hazard_check": {"title": "Hazard Check", "subtitle": "", "phrase": "hazard check"},
     "plan_day": {"title": "Plan my day", "subtitle": "Today's brief", "phrase": "brief me"},
+    "start_day": {"title": "Start my day", "subtitle": "Today's brief", "phrase": "start my day"},  # PR 8c
     "mac_health": {"title": "Mac health", "subtitle": "CleanMyMac scan only.", "phrase": "cleanmymac scan"},
     "weather": {"title": "Weather", "subtitle": "Local forecast", "phrase": "what's the weather"},
     "time": {"title": "Time", "subtitle": "Clock check", "phrase": "what time is it"},
@@ -72,7 +73,7 @@ POPOVER_CHIPS = {
     "eta_work": {"title": "ETA work", "subtitle": "Commute", "phrase": "what's my ETA to work"},
 }
 POPOVER_CHIP_PAGES = (
-    ("eta_home", "hazard_check", "plan_day", "mac_health"),
+    ("eta_home", "hazard_check", "start_day", "mac_health"),  # PR 8c: replaces Plan my day in the popover
     ("weather", "time", "games", "eta_work"),
 )
 # Template-image tint while right Option is held for push-to-talk, and after.

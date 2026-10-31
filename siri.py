@@ -885,6 +885,8 @@ def decide(ans, text=""):
     """
     if ans is None:
         local = commands.route_before_api(text)
+        if not local:
+            local = commands.start_my_day_action(text)  # PR 8c: Mac voice and typed path only, never the bridge
         if local:
             return ("actions", [_picked(local)])
         return None
