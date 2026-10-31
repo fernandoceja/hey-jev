@@ -4463,6 +4463,37 @@ class AppDelegate(NSObject):
         self._schedule_orb_landing(duration)
 
     @objc.python_method
+    def _log_orb_dock(self, tag):
+        """Diagnostics for a docked orb that draws nothing: panel, window and layer state. Never raises."""
+        try:
+            def rect(r):
+                return tuple(round(float(v), 2) for v in (r.origin.x, r.origin.y, r.size.width, r.size.height))
+            panel = self.mini_panel
+            orb = self.orb_view
+            print("  orb {0} panel: frame={1} level={2} alpha={3:.2f} visible={4} occlusion={5} child={6} "
+                  "viewHidden={7} viewFrame={8}".format(
+                      tag, rect(panel.frame()), panel.level(), float(panel.alphaValue()), bool(panel.isVisible()),
+                      int(panel.occlusionState()), panel.parentWindow() is self.full_window,
+                      bool(orb.isHidden()), rect(orb.frame())))
+            tree = orb.tree
+            t = tree.root.affineTransform()
+            print("  orb {0} root: hidden={1} opacity={2:.2f} bounds={3} scale={4:.3f} xf=({5:.3f},{6:.3f}) "
+                  "contentsScale={7} sublayers={8}".format(
+                      tag, bool(tree.root.isHidden()), float(tree.root.opacity()), rect(tree.root.bounds()),
+                      float(tree.scale or 0.0), t.a, t.d, float(tree.root.contentsScale()),
+                      len(tree.root.sublayers() or [])))
+            for name in ("body_group", "body", "base", "highlight", "ring", "shadow"):
+                layer = getattr(tree, name)
+                print("  orb {0} {1}: hidden={2} opacity={3:.2f} bounds={4} contentsScale={5} mask={6}".format(
+                    tag, name, bool(layer.isHidden()), float(layer.opacity()), rect(layer.bounds()),
+                    float(layer.contentsScale()), layer.mask() is not None))
+            eye = tree.eyes["L"]
+            print("  orb {0} eyeL: hidden={1} opacity={2:.2f} bounds={3} mask={4}".format(
+                tag, bool(eye.isHidden()), float(eye.opacity()), rect(eye.bounds()), eye.mask() is not None))
+        except Exception as exc:
+            print("  orb {0} log failed: {1}".format(tag, exc))
+
+    @objc.python_method
     @orb_guarded
     def _land_orb_expand(self):
         self._stop_orb_spring()
@@ -4487,6 +4518,7 @@ class AppDelegate(NSObject):
         self._remove_orb_ghost()
         self._set_orb_window_state("landed")
         self._sync_orb()
+        self._log_orb_dock("dock")
         print("  orb expand: done after {0:.3f}s ticks={1}".format(
             time.monotonic() - getattr(self, "_orb_started", time.monotonic()), getattr(self, "_orb_ticks", 0)))
 
