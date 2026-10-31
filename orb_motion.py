@@ -183,7 +183,7 @@ PRESS_SCALE = (1.12, 0.88)  # x, y of the body group while the mouse is down
 PRESS_SECONDS = 0.10
 STRETCH_MAX = 0.22  # sx is at most 1.22
 STRETCH_SPEED = 3000.0  # pt/s for the full stretch
-ROUGH_SPEED = 3500.0  # pt/s above which a drag counts as rough (PR 7b dizzy)
+ROUGH_SPEED = 2500.0  # pt/s above which a drag counts as fast (PR 7b dizzy; lowered from 3500 after a real shake never reached it)
 REVERSAL_MIN_SPEED = 300.0  # pt/s a segment must reach before a direction flip counts as a reversal
 DRAG_TICK_SECONDS = 1.0 / 60.0
 SETTLE_EPS = 0.25  # pt
@@ -323,7 +323,7 @@ def stretch_matrix(sx, sy, angle):
 
 
 def drag_roughness(samples):
-    """(direction_reversals, seconds_above_3500pt_s) for a drag. samples are (t, x, y) in order, in seconds and points.
+    """(direction_reversals, seconds_above_ROUGH_SPEED) for a drag. samples are (t, x, y) in order, in seconds and points.
 
     A reversal is a segment whose direction flips against the one before, with both moving at REVERSAL_MIN_SPEED or
     faster. Non-finite samples and segments with no time between them are skipped.

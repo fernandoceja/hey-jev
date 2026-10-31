@@ -183,7 +183,7 @@ from mini_bar import (
     smooth,
     submission,
     trailing_symbol,
-    control_option_command_held, type_focus_hotkey,
+    control_option_command_held,
     TypedHistory,
     PillKeyFocus,
     caret_range,
@@ -208,13 +208,13 @@ from orb_motion import (  # PR 6a: expand from the orb, dock on the divider, col
     EXPAND_START_SCALE, ORB_STATE_COLLAPSING, ORB_STATE_EXPANDING, ORB_STATE_IDLE, ORB_STATE_OPEN,
     SPRING_EXPAND, collapse_target, dock_panel_level, dock_point, expand_rects, orb_window_next,
 )
-from area_hotkey import AreaCaptureHotKey
+from area_hotkey import CARBON_CONTROL, CARBON_OPTION, AreaCaptureHotKey, CarbonHotKey
 from orb_motion import (
     MENU_CORNER_RADIUS, MENU_FILL_HOVER, MENU_FILL_REST, MENU_FAN_START_SCALE, MENU_HOVER_SECONDS,
     HINT_SECONDS, HINT_TEXT_INSET, RESULT_FADE_SECONDS, RESULT_SCALE_FROM, SPRING_MENU_FAN, TEXT_ACTIONS,
     hint_layout, menu_layout, result_frames, result_layout,
 )
-from mini_bar import FIND_IMAGE_HINT, capture_outcome, menu_on_drop, orb_action_menu
+from mini_bar import FIND_IMAGE_HINT, TYPE_KEY_CODE, capture_outcome, menu_on_drop, orb_action_menu
 import full_window as fw
 from ptt import PushToTalk
 from secrets_store import KEY_NAMES, OPTIONAL, get_secret, missing_secrets, save_secret
@@ -761,6 +761,7 @@ class MiniBarBackground(NSView):
         """Reduce Motion: the window follows the cursor exactly, as before PR 3a. Returns True once it moved."""
         mask = NSEventMaskLeftMouseDragged | NSEventMaskLeftMouseUp
         moved = False
+        samples = []
         while True:
             nxt = window.nextEventMatchingMask_(mask)
             if nxt is None or nxt.type() == NSEventTypeLeftMouseUp:
@@ -774,8 +775,12 @@ class MiniBarBackground(NSView):
             if moved:
                 x, y = drag_origin(origin, start, point)
                 window.setFrameOrigin_(NSMakePoint(x, y))
+                samples.append((time.monotonic(), x, y))  # PR 7b: the roughness of this drag, for dizzy
         if moved:
             _notify_pill_drag(window.delegate(), began=False)  # PR 8: the pill slides back out from the orb's side
+            delegate = window.delegate()
+            if delegate is not None:
+                delegate.last_drag_roughness = drag_roughness(samples)
         return moved
 
     @objc.python_method
@@ -1545,6 +1550,12 @@ class AppDelegate(NSObject):
         self.area_hotkey = AreaCaptureHotKey(self._area_hotkey_pressed)
         _ok, hotkey_detail = self.area_hotkey.register()
         print("  area hotkey: {0}".format(hotkey_detail))
+        # PR 7b follow-up: Control-Option-J is a Carbon hotkey too, so it works while another app is in front.
+        self.type_hotkey = CarbonHotKey(self._type_hotkey_pressed, TYPE_KEY_CODE, CARBON_CONTROL | CARBON_OPTION,
+                                        "Control-Option-J", hotkey_id=2)
+        ok_type, type_detail = self.type_hotkey.register()
+        print("orb hotkey: registered ctrl-opt-J" if ok_type else "orb hotkey: not registered ({0})".format(type_detail),
+              flush=True)
         self._sync_mini_bar()
         self._hold_option_blocked = self.global_monitor is None or not self._accessibility_trusted()
         if missing_secrets():
@@ -2298,10 +2309,6 @@ class AppDelegate(NSObject):
 
     @objc.python_method
     def _local_key(self, event):
-        if type_focus_hotkey(event.keyCode(), event.modifierFlags()):
-            self.focusTypeField_(None)
-            return None
-
         if event.keyCode() == 53:
             if self._hint_open:
                 self._close_hint()
@@ -2335,9 +2342,6 @@ class AppDelegate(NSObject):
             # Diagnostic: proves the global monitor receives chords from other apps. Key code and flags only.
             print("  global key: keyCode={0} flags=0x{1:x} control+option+command".format(
                 event.keyCode(), int(flags)))
-        if type_focus_hotkey(event.keyCode(), event.modifierFlags()):
-            self.performSelectorOnMainThread_withObject_waitUntilDone_("focusTypeField:", None, False)
-            return
         if getattr(self, "ptt", None) is not None and self.ptt.on_key(event.keyCode(), time.monotonic()) == "cancel":
             self._cancel_ptt()
 
@@ -2472,6 +2476,10 @@ class AppDelegate(NSObject):
         print("  area hotkey fired: control+option+command+W")
         self.captureAreaWand_(None)
 
+    def _type_hotkey_pressed(self):
+        """Control-Option-J from any app: the orb and the input pill, never the full window (see focusTypeField_)."""
+        self.focusTypeField_(None)
+
     @objc.python_method
     def _note_turn_text(self, text):
         """A turn whose text thanks Jev plays heart eyes (PR 7b). Matched on the text only; nothing is sent."""
@@ -2600,11 +2608,15 @@ class AppDelegate(NSObject):
         self._spotlight = state
         state["panel"] = win
 
+        win.setHidesOnDeactivate_(False)  # the panel stays up when another app is frontmost
         win.setAlphaValue_(0.0)
+        NSApp.activateIgnoringOtherApps_(True)  # activate first, so the panel can become key
         win.makeKeyAndOrderFront_(None)
-        NSApp.activateIgnoringOtherApps_(True)
+        win.orderFrontRegardless()
         win.makeFirstResponder_(field)
         print("orb spotlight: level={0} key={1}".format(win.level(), bool(win.isKeyWindow())), flush=True)
+        self._spotlight_check = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            0.1, self, "spotlightAfterOpen:", None, False)
         content.setWantsLayer_(True)
         scale = CABasicAnimation.animationWithKeyPath_("transform.scale")
         scale.setFromValue_(SPOTLIGHT_START_SCALE)
@@ -2619,6 +2631,15 @@ class AppDelegate(NSObject):
         win.animator().setAlphaValue_(1.0)
         NSAnimationContext.endGrouping()
         print("orb spotlight: open at {0}".format(tuple(round(v, 1) for v in (x, y, w, h))), flush=True)
+
+    def spotlightAfterOpen_(self, _timer):
+        """One tick after the panel opens: whether it is key, on screen and unobscured. Logged for the hand test."""
+        state = getattr(self, "_spotlight", None)
+        panel = state.get("panel") if state else None
+        if panel is None:
+            return
+        print("orb spotlight: after open key={0} visible={1} occlusion={2}".format(
+            bool(panel.isKeyWindow()), bool(panel.isVisible()), int(panel.occlusionState())), flush=True)
 
     @objc.python_method
     def _close_orb_spotlight(self, reason):
@@ -3202,7 +3223,10 @@ class AppDelegate(NSObject):
         self._orb_dragging = False
         reversals, seconds_fast = getattr(self, "last_drag_roughness", (0, 0.0)) or (0, 0.0)
         self.last_drag_roughness = (0, 0.0)
-        if rough_drag(reversals, seconds_fast) and getattr(self, "orb_view", None) is not None:
+        rough = rough_drag(reversals, seconds_fast)
+        print("orb drag: end reversals={0} fast_s={1:.2f} rough={2}".format(int(reversals), float(seconds_fast), rough),
+              flush=True)
+        if rough and getattr(self, "orb_view", None) is not None:
             self.orb_view.offerReaction("dizzy")  # PR 7b: a rough drop plays before the tuck or dock moves
         self._peek_disengage(move=False)
         frame = window.frame()
@@ -6778,6 +6802,8 @@ class AppDelegate(NSObject):
             NSEvent.removeMonitor_(self.type_monitor)
         if getattr(self, "area_hotkey", None) is not None:
             self.area_hotkey.unregister()
+        if getattr(self, "type_hotkey", None) is not None:
+            self.type_hotkey.unregister()
 
 
     def checkForUpdates_(self, _sender):

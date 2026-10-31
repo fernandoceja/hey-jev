@@ -141,13 +141,41 @@ class IsThanksTests(unittest.TestCase):
 
 
 class RoughDragTests(unittest.TestCase):
-    def test_six_reversals_are_rough(self):
-        self.assertFalse(oc.rough_drag(5, 0.0))
-        self.assertTrue(oc.rough_drag(6, 0.0))
+    def test_four_reversals_are_rough(self):
+        self.assertFalse(oc.rough_drag(3, 0.0))
+        self.assertTrue(oc.rough_drag(4, 0.0))
 
-    def test_half_a_second_fast_is_rough(self):
-        self.assertFalse(oc.rough_drag(0, 0.49))
-        self.assertTrue(oc.rough_drag(0, 0.5))
+    def test_three_tenths_of_a_second_fast_is_rough(self):
+        self.assertFalse(oc.rough_drag(0, 0.29))
+        self.assertTrue(oc.rough_drag(0, 0.3))
+
+    def test_a_hard_shake_through_the_drag_spring_is_rough(self):
+        """Simulated: a 150 pt shake at 6 Hz, followed by the real drag spring at 60 Hz, reaches the rough thresholds."""
+        import math
+        from orb_motion import DRAG_TICK_SECONDS, SPRING_FOLLOW, drag_roughness, follow_step
+        pos, vel, samples, t = (0.0, 0.0), (0.0, 0.0), [], 0.0
+        while t < 1.0:
+            cursor = (150.0 * math.sin(math.tau * 6.0 * t), 0.0)
+            pos, vel = follow_step(pos, vel, cursor, DRAG_TICK_SECONDS, *SPRING_FOLLOW)
+            samples.append((t, pos[0], pos[1]))
+            t += DRAG_TICK_SECONDS
+        reversals, fast = drag_roughness(samples)
+        self.assertTrue(oc.rough_drag(reversals, fast), (reversals, fast))
+
+    def test_a_gentle_drag_is_not_rough(self):
+        import math
+        from orb_motion import DRAG_TICK_SECONDS, SPRING_FOLLOW, drag_roughness, follow_step
+        pos, vel, samples, t = (0.0, 0.0), (0.0, 0.0), [], 0.0
+        while t < 1.0:
+            cursor = (60.0 * math.sin(math.tau * 4.0 * t), 0.0)
+            pos, vel = follow_step(pos, vel, cursor, DRAG_TICK_SECONDS, *SPRING_FOLLOW)
+            samples.append((t, pos[0], pos[1]))
+            t += DRAG_TICK_SECONDS
+        self.assertFalse(oc.rough_drag(*drag_roughness(samples)))
+
+    def test_the_fast_speed_is_2500_points_a_second(self):
+        from orb_motion import ROUGH_SPEED
+        self.assertEqual(ROUGH_SPEED, 2500.0)
 
     def test_bad_input_is_not_rough(self):
         self.assertFalse(oc.rough_drag(None, None))

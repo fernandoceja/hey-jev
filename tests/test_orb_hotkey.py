@@ -79,9 +79,36 @@ class HotkeyWiringTests(unittest.TestCase):
         self.assertIn("def showSettings_", self.ui)
         self.assertIn('"showSettings:"', _source("orb_spotlight.py"))
 
-    def test_the_menu_and_the_global_monitor_still_route_to_the_same_handler(self):
+    def test_the_menu_item_still_routes_to_the_same_handler(self):
         self.assertIn("focusTypeField:", self.ui)
-        self.assertIn("performSelectorOnMainThread_withObject_waitUntilDone_(\"focusTypeField:\"", self.ui)
+
+    def test_the_hotkey_is_a_carbon_registration_not_an_app_only_binding(self):
+        self.assertIn("CarbonHotKey(self._type_hotkey_pressed, TYPE_KEY_CODE", self.ui)
+        self.assertIn('"Control-Option-J", hotkey_id=2', self.ui)
+        self.assertIn('"orb hotkey: registered ctrl-opt-J"', self.ui)
+        self.assertIn("self.focusTypeField_(None)", _func(self.ui, "_type_hotkey_pressed"))
+        self.assertIn("self.type_hotkey.unregister()", self.ui)
+
+    def test_the_app_only_bindings_for_control_option_j_are_gone(self):
+        local = _func(self.ui, "_local_key")
+        global_key = _func(self.ui, "_global_type_key")
+        self.assertNotIn("type_focus_hotkey", local)
+        self.assertNotIn("type_focus_hotkey", global_key)
+
+    def test_the_hotkey_is_registered_with_its_own_id_and_the_right_chord(self):
+        import area_hotkey
+        self.assertEqual(area_hotkey.CARBON_CONTROL | area_hotkey.CARBON_OPTION, 0x1800)
+        self.assertEqual(area_hotkey.AreaCaptureHotKey.__mro__[1], area_hotkey.CarbonHotKey)
+
+    def test_the_spotlight_activates_before_it_becomes_key_and_logs_one_tick_later(self):
+        opener = _func(self.ui, "_open_orb_spotlight")
+        self.assertLess(opener.index("NSApp.activateIgnoringOtherApps_(True)"), opener.index("makeKeyAndOrderFront_"))
+        self.assertIn("orderFrontRegardless", opener)
+        self.assertIn("setHidesOnDeactivate_(False)", opener)
+        self.assertIn('"orb spotlight: after open key={0} visible={1} occlusion={2}"', _func(self.ui, "spotlightAfterOpen_"))
+
+    def test_every_drop_logs_its_roughness(self):
+        self.assertIn('"orb drag: end reversals={0} fast_s={1:.2f} rough={2}"', _func(self.ui, "_finalize_mini_bar_drag"))
 
 
 if __name__ == "__main__":
