@@ -84,6 +84,8 @@ def _day_phrase(when, now):
 
 
 def _join_names(items):
+    if not items:
+        return ""  # an empty list has nothing to join; callers decide what to say instead
     if len(items) == 1:
         return items[0]
     if len(items) == 2:

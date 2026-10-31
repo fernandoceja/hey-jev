@@ -203,7 +203,7 @@ def speak_today_schedule():
     if not all_day and not timed:
         return "Your calendar is clear today."
     shown, extra = timed[:6], max(0, len(timed) - 6)
-    timed_line = _join_names(shown) + (f", and {extra} more" if extra else "")
+    timed_line = (_join_names(shown) + (f", and {extra} more" if extra else "")) if shown else ""
     if all_day and timed_line:
         return f"All day: {_join_names(all_day)}. Today you've got {timed_line}."
     if all_day:

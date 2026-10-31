@@ -529,7 +529,7 @@ class TestMenus(unittest.TestCase):
         run_local = _func(siri, "_run_local")
         self.assertIn("LocalSpeech", run_local)
         self.assertIn("commands.CLIPBOARD_KEYS", run_local)
-        self.assertIn("type(exc).__name__ if private else exc", run_local)
+        self.assertIn("_log_action_failure(action, exc, private=private)", run_local)  # redaction lives in the helper
 
 
 def _rmtree(path):

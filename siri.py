@@ -3,7 +3,7 @@
 Messages from My Love are the exception: they are spoken with the macOS say command
 and are never sent to Fish, TypeSafe, or an LLM.
 """
-import os, re, sys, json, time, queue, random, argparse, subprocess, tempfile, threading, collections
+import os, re, sys, json, time, queue, random, argparse, subprocess, tempfile, threading, collections, traceback
 from datetime import datetime
 import numpy as np, requests, sounddevice as sd, soundfile as sf
 from dotenv import load_dotenv
@@ -1088,8 +1088,11 @@ def _finish_confirmed(notify):
         print(f"  action: {action} {arg or ''}")
         line = _speak_result(action, result, reply_key, fmt)
     except Exception as e:
-        print(f"  action failed: {action} {e}")
+        _log_action_failure(action, e)
         line = say_line("unsupported")
+        say(line, notify)
+        emit(notify, "Something went wrong", line)  # a failed action plays the failure reaction
+        return
     say(line, notify)
     emit(notify, "Ready", line)
 
@@ -1243,10 +1246,7 @@ def handle(text, stt_ms=None, notify=None, reply_sink=None, quiet=False):
                     print(f"  action: {action} {arg or ''}")
                     done += 1
                 except Exception as e:
-                    if action in commands.PASSWORD_KEYS:
-                        print("  action failed: {0} {1}".format(action, type(e).__name__))
-                    else:
-                        print(f"  action failed: {action} {e}")
+                    _log_action_failure(action, e, private=action in commands.PASSWORD_KEYS)
             if speak_first:
                 emit(notify, "Ready", line)
                 return
@@ -1274,7 +1274,7 @@ def handle(text, stt_ms=None, notify=None, reply_sink=None, quiet=False):
             commands.play_memo_file(memo_path)
         except Exception as exc:
             print("  brief: {0}".format(type(exc).__name__))
-    emit(notify, "Ready", line)
+    emit(notify, "Something went wrong" if not done else "Ready", line)  # nothing that ran is a failure
     if armed:
         # The 10 seconds start after the prompt, so speaking it doesn't eat the window.
         commands.refresh_confirmation()
@@ -1309,8 +1309,12 @@ def say_local(text, notify):
         print(f"  say-local failed: {type(exc).__name__}")
 
 
-def _deliver(line, notify, reply_sink=None, private=False):
-    """Play a line. Private lines stay out of reply_sink so they cannot be written to iCloud."""
+def _deliver(line, notify, reply_sink=None, private=False, failed=False):
+    """Play a line. Private lines stay out of reply_sink so they cannot be written to iCloud.
+
+    failed=True ends the turn with "Something went wrong", not "Ready", so the orb plays its failure reaction
+    and a failed action never looks like a reply (PR 7b follow-up).
+    """
     if private:
         say_local(line, notify)
         emit(notify, "Ready", "Spoken on this Mac only")
@@ -1318,7 +1322,17 @@ def _deliver(line, notify, reply_sink=None, private=False):
     if reply_sink is not None:
         reply_sink.append(line)
     say(line, notify)
-    emit(notify, "Ready", line)
+    emit(notify, "Something went wrong" if failed else "Ready", line)
+
+
+def _log_action_failure(action, exc, private=False):
+    """"action failed: <key>" with the traceback, so a crash can be found from the log. Private actions log the
+    exception type only, because the text can echo a clipboard item or a password."""
+    if private:
+        print(f"  action failed: {action} {type(exc).__name__}", flush=True)
+        return
+    print(f"  action failed: {action} {exc}", flush=True)
+    print(traceback.format_exc(), flush=True)
 
 
 def _run_local(payload, text, notify, reply_sink):
@@ -1346,7 +1360,7 @@ def _run_local(payload, text, notify, reply_sink):
             ACTIONS[action](arg, text)
             print(f"  local: {action} (no api, no llm)")
         except Exception as exc:
-            print(f"  action failed: {action} {exc}")
+            _log_action_failure(action, exc)
         return None
     print(f"  local: {action} (no api, no llm)")
     try:
@@ -1354,7 +1368,7 @@ def _run_local(payload, text, notify, reply_sink):
         result = ACTIONS[action](arg, text)
     except Exception as exc:
         # Private replies must not land in the log. The exception text can echo a clipboard item.
-        print(f"  action failed: {action} {type(exc).__name__ if private else exc}")
+        _log_action_failure(action, exc, private=private)
         if action == "info_messages":
             _deliver("I couldn't read those messages.", notify, reply_sink, private=True)
         elif action in commands.CLIPBOARD_KEYS:
@@ -1362,7 +1376,7 @@ def _run_local(payload, text, notify, reply_sink):
         elif action in commands.PASSWORD_KEYS:
             _deliver("I couldn't open Passwords.", notify, reply_sink)
         else:
-            _deliver(say_line("unsupported"), notify, reply_sink)
+            _deliver(say_line("unsupported"), notify, reply_sink, failed=True)
         return
     if isinstance(result, commands.LocalSpeech):
         _deliver(result.text, notify, reply_sink, private=True)
