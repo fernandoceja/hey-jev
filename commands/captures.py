@@ -125,13 +125,22 @@ def _apple_quote(path):
 
 def _run_capture(args, input=None, timeout=30):
     result = subprocess.run(list(args), input=input, capture_output=True, text=True, timeout=timeout)
+    if result.returncode:
+        # The caller decides what a failure means. An area selection that is cancelled or has no size is not a failure.
+        detail = (result.stderr or result.stdout or "command failed").strip()
+        raise RuntimeError(detail)
     err = (result.stderr or "").strip()
     if err:
         print("  capture stderr: {0}".format(err))
-    if result.returncode:
-        detail = (result.stderr or result.stdout or "command failed").strip()
-        raise RuntimeError(detail)
     return result.stdout or ""
+
+
+# screencapture -i exits non-zero for a cancelled or zero-size area. Those are not errors to log.
+_AREA_CANCEL_DETAILS = ("could not create image from rect", "command failed")
+
+
+def _is_area_cancel(mode, detail):
+    return mode == "area" and str(detail or "").strip().lower() in _AREA_CANCEL_DETAILS
 
 
 def permission_failure(text):
@@ -181,6 +190,8 @@ def take_screenshot(mode="full", folder=None, when=None, run=None, book=None, en
         runner(screenshot_command(mode, path), timeout=timeout)
     except Exception as exc:
         detail = str(exc).strip() or "command failed"
+        if _is_area_cancel(mode, detail):
+            return "Cancelled."  # quiet: a cancelled or zero-size selection is not a failure
         _log_capture("screenshot", detail)
         if permission_failure(detail):
             opened = _open_privacy(runner)
