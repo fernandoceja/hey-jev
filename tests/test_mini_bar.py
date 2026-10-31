@@ -162,8 +162,7 @@ class TestSubmit(unittest.TestCase):
         self.assertIn('setAction_("miniPlus:")', build)
         self.assertIn('_set_button_symbol(self.mini_plus, "plus", "More")', build)
         self.assertNotIn("showMain:", build)
-        # The pill follows the system appearance. The PR 4 capture zone is its own HUD panel and is dark by design.
-        self.assertNotIn("NSAppearanceNameDarkAqua", build)
+        self.assertNotIn("NSAppearanceNameDarkAqua", ui)
 
     def test_reply_is_the_status_line_and_only_for_a_moment(self):
         self.assertEqual(reply_text("Speaking", "Spoken on this Mac only"), "Spoken on this Mac only")
