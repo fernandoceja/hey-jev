@@ -477,6 +477,25 @@ class OrbLayers:
         self._timed(POSE_SECONDS, update)
         self._set_spin(spinning and not static)
 
+    def set_tuck_eyes(self, centres, animated, seconds):
+        """Move both eyes to centres (design points, body group space). Animated, they slide with the tuck."""
+        from Foundation import NSValue
+        from Quartz import CABasicAnimation, CAMediaTimingFunction, CGPointMake
+        for side in ("L", "R"):
+            cx, cy = centres[side]
+            layer = self.eyes[side]
+            presented = layer.presentationLayer()
+            start = (presented or layer).position()
+            layer.removeAnimationForKey_("tuck")
+            if animated and seconds > 0.0:
+                anim = CABasicAnimation.animationWithKeyPath_("position")
+                anim.setFromValue_(NSValue.valueWithPoint_(start))
+                anim.setToValue_(NSValue.valueWithPoint_(CGPointMake(float(cx), float(cy))))
+                anim.setDuration_(float(seconds))
+                anim.setTimingFunction_(CAMediaTimingFunction.functionWithName_("easeOut"))
+                layer.addAnimation_forKey_(anim, "tuck")
+            self._disable_actions(lambda layer=layer, x=cx, y=cy: layer.setPosition_(CGPointMake(float(x), float(y))))
+
     def set_listen_level(self, scale):
         """The listening body follows the mic level with a short ease, and keeps the clip's lean."""
         self._timed(LEVEL_SECONDS, lambda: self.body_group.setTransform_(_body_transform(scale, self.lean)))

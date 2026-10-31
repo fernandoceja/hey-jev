@@ -196,6 +196,10 @@ from orb_motion import (
     drag_roughness, drag_stretch, follow_step, in_hot_zone, peek_frame, should_retract,
     spring, spring_done,
 )
+from orb_motion import peek_edge_allowed  # PR 8: a tuck never sits on a shared display edge
+from orb_tuck import (TUCK_CLOSE_SIZE, TUCK_FADE_IN_SECONDS, TUCK_FADE_OUT_SECONDS, TUCK_KEY, TUCK_SECONDS,
+                      decode_tuck, encode_tuck, tuck_close_centre, tuck_edge, tuck_eye_centres, tucked_frame,
+                      untucked_frame)
 from orb_view import make_orb_view, orb_frame, orb_state
 from orb_motion import (  # PR 6a: expand from the orb, dock on the divider, collapse back
     EXPAND_START_SCALE, ORB_STATE_COLLAPSING, ORB_STATE_EXPANDING, ORB_STATE_IDLE, ORB_STATE_OPEN,
@@ -667,6 +671,27 @@ class MiniBarBackground(NSView):
             delegate.refreshPillChrome_(self)
 
     @objc.python_method
+    def _tuck_press(self, window, delegate, orb):
+        """A press on a tucked orb. A drag past the threshold untucks at once and carries on as a drag. A still click
+        slides the orb back out fully, then behaves like a normal orb click (the full window).
+        """
+        down = NSEvent.mouseLocation()
+        start = (float(down.x), float(down.y))
+        mask = NSEventMaskLeftMouseDragged | NSEventMaskLeftMouseUp
+        while True:
+            nxt = window.nextEventMatchingMask_(mask)
+            if nxt is None or nxt.type() == NSEventTypeLeftMouseUp:
+                break
+            now = NSEvent.mouseLocation()
+            point = (float(now.x), float(now.y))
+            if capsule_click_moved(start, point):
+                delegate._tuck_untuck("drag", instant=True)
+                frame = window.frame()
+                origin = (float(frame.origin.x), float(frame.origin.y))
+                self._drag_with_spring(window, delegate, orb, point, origin)
+                return
+        delegate._tuck_untuck("click", instant=False, then=lambda: delegate.expandOrbToFull_(orb))
+
     def _collapsed_click_or_drag(self, window, delegate, _event):
         """A still click opens the typing pill. A drag moves the capsule.
 
@@ -675,6 +700,9 @@ class MiniBarBackground(NSView):
         """
         if delegate is not None and getattr(delegate, "_orb_docked_now", lambda: False)():
             self._docked_click(window, delegate)  # PR 6a: a docked orb never drags off the divider
+            return
+        if delegate is not None and getattr(delegate, "_tuck_active", lambda: False)():
+            self._tuck_press(window, delegate, getattr(delegate, "orb_view", None))  # PR 8: a tucked orb
             return
         self._finish_drag_settle()
         if delegate is not None and hasattr(delegate, "_peek_before_drag"):
@@ -1404,6 +1432,7 @@ class MarkupView(NSView):
 
 class AppDelegate(NSObject):
     # PR 3b peek-dock state. _peek_edge is None when the orb is not tucked.
+    _tuck = None  # PR 8: the edge tuck. A dict while the orb is tucked, else None
     _peek_edge = None  # "left" or "right"
     _peek_screen = None  # visible frame the orb is tucked against
     _peek_inset = None  # window origin (x, y) at the 12 pt inset: the position that is saved
@@ -3143,10 +3172,12 @@ class AppDelegate(NSObject):
         if saved is not None:
             NSUserDefaults.standardUserDefaults().setObject_forKey_(
                 format_origin(saved[0], saved[1]), ORIGIN_KEY)
-        self._peek_consider()
+        tucked = self._tuck_consider()  # PR 8: a drop near a free edge tucks the orb (replaces peek for that drop)
+        if not tucked:
+            self._peek_consider()
         # PR 5a (R3): this runs only after a real drag has landed on its snap target. A drop that tucked the orb
         # into the edge does not open the menu.
-        if self._peek_edge is None and menu_on_drop(True):
+        if not tucked and self._peek_edge is None and menu_on_drop(True):
             self._open_action_menu()
 
     # PR 5a: action menu. A panel beside the orb, fanned out after a drop. Its buttons reuse the post-capture ids.
@@ -3877,6 +3908,180 @@ class AppDelegate(NSObject):
     # in when the cursor comes near. Reduce Motion fades in place instead of sliding. A tucked orb is never busy.
 
     @objc.python_method
+    def _tuck_active(self):
+        return getattr(self, "_tuck", None) is not None
+
+    @objc.python_method
+    def _tuck_motion_on(self):
+        return bool(self._pill_flags().get("motion", True))
+
+    @objc.python_method
+    def _tuck_eye_centres(self, edge):
+        from orb_motion import layer_geometry
+        geo = layer_geometry()
+        horizontal = {side: (f[0] + f[2] / 2.0, f[1] + f[3] / 2.0)
+                      for side, f in (("L", geo["eyeL"]), ("R", geo["eyeR"]))}
+        return tuck_eye_centres(edge, horizontal)
+
+    @objc.python_method
+    def _tuck_consider(self):
+        """A drop near a free edge of a collapsed, idle orb tucks it. True if it did."""
+        if self._tuck_active() or self._orb_docked_now():
+            return False
+        panel = getattr(self, "mini_panel", None)
+        if panel is None or not panel.isVisible() or not getattr(self, "pillCollapsed", False):
+            return False
+        if not self.bar.should_show() or self._peek_is_busy():
+            return False
+        frame = panel.frame()
+        rect = self._frame_tuple(frame)
+        screens = self._visible_screens()
+        screen = screen_for_frame(rect, screens) if screens else None
+        if screen is None:
+            return False
+        edge = tuck_edge(rect, screen, screens)
+        if edge is None:
+            return False
+        self._tuck_engage(edge, screen, (rect[2], rect[3]), rect[1])
+        return True
+
+    @objc.python_method
+    def _tuck_engage(self, edge, screen, size, y):
+        """Slide the orb to its tucked frame, rotate the eyes, and fade in the "x" once it lands."""
+        inset = untucked_frame(size, screen, edge, y)
+        target = tucked_frame(size, screen, edge, y)
+        self._tuck = {"edge": edge, "inset": inset, "target": target, "size": size}
+        defaults = NSUserDefaults.standardUserDefaults()
+        defaults.setObject_forKey_(format_origin(inset[0], inset[1]), ORIGIN_KEY)  # an untuck lands here
+        defaults.setObject_forKey_(encode_tuck(edge, target[1]), TUCK_KEY)
+        print("orb tuck: edge={0} y={1:.1f}".format(edge, target[1]), flush=True)
+        animated = self._tuck_motion_on()
+        self._tuck_close_fade(False)
+        self._tuck_set_eyes(edge, animated)
+        self._tuck_move(target, animated, TUCK_SECONDS, lambda: self._tuck_close_fade(True))
+
+    @objc.python_method
+    def _tuck_untuck(self, reason, instant=False, then=None):
+        """Take the orb out of its tuck: slide back to the inset (or jump), then run then()."""
+        state = getattr(self, "_tuck", None)
+        if state is None:
+            if then is not None:
+                then()
+            return
+        self._tuck = None
+        print("orb untuck: reason={0}".format(reason), flush=True)
+        NSUserDefaults.standardUserDefaults().removeObjectForKey_(TUCK_KEY)
+        self._tuck_close_fade(False)
+        animated = (not instant) and self._tuck_motion_on()
+        self._tuck_set_eyes(None, animated)
+        self._tuck_move(state["inset"], animated, TUCK_SECONDS, then)
+
+    @objc.python_method
+    def _tuck_move(self, frame, animated, seconds, then=None):
+        panel = getattr(self, "mini_panel", None)
+        orb = getattr(self, "orb_view", None)
+        if panel is None or orb is None:
+            return
+        from Quartz import CAMediaTimingFunction
+        rect = NSMakeRect(*(float(v) for v in frame))
+        if not animated or seconds <= 0.0:
+            self._place_orb_rect(frame)
+            if then is not None:
+                then()
+            return
+        NSAnimationContext.beginGrouping()
+        context = NSAnimationContext.currentContext()
+        context.setDuration_(float(seconds))
+        context.setTimingFunction_(CAMediaTimingFunction.functionWithName_("easeOut"))
+        if then is not None:
+            context.setCompletionHandler_(then)
+        panel.animator().setFrame_display_(rect, True)
+        NSAnimationContext.endGrouping()
+
+    @objc.python_method
+    def _tuck_set_eyes(self, edge, animated):
+        orb = getattr(self, "orb_view", None)
+        if orb is None:
+            return
+        orb.tree.set_tuck_eyes(self._tuck_eye_centres(edge), animated, TUCK_SECONDS)
+
+    @objc.python_method
+    def _tuck_button(self):
+        """The round translucent "x". Built once, on the orb's superview so it sits above the orb."""
+        button = getattr(self, "_tuck_close", None)
+        if button is not None:
+            return button
+        button = NSButton.alloc().initWithFrame_(NSMakeRect(0, 0, TUCK_CLOSE_SIZE, TUCK_CLOSE_SIZE))
+        button.setBordered_(False)
+        button.setImage_(NSImage.imageWithSystemSymbolName_accessibilityDescription_("xmark", "Hide Jev"))
+        button.setContentTintColor_(NSColor.whiteColor())
+        button.setTarget_(self)
+        button.setAction_("tuckCloseClicked:")
+        button.setWantsLayer_(True)
+        layer = button.layer()
+        layer.setCornerRadius_(TUCK_CLOSE_SIZE / 2.0)
+        layer.setBackgroundColor_(NSColor.systemGrayColor().colorWithAlphaComponent_(0.55).CGColor())
+        layer.setContentsScale_(float(self.mini_panel.backingScaleFactor()))  # native layer, scale set explicitly
+        button.setAlphaValue_(0.0)
+        button.setHidden_(True)
+        self.orb_view.superview().addSubview_(button)
+        self._tuck_close = button
+        return button
+
+    @objc.python_method
+    def _tuck_close_fade(self, show):
+        """Fade the "x" in once a tuck has landed, and out on untuck or drag."""
+        if show and not self._tuck_active():
+            return
+        button = self._tuck_button()
+        if show:
+            edge = self._tuck["edge"]
+            cx, cy = tuck_close_centre(edge)
+            button.setFrame_(NSMakeRect(cx - TUCK_CLOSE_SIZE / 2.0, cy - TUCK_CLOSE_SIZE / 2.0,
+                                        TUCK_CLOSE_SIZE, TUCK_CLOSE_SIZE))
+            button.setHidden_(False)
+        seconds = TUCK_FADE_IN_SECONDS if show else TUCK_FADE_OUT_SECONDS
+        NSAnimationContext.beginGrouping()
+        context = NSAnimationContext.currentContext()
+        context.setDuration_(seconds)
+        if not show:
+            context.setCompletionHandler_(lambda: button.setHidden_(True))
+        button.animator().setAlphaValue_(1.0 if show else 0.0)
+        NSAnimationContext.endGrouping()
+
+    def tuckCloseClicked_(self, sender):
+        """The tuck's "x": hides the orb, the same as Hide Mini Bar."""
+        print("orb tuck: hide button", flush=True)
+        self._tuck_untuck("hide", instant=True)
+        NSUserDefaults.standardUserDefaults().removeObjectForKey_(TUCK_KEY)
+        self.hideMiniBar_(sender)
+
+    @objc.python_method
+    def _tuck_restore(self):
+        """Relaunch: a tucked orb comes back tucked on the same edge and height, if that edge is still free."""
+        if self._tuck_active():
+            return
+        decoded = decode_tuck(NSUserDefaults.standardUserDefaults().stringForKey_(TUCK_KEY))
+        if decoded is None:
+            return
+        edge, y = decoded
+        panel = getattr(self, "mini_panel", None)
+        if panel is None or not getattr(self, "pillCollapsed", False):
+            return
+        rect = self._frame_tuple(panel.frame())
+        screens = self._visible_screens()
+        screen = screen_for_frame(rect, screens) if screens else None
+        if screen is None or not peek_edge_allowed(edge, screen, screens):
+            return  # the edge is gone or shared with another display: stay where the origin put it
+        size = (rect[2], rect[3])
+        inset = untucked_frame(size, screen, edge, y)
+        self._tuck = {"edge": edge, "inset": inset, "target": tucked_frame(size, screen, edge, y), "size": size}
+        self._place_orb_rect(self._tuck["target"])
+        self._tuck_set_eyes(edge, False)
+        self._tuck_close_fade(True)
+        print("orb tuck: edge={0} y={1:.1f} (restored)".format(edge, y), flush=True)
+
+    @objc.python_method
     def _peek_enabled(self):
         return peek_enabled_from_pref(NSUserDefaults.standardUserDefaults().objectForKey_(PEEK_PREF_KEY))
 
@@ -3920,7 +4125,7 @@ class AppDelegate(NSObject):
     @objc.python_method
     def _peek_consider(self):
         """Tuck the orb when it sits on an allowed edge, the pref is on, and nothing is busy."""
-        if self._peek_edge is not None or self._orb_docked_now():
+        if self._peek_edge is not None or self._orb_docked_now() or self._tuck_active():
             return
         panel = getattr(self, "mini_panel", None)
         if panel is None or not panel.isVisible() or not self.bar.should_show():
@@ -4124,6 +4329,7 @@ class AppDelegate(NSObject):
         if hasattr(self, "pill") and not self.pill.busy:
             self.pill.expanded = False
         self._apply_pill_presentation()
+        self._tuck_restore()  # PR 8: a tucked orb comes back tucked
         defaults.setObject_forKey_(format_size(size[0], size[1]), SIZE_KEY)
         motion = self._pill_flags().get("motion", True)
         if motion:
@@ -4524,6 +4730,9 @@ class AppDelegate(NSObject):
             return
         if self._docked_frame_held():
             return  # PR 8: docked on the window's left edge; a presentation pass must not move it back
+        if self._tuck_active():
+            self._place_orb_rect(self._tuck["target"])  # PR 8: a tucked orb stays tucked through presentation passes
+            return
         self.pillCollapsed = bool(self.pill.collapsed)
         target = self._target_pill_frame()
         if self.pillCollapsed:
@@ -4586,6 +4795,8 @@ class AppDelegate(NSObject):
         """A click on the idle capsule opens the typing pill and shows the caret."""
         if not hasattr(self, "pill"):
             return
+        if self._tuck_active():
+            self._tuck_untuck("typing", instant=True)  # PR 8: the typing pill is never shown while tucked
         if self._orb_docked_now():
             # PR 6a: while the window is docked, the typing field is the window's own. A popover would resize the orb.
             self._focus_docked_window()
