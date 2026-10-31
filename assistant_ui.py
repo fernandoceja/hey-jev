@@ -190,7 +190,7 @@ from orb_motion import (
     RESULT_FADE_SECONDS, RESULT_SCALE_FROM, SPRING_MENU_FAN, TEXT_ACTIONS, menu_layout, result_frames,
     result_layout,
 )
-from mini_bar import menu_on_drop, orb_action_menu
+from mini_bar import capture_outcome, menu_on_drop, orb_action_menu
 import full_window as fw
 from ptt import PushToTalk
 from secrets_store import KEY_NAMES, OPTIONAL, get_secret, missing_secrets, save_secret
@@ -1033,10 +1033,9 @@ class PillTextField(NSTextField):
         objc.super(PillTextField, self).mouseDown_(event)
 
 
-def set_action_fill(view, alpha):
+def set_action_fill(layer, alpha):
     """Animate a round action button's white fill to `alpha` over MENU_HOVER_SECONDS, easeOut (PR 5a hover)."""
     from Quartz import CAMediaTimingFunction, CATransaction
-    layer = view.layer()
     if layer is None:
         return
     CATransaction.begin()
@@ -1046,8 +1045,29 @@ def set_action_fill(view, alpha):
     CATransaction.commit()
 
 
-class ActionMenuButton(NSButton):
-    """Round button in the PR 5a action menu. Its tracking area lightens the fill on hover."""
+class ActionMenuButton(NSView):
+    """One row of the action menu: a round circle with its symbol, and the label beside it.
+
+    A plain NSView, not NSButton, so the circle is a layer we control. hitTest_ answers every point inside the
+    row with the row itself, so the symbol and label never take the click. Hover fills the circle only.
+    """
+
+    circle_layer = None
+    pick_target = None  # the delegate; its actionMenuPick_ takes this view, and identifier() is the action id
+
+    def acceptsFirstMouse_(self, _event):
+        return True  # the panel never becomes key, so a first click must still count
+
+    def hitTest_(self, point):
+        from AppKit import NSMouseInRect
+        superview = self.superview()
+        if superview is None:
+            return None
+        return self if NSMouseInRect(point, self.frame(), superview.isFlipped()) else None
+
+    def mouseDown_(self, _event):
+        if self.pick_target is not None:
+            self.pick_target.actionMenuPick_(self)
 
     def updateTrackingAreas(self):
         objc.super(ActionMenuButton, self).updateTrackingAreas()
@@ -1060,10 +1080,10 @@ class ActionMenuButton(NSButton):
         self.addTrackingArea_(area)
 
     def mouseEntered_(self, _event):
-        set_action_fill(self, MENU_FILL_HOVER)
+        set_action_fill(self.circle_layer, MENU_FILL_HOVER)
 
     def mouseExited_(self, _event):
-        set_action_fill(self, MENU_FILL_REST)
+        set_action_fill(self.circle_layer, MENU_FILL_REST)
 
 
 def result_pill(title, frame, scale, target, action):
@@ -2530,31 +2550,45 @@ class AppDelegate(NSObject):
         content.layer().setMasksToBounds_(True)
         content.layer().setContentsScale_(scale)
         panel.setContentView_(content)
+        from Quartz import CALayer
         buttons = []
         for row, action in enumerate(orb_action_menu()):
             bx, by, bw, bh = layout["buttons"][row]
             lx, ly, lw, lh = layout["labels"][row]
-            item = ActionMenuButton.alloc().initWithFrame_(NSMakeRect(bx - px, by - py, bw, bh))
-            item.setBordered_(False)
-            item.setTitle_("")
-            item.setImagePosition_(1)  # NSImageOnly
-            self._set_button_symbol(item, action["symbol"], action["title"])
-            item.setContentTintColor_(NSColor.whiteColor())
+            x0 = min(bx, lx)
+            x1 = max(bx + bw, lx + lw)
+            item = ActionMenuButton.alloc().initWithFrame_(NSMakeRect(x0 - px, by - py, x1 - x0, bh))
             item.setWantsLayer_(True)
-            item.layer().setCornerRadius_(bw / 2.0)
             item.layer().setContentsScale_(scale)
-            item.layer().setBackgroundColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, MENU_FILL_REST).CGColor())
+            circle = CALayer.layer()
+            circle.setFrame_(NSMakeRect(bx - x0, 0.0, bw, bh))
+            circle.setCornerRadius_(bw / 2.0)
+            circle.setContentsScale_(scale)
+            circle.setBackgroundColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, MENU_FILL_REST).CGColor())
+            item.layer().addSublayer_(circle)
+            item.circle_layer = circle
+            image = None
+            try:
+                image = NSImage.imageWithSystemSymbolName_accessibilityDescription_(action["symbol"], action["title"])
+            except Exception:
+                image = None
+            if image is not None:
+                icon = NSImageView.alloc().initWithFrame_(NSMakeRect(bx - x0 + 10.0, 10.0, bw - 20.0, bh - 20.0))
+                icon.setImage_(image)
+                icon.setImageScaling_(NSImageScaleProportionallyUpOrDown)
+                icon.setContentTintColor_(NSColor.whiteColor())
+                item.addSubview_(icon)
+            text = label(action["title"], NSMakeRect(lx - x0, (bh - lh) / 2.0, lw, lh), 13, NSColor.whiteColor(), weight=0.5)
+            text.setAlignment_(2 if layout["side"] == "left" else 0)  # labels sit away from the orb
+            item.addSubview_(text)
             item.setIdentifier_(action["id"])
-            item.setTarget_(self)
-            item.setAction_("actionMenuPick:")
+            item.pick_target = self
+            item.setAccessibilityElement_(True)
+            item.setAccessibilityRole_("AXButton")
             item.setAccessibilityLabel_(action["title"])
             item.setToolTip_(action["title"])
             content.addSubview_(item)
-            text = label(action["title"], NSMakeRect(lx - px, ly - py, lw, lh), 13, NSColor.whiteColor(), weight=0.5)
-            text.setAlignment_(2 if layout["side"] == "left" else 0)  # labels sit away from the orb
-            text.setAccessibilityElement_(False)  # the button already carries the title for VoiceOver
-            content.addSubview_(text)
-            end = (bx - px + bw / 2.0, by - py + bh / 2.0)
+            end = (x0 - px + (x1 - x0) / 2.0, by - py + bh / 2.0)
             buttons.append((item, end))
         self._action_menu_buttons = tuple(buttons)
 
@@ -2681,19 +2715,35 @@ class AppDelegate(NSObject):
 
     @objc.python_method
     def _run_action_menu_capture(self, ident):
-        """Area capture (crosshair), then the same handler the post-capture panel uses. Esc cancels and does nothing."""
+        """Every menu action starts here, with take_screenshot(mode="area") on the captures book. Off the main thread.
+
+        Esc or a zero-size selection is "cancelled" and does nothing. Each action then runs on its own path. Find Image
+        and Copy Image use the same functions as the Jev commands, and none of them opens the Jev window. Ask and the
+        two text actions go back to the main thread, because they show a panel.
+        """
+        print(f"  action menu: {ident} clicked")
         try:
-            import commands
-            sentence = commands.take_screenshot("area")
-            last = commands.BOOK.last or {}
-            path = str(last.get("path") or "") if capture_saved(sentence) else ""
+            from commands.captures import BOOK, ask_from_text, run_capture_menu, take_screenshot
+            print("  action menu: capture started (area)")
+            sentence = take_screenshot("area", book=BOOK)
+            outcome = capture_outcome(sentence)
+            if outcome != "saved":
+                print(f"  action menu: capture {outcome}")
+                return
+            path = str((BOOK.last or {}).get("path") or "")
+            print(f"  action menu: capture saved {os.path.basename(path)}")
+            if ident == "markup":
+                subprocess.run(["open", "-a", "Preview", path], check=False)  # until PR 5b's mark up overlay
+                print("  action menu: markup opened in Preview")
+                return
+            if ident == "share_copy":
+                print(f"  action menu: copy image: {run_capture_menu('share_copy', book=BOOK)}")
+                return
+            if ident == "ask_google":
+                print(f"  action menu: find image: {ask_from_text('ask google about this', book=BOOK)}")
+                return
         except Exception as exc:
-            print(f"  action menu capture failed: {exc}")
-            return
-        if not path:
-            return
-        if ident == "markup":
-            subprocess.run(["open", "-a", "Preview", path], check=False)  # until PR 5b's mark up overlay
+            print(f"  action menu: {ident} failed: {exc}")
             return
         payload = json.dumps({"id": ident, "path": path})
         self.performSelectorOnMainThread_withObject_waitUntilDone_("actionMenuCaptured:", payload, False)
@@ -2711,7 +2761,7 @@ class AppDelegate(NSObject):
             self._show_capture_choices()  # the usual thumbnail panel, with its question field open
             self._open_choice_question()
             return
-        self._queue_choice(ident)
+        print(f"  action menu: no handler for {ident}")
 
     # PR 5a (extra direction): Summarize and Translate. A dark rounded panel beside the orb, calm fade and scale.
     @objc.python_method
@@ -4353,7 +4403,8 @@ class AppDelegate(NSObject):
         try:
             import commands
             sentence = commands.choose_video()
-            chosen = getattr(commands.BOOK, "video", None)
+            from commands.captures import BOOK
+            chosen = getattr(BOOK, "video", None)
         except Exception as exc:
             sentence = "I couldn't open the video picker."
             chosen = None
@@ -4399,7 +4450,8 @@ class AppDelegate(NSObject):
     def _show_capture_choices(self):
         """Floating thumbnail and actions. Shown even when the main window is up and the pill is hidden."""
         import commands
-        last = commands.BOOK.last or {}
+        from commands.captures import BOOK
+        last = BOOK.last or {}
         path = last.get("path") or ""
         if not path:
             return

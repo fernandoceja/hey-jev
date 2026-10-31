@@ -671,6 +671,16 @@ def capture_saved(sentence):
     return text.startswith(("Saved a ", "Saved an ")) or text.startswith("Saved the recording")
 
 
+def capture_outcome(sentence):
+    """What a menu capture ended with, for the log: "saved", "cancelled" (Esc or a zero-size selection), or "failed"."""
+    text = " ".join(str(sentence or "").split())
+    if text == "Cancelled.":
+        return "cancelled"
+    if capture_saved(text):
+        return "saved"
+    return "failed"
+
+
 def choice_due(shown_at, now, hovered):
     """The choices panel closes after CHOICE_SECONDS unless the pointer is over it."""
     if hovered:

@@ -222,16 +222,19 @@ def test_a_click_on_an_action_closes_first_then_runs_the_capture():
 def test_the_menu_captures_through_the_existing_area_path_and_respects_esc():
     ui = _ui()
     run = _body(ui, "    def _run_action_menu_capture(self, ident):")
-    assert 'commands.take_screenshot("area")' in run
-    assert "capture_saved(sentence)" in run  # an Esc-cancelled capture returns "Cancelled." and does nothing
-    assert "if not path:" in run
+    assert 'take_screenshot("area", book=BOOK)' in run
+    assert "capture_outcome(sentence)" in run  # an Esc-cancelled capture returns "Cancelled." and does nothing
+    assert 'if outcome != "saved":' in run
 
 
-def test_ask_copy_and_find_reuse_the_post_capture_handlers():
+def test_menu_actions_never_send_worker_phrases_or_open_the_main_window():
     ui = _ui()
+    for header in ("    def _run_action_menu_capture(self, ident):", "    def actionMenuCaptured_(self, payload):"):
+        body = _body(ui, header)
+        for banned in ("_queue_choice", "controls.put", "showMain", "makeKeyAndOrderFront", "showCaptureResult"):
+            assert banned not in body, (header, banned)
     captured = _body(ui, "    def actionMenuCaptured_(self, payload):")
-    assert '_show_capture_choices()' in captured and '_open_choice_question()' in captured
-    assert "self._queue_choice(ident)" in captured  # share_copy and ask_google
+    assert "_show_capture_choices()" in captured and "_open_choice_question()" in captured  # Ask, the thumbnail panel
 
 
 def test_mark_up_opens_the_capture_in_preview_until_pr_5b():
@@ -265,9 +268,9 @@ def test_hover_lightens_the_fill_from_eight_to_eighteen_percent_in_point_one_two
     assert om.MENU_FILL_HOVER == 0.18
     assert om.MENU_HOVER_SECONDS == 0.12
     ui = _ui()
-    cls = _body(ui, "class ActionMenuButton(NSButton):")
-    assert "set_action_fill(self, MENU_FILL_HOVER)" in cls
-    assert "set_action_fill(self, MENU_FILL_REST)" in cls
+    cls = _body(ui, "class ActionMenuButton(NSView):")
+    assert "set_action_fill(self.circle_layer, MENU_FILL_HOVER)" in cls
+    assert "set_action_fill(self.circle_layer, MENU_FILL_REST)" in cls
 
 
 def test_click_away_uses_the_app_activation_notification_not_a_global_monitor():
@@ -366,3 +369,45 @@ def test_the_result_is_not_shown_in_the_jev_window():
     assert "_present_result" in start and "showBarSentence_" not in start and "controls.put" not in start
     ready = _body(ui, "    def resultReady_(self, payload):")
     assert "_present_result" in ready and "controls.put" not in ready
+
+
+# PR 5a hand-test fixes: every menu action starts the area capture, and each uses a real function.
+
+def test_copy_image_and_find_image_call_the_real_functions_in_the_capture_thread():
+    ui = _ui()
+    run = _body(ui, "    def _run_action_menu_capture(self, ident):")
+    assert "run_capture_menu('share_copy', book=BOOK)" in run
+    assert "ask_from_text('ask google about this', book=BOOK)" in run
+
+
+def test_the_capture_thread_logs_each_click_and_outcome():
+    ui = _ui()
+    run = _body(ui, "    def _run_action_menu_capture(self, ident):")
+    assert 'print(f"  action menu: {ident} clicked")' in run
+    assert '"  action menu: capture started (area)"' in run
+    assert 'print(f"  action menu: capture {outcome}")' in run  # cancelled or failed
+    assert 'print(f"  action menu: capture saved {os.path.basename(path)}")' in run
+
+
+def test_menu_actions_keep_the_orb_visible():
+    ui = _ui()
+    for header in ("    def _run_action_menu_capture(self, ident):", "    def actionMenuCaptured_(self, payload):",
+                   "    def actionMenuPick_(self, sender):"):
+        body = _body(ui, header)
+        assert "mini_panel" not in body and "orderOut_" not in body and "bar.dismiss" not in body, header
+
+
+def test_no_commands_package_book_reference_remains():
+    import re
+    ui = _ui()
+    assert re.search(r"commands\.BOOK\b", ui) is None
+    assert "from commands.captures import BOOK" in ui
+
+
+def test_the_button_is_a_view_with_a_hit_test_so_its_children_never_take_the_click():
+    ui = _ui()
+    cls = _body(ui, "class ActionMenuButton(NSView):")
+    assert "def hitTest_(self, point):" in cls
+    assert "def acceptsFirstMouse_(self, _event):" in cls
+    assert "return True" in _body(cls, "    def acceptsFirstMouse_(self, _event):")
+    assert "self.pick_target.actionMenuPick_(self)" in _body(cls, "    def mouseDown_(self, _event):")
