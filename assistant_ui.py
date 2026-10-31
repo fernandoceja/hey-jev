@@ -187,7 +187,8 @@ from orb_view import make_orb_view, orb_frame, orb_state
 from area_hotkey import AreaCaptureHotKey
 from orb_motion import (
     MENU_CORNER_RADIUS, MENU_FILL_HOVER, MENU_FILL_REST, MENU_FAN_START_SCALE, MENU_HOVER_SECONDS,
-    SPRING_MENU_FAN, menu_layout,
+    RESULT_FADE_SECONDS, RESULT_SCALE_FROM, SPRING_MENU_FAN, TEXT_ACTIONS, menu_layout, result_frames,
+    result_layout,
 )
 from mini_bar import menu_on_drop, orb_action_menu
 import full_window as fw
@@ -1065,6 +1066,23 @@ class ActionMenuButton(NSButton):
         set_action_fill(self, MENU_FILL_REST)
 
 
+def result_pill(title, frame, scale, target, action):
+    """Copy and Close on the result panel: a small rounded pill with a faint white fill."""
+    pill = NSButton.alloc().initWithFrame_(NSMakeRect(*frame))
+    pill.setBordered_(False)
+    pill.setTitle_(title)
+    pill.setFont_(NSFont.systemFontOfSize_weight_(12, 0.4))
+    pill.setContentTintColor_(NSColor.whiteColor())
+    pill.setWantsLayer_(True)
+    pill.layer().setCornerRadius_(frame[3] / 2.0)
+    pill.layer().setContentsScale_(scale)
+    pill.layer().setBackgroundColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.14).CGColor())
+    pill.setTarget_(target)
+    pill.setAction_(action)
+    pill.setAccessibilityLabel_(title)
+    return pill
+
+
 class ClickAwayView(NSView):
     def mouseDown_(self, event):
         self.window().makeFirstResponder_(None)  # clicking empty space takes focus out of the search and text boxes
@@ -1097,6 +1115,11 @@ class AppDelegate(NSObject):
     _action_menu_buttons = ()  # (button, centre in the panel's own coordinates), one per row
     _action_menu_monitors = ()
     _action_menu_observing = False  # the workspace activation observer is registered
+    # Summarize and Translate answer in a dark panel beside the orb, not in the Jev window.
+    _result_panel = None
+    _result_open = False
+    _result_heading = ""
+    _result_text = ""
     _action_menu_shown_at = 0.0
     _orb_dragging = False
 
@@ -1936,6 +1959,9 @@ class AppDelegate(NSObject):
             return None
 
         if event.keyCode() == 53:
+            if self._result_open:
+                self._close_result_panel()
+                return None
             if self._action_menu_open:
                 self._close_action_menu()
                 return None
@@ -2678,11 +2704,146 @@ class AppDelegate(NSObject):
         except ValueError:
             return
         ident = str(data.get("id") or "")
+        if ident in TEXT_ACTIONS:
+            self._start_text_action(ident)
+            return
         if ident == "ask_jev":
             self._show_capture_choices()  # the usual thumbnail panel, with its question field open
             self._open_choice_question()
             return
         self._queue_choice(ident)
+
+    # PR 5a (extra direction): Summarize and Translate. A dark rounded panel beside the orb, calm fade and scale.
+    @objc.python_method
+    def _build_result_panel(self):
+        style = NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel
+        panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
+            NSMakeRect(0, 0, 300, 200), style, NSBackingStoreBuffered, False)
+        panel.setLevel_(BAR_LEVEL)
+        panel.setFloatingPanel_(True)
+        panel.setHidesOnDeactivate_(False)
+        panel.setBecomesKeyOnlyIfNeeded_(True)
+        panel.setOpaque_(False)
+        panel.setBackgroundColor_(NSColor.clearColor())
+        panel.setHasShadow_(True)
+        panel.setCollectionBehavior_(BAR_COLLECTION)
+        panel.setReleasedWhenClosed_(False)
+        panel.setAccessibilityLabel_("Jev result")
+        self._result_panel = panel
+        return panel
+
+    @objc.python_method
+    def _fill_result_panel(self, heading, text):
+        panel = self._result_panel
+        frames = result_frames(text)
+        pw, ph = frames["panel"]
+        scale = float(panel.backingScaleFactor())
+        if NSWorkspace.sharedWorkspace().accessibilityDisplayShouldReduceTransparency():
+            content = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, pw, ph))
+            content.setWantsLayer_(True)
+            content.layer().setBackgroundColor_(NSColor.colorWithCalibratedWhite_alpha_(0.12, 0.96).CGColor())
+        else:
+            content = NSVisualEffectView.alloc().initWithFrame_(NSMakeRect(0, 0, pw, ph))
+            content.setMaterial_(NSVisualEffectMaterialHUDWindow)
+            content.setBlendingMode_(NSVisualEffectBlendingModeBehindWindow)
+            content.setState_(NSVisualEffectStateActive)
+            content.setWantsLayer_(True)
+        content.layer().setCornerRadius_(MENU_CORNER_RADIUS)
+        content.layer().setMasksToBounds_(True)
+        content.layer().setContentsScale_(scale)
+        head = label(heading, NSMakeRect(*frames["heading"]), 14, NSColor.whiteColor(), weight=0.8)
+        body = NSTextField.wrappingLabelWithString_(text)
+        body.setFrame_(NSMakeRect(*frames["body"]))
+        body.setFont_(NSFont.systemFontOfSize_(13))
+        body.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(0.86, 1.0))
+        copy = result_pill("Copy", frames["copy"], scale, self, "resultCopy:")
+        close = result_pill("Close", frames["close"], scale, self, "resultClose:")
+        for view in (head, body, copy, close):
+            content.addSubview_(view)
+        panel.setContentView_(content)
+
+    @objc.python_method
+    def _present_result(self, heading, text, animate):
+        if self._result_panel is None:
+            self._build_result_panel()
+        window = getattr(self, "mini_panel", None)
+        if window is None:
+            return
+        frame = window.frame()
+        orb = (float(frame.origin.x), float(frame.origin.y), float(frame.size.width), float(frame.size.height))
+        screens = self._visible_screens() or [(0.0, 0.0, 1440.0, 900.0)]
+        screen = screen_for_frame(orb, screens) or screens[0]
+        layout = result_layout(orb, screen, text)
+        self._result_heading = heading
+        self._result_text = text
+        self._fill_result_panel(heading, text)
+        px, py, pw, ph = layout["panel"]
+        self._result_panel.setFrame_display_(NSMakeRect(px, py, pw, ph), True)
+        self._result_open = True
+        self._result_panel.orderFrontRegardless()
+        orb_view = getattr(self, "orb_view", None)
+        if animate and not bool(getattr(orb_view, "reduceMotion", False)):
+            self._animate_result_in(self._result_panel.contentView().layer())
+
+    @objc.python_method
+    def _animate_result_in(self, layer):
+        """Fade in and scale 0.96 to 1 over RESULT_FADE_SECONDS, easeOut. No spring: the result panel stays calm."""
+        from Quartz import CABasicAnimation, CAMediaTimingFunction
+        grow = CABasicAnimation.animationWithKeyPath_("transform.scale")
+        grow.setFromValue_(RESULT_SCALE_FROM)
+        grow.setToValue_(1.0)
+        grow.setDuration_(RESULT_FADE_SECONDS)
+        grow.setTimingFunction_(CAMediaTimingFunction.functionWithName_("easeOut"))
+        fade = CABasicAnimation.animationWithKeyPath_("opacity")
+        fade.setFromValue_(0.0)
+        fade.setToValue_(1.0)
+        fade.setDuration_(RESULT_FADE_SECONDS)
+        fade.setTimingFunction_(CAMediaTimingFunction.functionWithName_("easeOut"))
+        layer.addAnimation_forKey_(grow, "resultScale")
+        layer.addAnimation_forKey_(fade, "resultFade")
+
+    @objc.python_method
+    def _close_result_panel(self):
+        panel = self._result_panel
+        if panel is not None and panel.isVisible():
+            panel.orderOut_(None)
+        self._result_open = False
+
+    def resultClose_(self, _sender):
+        self._close_result_panel()
+
+    def resultCopy_(self, _sender):
+        pasteboard = NSPasteboard.generalPasteboard()
+        pasteboard.clearContents()
+        pasteboard.setString_forType_(self._result_text, NSPasteboardTypeString)
+        self._close_result_panel()
+
+    @objc.python_method
+    def _start_text_action(self, ident):
+        """The capture is saved. Show the panel at once, then ask Jev about the picture on the existing path."""
+        heading = TEXT_ACTIONS[ident][0]
+        self._present_result(heading, "Reading the capture...", True)
+        threading.Thread(target=self._run_text_action, args=(ident,), daemon=True).start()
+
+    @objc.python_method
+    def _run_text_action(self, ident):
+        _heading, prompt = TEXT_ACTIONS[ident]
+        try:
+            from commands.captures import ask_jev_from_text
+            answer = ask_jev_from_text("ask jev about this", question=prompt)
+        except Exception as exc:
+            answer = "I couldn't do that."
+            print(f"  text action failed: {exc}")
+        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+            "resultReady:", json.dumps({"text": str(answer or "")}), False)
+
+    def resultReady_(self, payload):
+        try:
+            text = str(json.loads(str(payload)).get("text") or "")
+        except ValueError:
+            return
+        if self._result_open:
+            self._present_result(self._result_heading, text, False)
 
     # PR 3b: peek-dock. A snapped orb on a free screen edge tucks most of itself off-screen, and slides back
     # in when the cursor comes near. Reduce Motion fades in place instead of sliding. A tucked orb is never busy.

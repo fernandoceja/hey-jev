@@ -471,7 +471,7 @@ MENU_HOVER_SECONDS = 0.12
 MENU_CORNER_RADIUS = 14.0
 
 
-def menu_layout(orb_frame, screen, n=4, button=MENU_BUTTON, gap=MENU_GAP):
+def menu_layout(orb_frame, screen, n=6, button=MENU_BUTTON, gap=MENU_GAP):
     """Frames for the action menu beside the orb.
 
     Returns a dict: "panel" (x, y, w, h), "buttons" and "labels" (one (x, y, w, h) each, top row first),
@@ -512,3 +512,72 @@ def menu_layout(orb_frame, screen, n=4, button=MENU_BUTTON, gap=MENU_GAP):
         "side": side,
         "delays": delays,
     }
+
+
+# PR 5a (extra direction): text actions. Summarize and Translate answer in a dark result panel beside the orb.
+RESULT_WIDTH = 300.0
+RESULT_PAD = 14.0  # inset, and also the corner radius of the panel
+RESULT_HEADING_HEIGHT = 20.0
+RESULT_HEADING_GAP = 8.0  # heading to body
+RESULT_LINE_HEIGHT = 17.0
+RESULT_CHARS_PER_LINE = 44  # rough count at 13 pt across RESULT_WIDTH minus the insets
+RESULT_MIN_LINES = 2
+RESULT_MAX_LINES = 12
+RESULT_PILL_HEIGHT = 28.0
+RESULT_PILL_WIDTH = 76.0
+RESULT_PILL_GAP = 8.0
+RESULT_BODY_PILL_GAP = 12.0  # body bottom to the pill row
+RESULT_FADE_SECONDS = 0.15  # fade and scale only; no spring on the result panel
+RESULT_SCALE_FROM = 0.96
+
+TEXT_ACTIONS = {
+    "summarize": ("Summary", "Summarize this"),
+    "translate": ("Translation", "Translate this to English"),
+}
+
+
+def result_body_lines(text):
+    """Estimated wrapped line count for the result body, clamped to RESULT_MIN_LINES..RESULT_MAX_LINES."""
+    lines = 0
+    for paragraph in str(text or "").split("\n"):
+        lines += max(1, -(-len(paragraph) // RESULT_CHARS_PER_LINE))
+    return min(RESULT_MAX_LINES, max(RESULT_MIN_LINES, lines))
+
+
+def result_height(text):
+    """Panel height: pad, pill row, gap, body, heading gap, heading, pad."""
+    body = result_body_lines(text) * RESULT_LINE_HEIGHT
+    return (2.0 * RESULT_PAD + RESULT_PILL_HEIGHT + RESULT_BODY_PILL_GAP + body
+            + RESULT_HEADING_GAP + RESULT_HEADING_HEIGHT)
+
+
+def result_frames(text, width=RESULT_WIDTH):
+    """Frames inside the result panel, in its own coordinates. Keys: heading, body, copy, close."""
+    height = result_height(text)
+    body_h = result_body_lines(text) * RESULT_LINE_HEIGHT
+    body_y = RESULT_PAD + RESULT_PILL_HEIGHT + RESULT_BODY_PILL_GAP
+    heading_y = body_y + body_h + RESULT_HEADING_GAP
+    inner = width - 2.0 * RESULT_PAD
+    return {
+        "panel": (width, height),
+        "heading": (RESULT_PAD, heading_y, inner, RESULT_HEADING_HEIGHT),
+        "body": (RESULT_PAD, body_y, inner, body_h),
+        "copy": (RESULT_PAD, RESULT_PAD, RESULT_PILL_WIDTH, RESULT_PILL_HEIGHT),
+        "close": (RESULT_PAD + RESULT_PILL_WIDTH + RESULT_PILL_GAP, RESULT_PAD,
+                  RESULT_PILL_WIDTH, RESULT_PILL_HEIGHT),
+    }
+
+
+def result_layout(orb_frame, screen, text, width=RESULT_WIDTH, gap=MENU_GAP):
+    """Result panel frame beside the orb, on the side popover_side picks, clamped on screen."""
+    from mini_bar import popover_side  # lazy: mini_bar imports this module at load time
+    ox, oy, ow, oh = (float(v) for v in orb_frame)
+    sx, sy, sw, sh = (float(v) for v in screen)
+    frames = result_frames(text, width)
+    pw, ph = frames["panel"]
+    side = popover_side((ox, oy, ow, oh), pw, (sx, sy, sw, sh))
+    px = ox + ow + gap if side == "right" else ox - gap - pw
+    px = min(max(px, sx + MENU_SCREEN_INSET), sx + sw - MENU_SCREEN_INSET - pw)
+    py = oy + oh / 2.0 - ph / 2.0
+    py = min(max(py, sy + MENU_SCREEN_INSET), sy + sh - MENU_SCREEN_INSET - ph)
+    return {"panel": (px, py, pw, ph), "side": side}

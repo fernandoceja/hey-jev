@@ -742,10 +742,13 @@ def capture_choice_actions(ask_jev=True, video=False):
 def orb_action_menu():
     """The rows of the action menu that fans out after a drop (PR 5a), in order top to bottom.
 
-    Ask, Copy Image and Find Image reuse the ids of the post-capture panel. Mark up has no panel row yet (PR 5b).
+    Ask, Copy Image and Find Image reuse the ids of the post-capture panel. Summarize and Translate answer in
+    the result panel beside the orb. Mark up has no panel row yet (PR 5b).
     """
     return [
         {"id": "ask_jev", "title": "Ask", "symbol": "bubble.left"},
+        {"id": "summarize", "title": "Summarize", "symbol": "text.alignleft"},
+        {"id": "translate", "title": "Translate", "symbol": "character.bubble"},
         {"id": "share_copy", "title": "Copy Image", "symbol": "doc.on.doc"},
         {"id": "ask_google", "title": "Find Image", "symbol": "magnifyingglass"},
         {"id": "markup", "title": "Mark up", "symbol": "pencil.tip"},

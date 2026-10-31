@@ -31,10 +31,12 @@ def _body(source, header):
 
 # The four rows, in order.
 
-def test_the_action_menu_is_exactly_four_rows_in_order():
+def test_the_action_menu_is_exactly_six_rows_in_order():
     rows = orb_action_menu()
     assert [(row["id"], row["title"]) for row in rows] == [
         ("ask_jev", "Ask"),
+        ("summarize", "Summarize"),
+        ("translate", "Translate"),
         ("share_copy", "Copy Image"),
         ("ask_google", "Find Image"),
         ("markup", "Mark up"),
@@ -43,14 +45,15 @@ def test_the_action_menu_is_exactly_four_rows_in_order():
 
 def test_each_row_has_the_sf_symbol_from_the_plan():
     symbols = [row["symbol"] for row in orb_action_menu()]
-    assert symbols == ["bubble.left", "doc.on.doc", "magnifyingglass", "pencil.tip"]
+    assert symbols == ["bubble.left", "text.alignleft", "character.bubble", "doc.on.doc", "magnifyingglass", "pencil.tip"]
 
 
-def test_menu_ids_reuse_the_post_capture_panel_except_mark_up():
+def test_menu_ids_reuse_the_post_capture_panel_except_the_new_rows():
     panel_ids = {row["id"] for row in capture_choice_actions(ask_jev=True)}
+    new_rows = {"markup", "summarize", "translate"}  # not on the post-capture panel: PR 5b, and the text actions
     for row in orb_action_menu():
-        if row["id"] == "markup":
-            assert row["id"] not in panel_ids  # PR 5b adds the overlay; until then the id is handled in assistant_ui
+        if row["id"] in new_rows:
+            assert row["id"] not in panel_ids
         else:
             assert row["id"] in panel_ids
 
@@ -64,11 +67,11 @@ def test_menu_on_drop_is_true_only_for_a_real_drag():
 
 # The fan-out layout.
 
-def test_stagger_delays_are_zero_30_60_and_90_milliseconds():
+def test_stagger_delays_run_thirty_milliseconds_apart_for_six_rows():
     layout = om.menu_layout((600.0, 400.0, 72.0, 72.0), SCREEN)
-    assert layout["delays"] == pytest.approx([0.0, 0.03, 0.06, 0.09])
-    assert len(layout["buttons"]) == 4
-    assert len(layout["labels"]) == 4
+    assert layout["delays"] == pytest.approx([0.0, 0.03, 0.06, 0.09, 0.12, 0.15])
+    assert len(layout["buttons"]) == 6
+    assert len(layout["labels"]) == 6
 
 
 def test_buttons_are_round_forty_points_with_ten_point_gaps():
@@ -78,8 +81,8 @@ def test_buttons_are_round_forty_points_with_ten_point_gaps():
         assert (w, h) == (40.0, 40.0)
         tops.append(y)
     # Top row first: each row sits 50 pt (40 + 10) below the one above it.
-    gaps = [tops[i] - tops[i + 1] for i in range(3)]
-    assert gaps == pytest.approx([50.0, 50.0, 50.0])
+    gaps = [tops[i] - tops[i + 1] for i in range(5)]
+    assert gaps == pytest.approx([50.0] * 5)
 
 
 def test_the_menu_opens_to_the_right_of_an_orb_near_the_left_edge():
@@ -276,3 +279,90 @@ def test_click_away_uses_the_app_activation_notification_not_a_global_monitor():
     closed = _body(ui, "    def _close_action_menu(self):")
     assert "removeObserver_name_object_" in closed
     assert "def actionMenuAppActivated_" in ui
+
+
+# PR 5a extra direction: Summarize and Translate, and the dark result panel.
+
+def test_the_text_actions_use_the_exact_prompts_and_headings():
+    from orb_motion import TEXT_ACTIONS
+    assert TEXT_ACTIONS["summarize"] == ("Summary", "Summarize this")
+    assert TEXT_ACTIONS["translate"] == ("Translation", "Translate this to English")
+
+
+def test_the_result_panel_fits_the_text_and_stays_on_screen():
+    for text in ("", "Short.", "x" * 500, "line\n" * 40):
+        frames = om.result_frames(text)
+        pw, ph = frames["panel"]
+        assert pw == om.RESULT_WIDTH
+        assert ph == om.result_height(text)
+        bx, by, bw, bh = frames["body"]
+        assert by >= om.RESULT_PAD + om.RESULT_PILL_HEIGHT  # the body clears the pill row
+        hx, hy, hw, hh = frames["heading"]
+        assert hy + hh <= ph - om.RESULT_PAD + 1e-6  # the heading stays inside the top pad
+        assert by + bh <= hy  # the body sits below the heading
+
+
+def test_the_result_body_line_count_is_clamped():
+    assert om.result_body_lines("") == om.RESULT_MIN_LINES
+    assert om.result_body_lines("x" * 10000) == om.RESULT_MAX_LINES
+    assert om.result_body_lines("one\ntwo\nthree") == 3
+
+
+@pytest.mark.parametrize("orb", [(600.0, 400.0, 72.0, 72.0), (1400.0, 400.0, 72.0, 72.0), (0.0, 0.0, 72.0, 72.0)])
+def test_the_result_panel_sits_beside_the_orb_and_on_screen(orb):
+    layout = om.result_layout(orb, SCREEN, "Some summary text")
+    px, py, pw, ph = layout["panel"]
+    assert px >= SCREEN[0] and px + pw <= SCREEN[0] + SCREEN[2]
+    assert py >= SCREEN[1] and py + ph <= SCREEN[1] + SCREEN[3]
+    assert px + pw <= orb[0] or px >= orb[0] + orb[2]  # clear of the orb on one side
+
+
+def test_the_result_timing_is_a_short_fade_and_scale_without_a_spring():
+    assert om.RESULT_FADE_SECONDS == 0.15
+    assert om.RESULT_SCALE_FROM == 0.96
+    ui = _ui()
+    anim = _body(ui, "    def _animate_result_in(self, layer):")
+    assert "CABasicAnimation" in anim and "CASpringAnimation" not in anim
+    assert "RESULT_FADE_SECONDS" in anim and "RESULT_SCALE_FROM" in anim
+
+
+def test_the_result_panel_is_dark_rounded_and_nonactivating():
+    ui = _ui()
+    build = _body(ui, "    def _build_result_panel(self):")
+    assert "NSWindowStyleMaskNonactivatingPanel" in build
+    assert "panel.setLevel_(BAR_LEVEL)" in build
+    fill = _body(ui, "    def _fill_result_panel(self, heading, text):")
+    assert "NSVisualEffectMaterialHUDWindow" in fill
+    assert "MENU_CORNER_RADIUS" in fill  # 14 pt
+    assert "setContentsScale_(scale)" in fill
+    assert "NSFont.systemFontOfSize_(13)" in fill  # body
+    assert "weight=0.8" in fill  # bold white heading
+    assert "0.86" in fill  # light grey body
+
+
+def test_copy_and_close_pills_and_esc_close_the_result():
+    ui = _ui()
+    assert '"Copy", frames["copy"]' in _body(ui, "    def _fill_result_panel(self, heading, text):")
+    assert '"Close", frames["close"]' in _body(ui, "    def _fill_result_panel(self, heading, text):")
+    copy = _body(ui, "    def resultCopy_(self, _sender):")
+    assert "NSPasteboard.generalPasteboard()" in copy and "NSPasteboardTypeString" in copy
+    local = _body(ui, "    def _local_key(self, event):")
+    assert "self._close_result_panel()" in local
+
+
+def test_summarize_and_translate_use_the_existing_ask_path_with_the_prompt():
+    ui = _ui()
+    run = _body(ui, "    def _run_text_action(self, ident):")
+    assert "ask_jev_from_text(\"ask jev about this\", question=prompt)" in run
+    assert "from commands.captures import ask_jev_from_text" in run
+    captured = _body(ui, "    def actionMenuCaptured_(self, payload):")
+    assert "if ident in TEXT_ACTIONS:" in captured
+    assert "self._start_text_action(ident)" in captured
+
+
+def test_the_result_is_not_shown_in_the_jev_window():
+    ui = _ui()
+    start = _body(ui, "    def _start_text_action(self, ident):")
+    assert "_present_result" in start and "showBarSentence_" not in start and "controls.put" not in start
+    ready = _body(ui, "    def resultReady_(self, payload):")
+    assert "_present_result" in ready and "controls.put" not in ready
