@@ -33,6 +33,9 @@ from AppKit import (
     NSCursor,
     NSRoundLineCapStyle,
     NSRoundLineJoinStyle,
+    NSTextAlignmentCenter,
+    NSTrackingCursorUpdate,
+    NSTrackingMouseMoved,
     NSEvent,
     NSEventMaskFlagsChanged,
     NSEventMaskKeyDown,
@@ -1146,6 +1149,13 @@ class MarkupWindow(NSWindow):
         return False
 
 
+class MarkupHint(NSTextField):
+    """The one-line hint at the top of the overlay. It never takes a click, so the drawing under it still gets it."""
+
+    def hitTest_(self, _point):
+        return None
+
+
 class MarkupView(NSView):
     """Covers one screen. Draws every stroke in its own coordinates and passes mouse and keys to the delegate.
 
@@ -1162,11 +1172,25 @@ class MarkupView(NSView):
     def acceptsFirstMouse_(self, _event):
         return True
 
+    def acceptsFirstResponder(self):
+        return True
+
     def isOpaque(self):
         return False
 
     def resetCursorRects(self):
         self.addCursorRect_cursor_(self.bounds(), NSCursor.crosshairCursor())
+
+    def updateTrackingAreas(self):
+        objc.super(MarkupView, self).updateTrackingAreas()
+        for area in list(self.trackingAreas() or []):
+            self.removeTrackingArea_(area)
+        options = NSTrackingCursorUpdate | NSTrackingMouseMoved | NSTrackingActiveAlways | NSTrackingInVisibleRect
+        self.addTrackingArea_(NSTrackingArea.alloc().initWithRect_options_owner_userInfo_(
+            NSMakeRect(0, 0, 0, 0), options, self, None))
+
+    def cursorUpdate_(self, _event):
+        NSCursor.crosshairCursor().set()
 
     def mouseMoved_(self, _event):
         NSCursor.crosshairCursor().set()
@@ -2915,8 +2939,10 @@ class AppDelegate(NSObject):
                 frame, NSWindowStyleMaskBorderless, NSBackingStoreBuffered, False)
             window.setLevel_(MARKUP_LEVEL)
             window.setOpaque_(False)
-            window.setBackgroundColor_(NSColor.clearColor())
+            # Near-clear rather than clear: a fully transparent window can let clicks fall through to the app underneath.
+            window.setBackgroundColor_(NSColor.colorWithCalibratedWhite_alpha_(0.0, 0.01))
             window.setHasShadow_(False)
+            window.setIgnoresMouseEvents_(False)
             window.setReleasedWhenClosed_(False)
             window.setAcceptsMouseMovedEvents_(True)
             window.setCollectionBehavior_(NSWindowCollectionBehaviorFullScreenAuxiliary)
@@ -2935,12 +2961,40 @@ class AppDelegate(NSObject):
             fx, fy, fw, fh = float(frame.origin.x), float(frame.origin.y), float(frame.size.width), float(frame.size.height)
             if key_window is None and fx <= pointer.x < fx + fw and fy <= pointer.y < fy + fh:
                 key_window = window
-        (key_window or self._markup_windows[0]).makeKeyAndOrderFront_(None)
+        key_window = key_window or self._markup_windows[0]
+        # The hint goes on the screen with the pointer, at the top centre, so the mode is obvious at once.
+        key_view = key_window.contentView()
+        key_view.addSubview_(self._markup_hint_for(key_view))
+        key_window.makeKeyAndOrderFront_(None)
         NSApp.activateIgnoringOtherApps_(True)
+        key_window.makeFirstResponder_(key_view)
         for window in self._markup_windows:
             window.invalidateCursorRectsForView_(window.contentView())
         NSCursor.crosshairCursor().set()
-        print(f"  markup: opened on {len(self._markup_windows)} screen(s)")
+        print(f"  markup: opened on {len(self._markup_windows)} screen(s), key screen {self._markup_windows.index(key_window) + 1}")
+
+    @objc.python_method
+    def _markup_hint_for(self, view):
+        """A dark pill with white text, centred at the top of the view. Its layer is native and sets contentsScale."""
+        text = "Draw · ⌘Z undo · Return save · Esc cancel"
+        width = 380.0
+        height = 30.0
+        bounds = view.bounds()
+        hint = MarkupHint.alloc().initWithFrame_(NSMakeRect(
+            (bounds.size.width - width) / 2.0, bounds.size.height - height - 60.0, width, height))
+        hint.setStringValue_(text)
+        hint.setEditable_(False)
+        hint.setSelectable_(False)
+        hint.setBezeled_(False)
+        hint.setDrawsBackground_(False)
+        hint.setAlignment_(NSTextAlignmentCenter)
+        hint.setFont_(NSFont.systemFontOfSize_weight_(13, 0.4))
+        hint.setTextColor_(NSColor.whiteColor())
+        hint.setWantsLayer_(True)
+        hint.layer().setContentsScale_(float(view.window().backingScaleFactor()))
+        hint.layer().setCornerRadius_(height / 2.0)
+        hint.layer().setBackgroundColor_(NSColor.colorWithCalibratedWhite_alpha_(0.0, 0.72).CGColor())
+        return hint
 
     @objc.python_method
     def _markup_live(self):
@@ -2955,6 +3009,7 @@ class AppDelegate(NSObject):
     @objc.python_method
     def _markup_begin(self, point):
         if self._markup_live():
+            print(f"  markup: mouse down at ({point[0]:.0f}, {point[1]:.0f})")
             self._markup_strokes.begin(point)
             self._markup_sync()
 
@@ -2968,6 +3023,7 @@ class AppDelegate(NSObject):
         if self._markup_live():
             self._markup_strokes.end()
             self._markup_sync()
+            print(f"  markup: mouse up, {self._markup_strokes.count()} stroke(s)")
 
     @objc.python_method
     def _markup_undo(self):
@@ -2984,13 +3040,16 @@ class AppDelegate(NSObject):
             return False
         flags = int(event.modifierFlags())
         if flags & NSEventModifierFlagCommand and str(event.charactersIgnoringModifiers() or "").lower() == "z":
+            print("  markup: key command-Z")
             self._markup_undo()
             return True
         code = int(event.keyCode())
         if code == 53:  # Esc
+            print("  markup: key Esc")
             self._markup_cancel()
             return True
         if code in (36, 76):  # Return, keypad Enter
+            print("  markup: key Return")
             self._markup_save()
             return True
         return False

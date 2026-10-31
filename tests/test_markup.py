@@ -168,7 +168,7 @@ def test_the_overlay_sits_at_level_101_with_full_screen_auxiliary_and_a_clear_ba
     section = _markup_section(source)
     assert "window.setLevel_(MARKUP_LEVEL)" in section
     assert "NSWindowCollectionBehaviorFullScreenAuxiliary" in section
-    assert "NSColor.clearColor()" in section
+    assert "colorWithCalibratedWhite_alpha_(0.0, 0.01)" in section  # near-clear: see test_the_overlay_takes_input
     assert "NSCursor.crosshairCursor()" in section
 
 
@@ -217,3 +217,32 @@ def test_nothing_in_the_markup_code_uploads_or_opens_the_network():
     section = _markup_section(_ui_source())
     for banned in ("urlopen", "requests.", "http://", "https://", "NSURLSession", "socket"):
         assert banned not in section, banned
+
+
+def test_the_overlay_takes_input_and_is_not_click_through():
+    section = _markup_section(_ui_source())
+    assert "def canBecomeKeyWindow(self):" in section and "def acceptsFirstResponder(self):" in section
+    assert "window.setIgnoresMouseEvents_(False)" in section
+    assert "colorWithCalibratedWhite_alpha_(0.0, 0.01)" in section  # near-clear, not fully transparent
+    assert "key_window.makeKeyAndOrderFront_(None)" in section and "NSApp.activateIgnoringOtherApps_(True)" in section
+    assert "self._markup_windows.append(window)" in section  # strong reference, so it is not collected
+
+
+def test_the_hint_never_takes_a_click_and_the_cursor_stays_a_crosshair():
+    section = _markup_section(_ui_source())
+    assert "class MarkupHint(NSTextField)" in section
+    assert "def hitTest_(self, _point):" in section and "return None" in section
+    assert "Draw · ⌘Z undo · Return save · Esc cancel" in section
+    assert "NSTrackingCursorUpdate" in section and "def cursorUpdate_" in section
+    assert "NSCursor.crosshairCursor().set()" in section
+
+
+def test_mouse_down_key_and_stroke_count_are_logged():
+    section = _markup_section(_ui_source())
+    for line in ("markup: mouse down at", "markup: mouse up,", "markup: key Esc", "markup: key Return", "markup: key command-Z"):
+        assert line in section, line
+
+
+def test_the_orb_panel_level_and_floating_flags_are_not_touched_in_the_markup_code():
+    section = _markup_section(_ui_source())
+    assert "self.mini_panel" not in section and "setFloatingPanel_(True)" not in section
