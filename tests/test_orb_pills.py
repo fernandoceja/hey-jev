@@ -82,11 +82,15 @@ class DragAndMenuWiringTests(unittest.TestCase):
         self.assertIn('functionWithName_("easeOut")', ended)
         self.assertIn("PILL_SLIDE_SECONDS = 0.18", ui)
 
-    def test_right_click_menu_lists_the_popover_actions(self):
-        menu = _func(_source("assistant_ui.py"), "_orb_context_menu")
-        for title in ("Open Jev", "New Chat", "Capture Area", "Mark Up", "Type to Jev", "Settings", "Quit Jev"):
-            self.assertIn(title, menu)
-        self.assertIn("NSApp", menu)
+    def test_right_click_panel_rows_reuse_the_existing_action_selectors(self):
+        from orb_spotlight import SPOTLIGHT_ROWS
+        ui = _source("assistant_ui.py")
+        titles = [row[0] for row in SPOTLIGHT_ROWS]
+        self.assertEqual(titles, ["Open Jev", "New Chat", "Capture Area", "Mark Up", "Type to Jev", "Settings", "Quit"])
+        for _title, selector, _symbol, _hint in SPOTLIGHT_ROWS:
+            if selector == "terminate:":
+                continue  # NSApp's own action
+            self.assertIn("def " + selector.replace(":", "_") + "(", ui, selector)
 
     def test_presentation_pass_holds_the_docked_orb(self):
         ui = _source("assistant_ui.py")

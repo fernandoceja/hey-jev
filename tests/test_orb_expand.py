@@ -178,7 +178,7 @@ class ExpandWiringTests(unittest.TestCase):
     def test_single_click_expands_and_right_click_opens_the_popover(self):
         self.assertIn("expandOrbToFull_", _func(self.ui, "_collapsed_click_or_drag"))
         right = _func(self.ui, "rightMouseDown_")
-        self.assertIn("_orb_context_menu", right)  # PR 8: right-click opens a native menu at the cursor
+        self.assertIn("_open_orb_spotlight", right)  # PR 8: right-click opens the Spotlight-style Jev panel
         self.assertNotIn("expandMiniBar_", right)
         self.assertIn("not docked", right)
 

@@ -100,6 +100,7 @@ from AppKit import (
     NSWindowStyleMaskResizable,
     NSWindowStyleMaskTitled,
 )
+from Foundation import NSSelectorFromString, NSStringFromSelector
 from Foundation import NSInsetRect, NSAttributedString, NSMutableAttributedString, NSString, NSMakeSize, NSObject, NSURL, NSTimer, NSUserDefaults, NSDate, NSDefaultRunLoopMode
 from assistant_layout import (
     DEFAULT_H,
@@ -712,17 +713,15 @@ class MiniBarBackground(NSView):
         delegate.collapseOrbFromFull_(self)
 
     def rightMouseDown_(self, event):
-        """Right-click on the orb opens a native menu at the cursor (PR 8). The popover stays on Control-Option-J.
+        """Right-click on the orb opens the Spotlight-style Jev panel (PR 8). The popover stays on Control-Option-J.
 
         A docked orb ignores it, as before.
         """
         window = self.window()
         delegate = window.delegate() if window is not None else None
         docked = getattr(delegate, "_orb_docked_now", lambda: False)()
-        if delegate is not None and hasattr(delegate, "_orb_context_menu") and not docked:
-            menu = delegate._orb_context_menu()
-            print("  orb menu: right-click opened the native menu at the cursor", flush=True)
-            NSMenu.popUpContextMenu_withEvent_forView_(menu, event, self)
+        if delegate is not None and hasattr(delegate, "_open_orb_spotlight") and not docked:
+            delegate._open_orb_spotlight()  # PR 8: the Spotlight-style Jev panel beside the orb
             return
         objc.super(MiniBarBackground, self).rightMouseDown_(event)
 
@@ -2441,28 +2440,231 @@ class AppDelegate(NSObject):
         self.captureAreaWand_(None)
 
     @objc.python_method
-    def _orb_context_menu(self):
-        """The orb's right-click menu (PR 8): the popover's useful actions as a native menu. Control-Option-J keeps the popover."""
-        menu = NSMenu.alloc().initWithTitle_("Jev")
+    def _open_orb_spotlight(self):
+        """Right-click on the orb: a Spotlight-style Jev panel beside it (PR 8). Logs open, then close and pick."""
+        from orb_spotlight import (SPOTLIGHT_FADE_SECONDS, SPOTLIGHT_FIELD_H, SPOTLIGHT_PAD, SPOTLIGHT_RADIUS,
+                                   SPOTLIGHT_ROW_H, SPOTLIGHT_ROWS, SPOTLIGHT_START_SCALE, spotlight_frame)
+        from Quartz import CABasicAnimation, CAMediaTimingFunction
+        if getattr(self, "_spotlight", None) is not None:
+            self._close_orb_spotlight("reopen")
+        panel_frame = getattr(self, "mini_panel", None)
+        if panel_frame is None:
+            return
+        orb_rect = self._frame_tuple(panel_frame.frame())
+        screens = self._visible_screens()
+        screen = screen_for_frame(orb_rect, screens) if screens else None
+        visible = screen or (0.0, 0.0, 1440.0, 900.0)
+        x, y, w, h = spotlight_frame(orb_rect, visible)
 
-        def add(title, action, key="", command=False, target=self):
-            item = menu.addItemWithTitle_action_keyEquivalent_(title, action, key)
-            item.setTarget_(target)
-            if command:
-                item.setKeyEquivalentModifierMask_(NSEventModifierFlagCommand)
-            return item
+        win = OrbSpotlightPanel.alloc().initWithContentRect_styleMask_backing_defer_(
+            NSMakeRect(x, y, w, h), NSWindowStyleMaskBorderless, NSBackingStoreBuffered, False)
+        win.setOpaque_(False)
+        win.setBackgroundColor_(NSColor.clearColor())
+        win.setHasShadow_(True)  # the soft shadow follows the rounded glass
+        win.setLevel_(panel_frame.level())
+        win.setReleasedWhenClosed_(False)
+        win.setCollectionBehavior_(NSWindowCollectionBehaviorCanJoinAllSpaces |
+                                   NSWindowCollectionBehaviorFullScreenAuxiliary)
 
-        add("Open Jev", "orbMenuOpen:")
-        add("New Chat", "orbMenuNewChat:")
-        add("Capture Area", "captureAreaWand:", "w", command=True)
-        add("Mark Up", "orbMenuMarkup:")
-        type_item = add("Type to Jev…", "focusTypeField:", "j")
-        type_item.setKeyEquivalentModifierMask_(NSEventModifierFlagControl | NSEventModifierFlagOption)
-        menu.addItem_(NSMenuItem.separatorItem())
-        add("Settings…", "showSettings:", ",", command=True)
-        menu.addItem_(NSMenuItem.separatorItem())
-        add("Quit Jev", "terminate:", "q", command=True, target=NSApp)
-        return menu
+        content = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, w, h))
+        glass = NSVisualEffectView.alloc().initWithFrame_(NSMakeRect(0, 0, w, h))
+        glass.setMaterial_(NSVisualEffectMaterialHUDWindow)
+        glass.setBlendingMode_(NSVisualEffectBlendingModeBehindWindow)
+        glass.setState_(NSVisualEffectStateActive)
+        glass.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable)
+        glass.setWantsLayer_(True)
+        glass.layer().setCornerRadius_(SPOTLIGHT_RADIUS)
+        glass.layer().setMasksToBounds_(True)
+        glass.layer().setBorderWidth_(0.5)
+        glass.layer().setBorderColor_(NSColor.whiteColor().colorWithAlphaComponent_(0.28).CGColor())
+        content.addSubview_(glass)
+        win.setContentView_(content)
+
+        state = {"index": -1, "mode": "row", "rows": [], "closing": False}
+        delegate = OrbSpotlightDelegate.alloc().initWithHandler_(lambda kind, sel: self._spotlight_event(kind, sel))
+        win.setDelegate_(delegate)
+        state["delegate"] = delegate
+
+        field_w = w - 2 * SPOTLIGHT_PAD - 36
+        field_y = h - SPOTLIGHT_PAD - SPOTLIGHT_FIELD_H
+        field = NSTextField.alloc().initWithFrame_(NSMakeRect(SPOTLIGHT_PAD + 6, field_y + 12, field_w, 28))
+        field.setBezeled_(False)
+        field.setDrawsBackground_(False)
+        field.setFocusRingType_(1)  # NSFocusRingTypeNone
+        field.setFont_(NSFont.systemFontOfSize_(20))
+        field.setPlaceholderString_("Search or Ask Jev")
+        field.setDelegate_(delegate)
+        glass.addSubview_(field)
+        state["field"] = field
+
+        mic = OrbSpotlightMic.alloc().initWithFrame_(NSMakeRect(w - SPOTLIGHT_PAD - 30, field_y + 14, 24, 24))
+        mic.setBordered_(False)
+        mic.setImage_(NSImage.imageWithSystemSymbolName_accessibilityDescription_("mic.fill", "Talk to Jev"))
+        mic.micDown = lambda: self._spotlight_mic(True)
+        mic.micUp = lambda: self._spotlight_mic(False)
+        glass.addSubview_(mic)
+
+        for index, (title, selector, symbol, hint) in enumerate(SPOTLIGHT_ROWS):
+            row_y = h - SPOTLIGHT_PAD - SPOTLIGHT_FIELD_H - SPOTLIGHT_PAD - (index + 1) * SPOTLIGHT_ROW_H
+            row = OrbSpotlightRow.alloc().initWithFrame_(
+                NSMakeRect(SPOTLIGHT_PAD, row_y, w - 2 * SPOTLIGHT_PAD, SPOTLIGHT_ROW_H))
+            row.setWantsLayer_(True)
+            row.layer().setCornerRadius_(10)
+            icon = NSImageView.alloc().initWithFrame_(NSMakeRect(10, 9, 18, 18))
+            icon.setImage_(NSImage.imageWithSystemSymbolName_accessibilityDescription_(symbol, title))
+            row.addSubview_(icon)
+            label = NSTextField.labelWithString_(title)
+            label.setFont_(NSFont.systemFontOfSize_(14))
+            label.setFrame_(NSMakeRect(38, 8, w - 2 * SPOTLIGHT_PAD - 120, 20))
+            row.addSubview_(label)
+            if hint:
+                shortcut = NSTextField.labelWithString_(hint)
+                shortcut.setFont_(NSFont.systemFontOfSize_(13))
+                shortcut.setTextColor_(NSColor.secondaryLabelColor())
+                shortcut.setAlignment_(2)  # NSTextAlignmentRight
+                shortcut.setFrame_(NSMakeRect(w - 2 * SPOTLIGHT_PAD - 92, 8, 72, 20))
+                row.addSubview_(shortcut)
+            row.onPick = lambda i=index: self._pick_orb_spotlight_row(i)
+            glass.addSubview_(row)
+            state["rows"].append(row)
+
+        win.keyHandler = lambda code: self._spotlight_key(code)
+        self._spotlight = state
+        state["panel"] = win
+
+        win.setAlphaValue_(0.0)
+        win.makeKeyAndOrderFront_(None)
+        NSApp.activateIgnoringOtherApps_(True)
+        win.makeFirstResponder_(field)
+        content.setWantsLayer_(True)
+        scale = CABasicAnimation.animationWithKeyPath_("transform.scale")
+        scale.setFromValue_(SPOTLIGHT_START_SCALE)
+        scale.setToValue_(1.0)
+        scale.setDuration_(SPOTLIGHT_FADE_SECONDS)
+        scale.setTimingFunction_(CAMediaTimingFunction.functionWithName_("easeOut"))
+        content.layer().addAnimation_forKey_(scale, "spotlightScale")
+        NSAnimationContext.beginGrouping()
+        context = NSAnimationContext.currentContext()
+        context.setDuration_(SPOTLIGHT_FADE_SECONDS)
+        context.setTimingFunction_(CAMediaTimingFunction.functionWithName_("easeOut"))
+        win.animator().setAlphaValue_(1.0)
+        NSAnimationContext.endGrouping()
+        print("orb spotlight: open at {0}".format(tuple(round(v, 1) for v in (x, y, w, h))), flush=True)
+
+    @objc.python_method
+    def _close_orb_spotlight(self, reason):
+        """Close the panel and log why. Idempotent, so the resign-key from closing does nothing more."""
+        state = getattr(self, "_spotlight", None)
+        if state is None or state.get("closing"):
+            return
+        state["closing"] = True
+        self._spotlight = None
+        panel = state.get("panel")
+        if panel is not None:
+            panel.setDelegate_(None)
+            panel.orderOut_(None)
+        print("orb spotlight: close ({0})".format(reason), flush=True)
+
+    @objc.python_method
+    def _set_orb_spotlight_highlight(self, state, index):
+        for position, row in enumerate(state["rows"]):
+            color = NSColor.whiteColor().colorWithAlphaComponent_(0.14).CGColor() if position == index else None
+            row.layer().setBackgroundColor_(color)
+
+    @objc.python_method
+    def _spotlight_key(self, code):
+        """Keys from the panel itself (when the field is not editing). True if handled."""
+        from orb_spotlight import KEY_DOWN, KEY_ESCAPE, KEY_RETURN, KEY_UP
+        if code == KEY_ESCAPE:
+            self._close_orb_spotlight("escape")
+            return True
+        if code in (KEY_DOWN, KEY_UP):
+            self._spotlight_move(code)
+            return True
+        if code == KEY_RETURN:
+            self._spotlight_return()
+            return True
+        return False
+
+    @objc.python_method
+    def _spotlight_move(self, key):
+        from orb_spotlight import next_index
+        state = getattr(self, "_spotlight", None)
+        if state is None:
+            return
+        state["index"] = next_index(state["index"], key, len(state["rows"]))
+        state["mode"] = "row"  # arrows pick a row, so Return runs it rather than sending the typed text
+        self._set_orb_spotlight_highlight(state, state["index"])
+
+    @objc.python_method
+    def _spotlight_return(self):
+        state = getattr(self, "_spotlight", None)
+        if state is None:
+            return
+        text = str(state["field"].stringValue() or "")
+        if state["mode"] == "text" and text.strip():
+            self._send_orb_spotlight_text(text)
+        elif state["index"] >= 0:
+            self._pick_orb_spotlight_row(state["index"])
+        elif text.strip():
+            self._send_orb_spotlight_text(text)
+
+    @objc.python_method
+    def _send_orb_spotlight_text(self, text):
+        """The same as the mini type box: submission() runs the line where it was typed."""
+        plan = submission(text, self.bar.reply)
+        if plan is None:
+            print("orb spotlight: nothing to send", flush=True)
+            return
+        self.bar.reply = ""
+        self._close_orb_spotlight("sent")
+        print("orb spotlight: sent text ({0} characters)".format(len(text)), flush=True)
+        self._dispatch_text_plan(plan)
+
+    @objc.python_method
+    def _pick_orb_spotlight_row(self, index):
+        from orb_spotlight import SPOTLIGHT_ROWS
+        title, selector, _symbol, _hint = SPOTLIGHT_ROWS[index]
+        print("orb spotlight: pick {0}".format(title), flush=True)
+        self._close_orb_spotlight("pick")
+        target = NSApp if selector == "terminate:" else self
+        NSApp.sendAction_to_from_(NSSelectorFromString(selector), target, self)
+
+    @objc.python_method
+    def _spotlight_mic(self, down):
+        if down:
+            self.miniMicDown_(None)
+        else:
+            self.miniMicUp_(None)
+
+    @objc.python_method
+    def _spotlight_event(self, kind, selector):
+        """Field commands, typing and resign-key from the panel's delegate."""
+        from orb_spotlight import KEY_DOWN, KEY_UP
+        state = getattr(self, "_spotlight", None)
+        if state is None:
+            return False
+        if kind == "resign":
+            self._close_orb_spotlight("click away")
+            return True
+        if kind == "typed":
+            state["mode"] = "text"
+            state["index"] = -1
+            self._set_orb_spotlight_highlight(state, -1)
+            return False
+        if selector == "moveDown:":
+            self._spotlight_move(KEY_DOWN)
+            return True
+        if selector == "moveUp:":
+            self._spotlight_move(KEY_UP)
+            return True
+        if selector == "insertNewline:":
+            self._spotlight_return()
+            return True
+        if selector == "cancelOperation:":
+            self._close_orb_spotlight("escape")
+            return True
+        return False
 
     def orbMenuOpen_(self, _sender):
         print("  orb menu: Open Jev", flush=True)
@@ -6400,3 +6602,65 @@ def run_app():
     delegate = AppDelegate.alloc().init()
     app.setDelegate_(delegate)
     app.run()
+
+
+# PR 8: the orb's Spotlight-style panel classes. Kept at the end so earlier helpers keep the first match.
+class OrbSpotlightPanel(NSPanel):
+    """The orb's Spotlight-style panel. Borderless, and key, so it takes the keyboard. Keys go to keyHandler first."""
+
+    def canBecomeKeyWindow(self):
+        return True
+
+    def canBecomeMainWindow(self):
+        return False
+
+    def keyDown_(self, event):
+        handler = getattr(self, "keyHandler", None)
+        if handler is not None and handler(int(event.keyCode())):
+            return
+        objc.super(OrbSpotlightPanel, self).keyDown_(event)
+
+
+class OrbSpotlightRow(NSView):
+    """One line of the panel. A click calls onPick. The highlight is drawn by the controller."""
+
+    def acceptsFirstMouse_(self, _event):
+        return True
+
+    def mouseDown_(self, _event):
+        handler = getattr(self, "onPick", None)
+        if handler is not None:
+            handler()
+
+
+class OrbSpotlightMic(NSButton):
+    """The mic in the field: hold to talk, like the mini bar's mic. Press calls micDown, release calls micUp."""
+
+    def mouseDown_(self, _event):
+        handler = getattr(self, "micDown", None)
+        if handler is not None:
+            handler()
+
+    def mouseUp_(self, _event):
+        handler = getattr(self, "micUp", None)
+        if handler is not None:
+            handler()
+
+
+class OrbSpotlightDelegate(NSObject):
+    """Field and panel delegate. Field commands (arrows, Return, Escape) and resign-key go to one Python handler."""
+
+    def initWithHandler_(self, handler):
+        self = objc.super(OrbSpotlightDelegate, self).init()
+        if self is not None:
+            self.handler = handler
+        return self
+
+    def control_textView_doCommandBySelector_(self, _control, _text_view, selector):
+        return bool(self.handler("command", str(NSStringFromSelector(selector))))
+
+    def controlTextDidChange_(self, _notification):
+        self.handler("typed", "")
+
+    def windowDidResignKey_(self, _notification):
+        self.handler("resign", "")
