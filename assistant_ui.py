@@ -27,6 +27,8 @@ from AppKit import (
     NSColor,
     NSEvent,
     NSEventMaskFlagsChanged,
+    NSEventMaskLeftMouseDown,
+    NSEventMaskRightMouseDown,
     NSEventMaskKeyDown,
     NSEventModifierFlagControl,
     NSEventModifierFlagOption,
@@ -146,6 +148,8 @@ from mini_bar import (
     choice_origin,
     choice_panel_box,
     pointer_inside,
+    clicked_outside_popover,
+    orb_after_click_away,
     migrate_saved_origin,
     place_bar,
     plus_item,
@@ -2239,6 +2243,8 @@ class AppDelegate(NSObject):
         if self.bar.should_show():
             if not panel.isVisible():
                 self._order_bar_front()
+            elif getattr(self, "_bar_hiding", False):
+                self._keep_orb_visible()
         elif panel.isVisible():
             self._hide_bar()
         self._sync_orb()
@@ -2254,17 +2260,49 @@ class AppDelegate(NSObject):
             panel.setAlphaValue_(1.0)
             panel.orderOut_(None)
             return
+        self._bar_hiding = True
 
         def done():
-            if panel.isVisible():
+            # The bar can be wanted again before this fade lands (the main window hid again, or a click
+            # outside closed the popover). Ordering out then would lose the orb until the next sync.
+            self._bar_hiding = False
+            if not self.bar.should_show() and panel.isVisible():
                 panel.orderOut_(None)
             panel.setAlphaValue_(1.0)
             view = panel.contentView()
             layer = view.layer() if view is not None else None
             if layer is not None:
                 layer.setOpacity_(1.0)
+            if self.bar.should_show():
+                self._sync_orb()
 
         self._fade_bar(0.0, done)
+
+    @objc.python_method
+    def _keep_orb_visible(self):
+        """After the popover closes, the orb stays on screen at its spot, even if a fade-out was running."""
+        panel = getattr(self, "mini_panel", None)
+        if panel is None or not hasattr(self, "bar"):
+            return
+        pending = bool(getattr(self, "_bar_hiding", False)) or getattr(self, "_bar_fade_done", None) is not None
+        plan = orb_after_click_away(self.bar.should_show(), bool(panel.isVisible()), pending)
+        if plan != "show":
+            return
+        timer = getattr(self, "_fade_timer", None)
+        if timer is not None:
+            timer.invalidate()
+        self._fade_timer = None
+        self._bar_fade_done = None
+        self._bar_hiding = False
+        view = panel.contentView()
+        layer = view.layer() if view is not None else None
+        if layer is not None:
+            layer.removeAnimationForKey_("pillAppear")
+            layer.setOpacity_(1.0)
+        panel.setAlphaValue_(1.0)
+        if not panel.isVisible():
+            panel.orderFrontRegardless()
+        self._sync_orb()
 
     @objc.python_method
     def _fade_bar(self, target, completion):
@@ -2535,6 +2573,7 @@ class AppDelegate(NSObject):
         pill.focus_lost()
         if pill.collapsed:
             self._apply_pill_presentation()
+            self._keep_orb_visible()
 
     def layoutMiniBar_(self, _sender):
         panel = getattr(self, "mini_panel", None)
@@ -2774,6 +2813,47 @@ class AppDelegate(NSObject):
             panel.setAlphaValue_(1.0)
         self._apply_mic_tint()
         self._sync_orb()
+        self._sync_click_away_monitor(not self.pillCollapsed)
+
+    @objc.python_method
+    def _sync_click_away_monitor(self, wanted):
+        """Watch for clicks in other apps only while the popover is open. Mouse monitors need no permission."""
+        monitor = getattr(self, "click_away_monitor", None)
+        if wanted and monitor is None:
+            self.click_away_monitor = NSEvent.addGlobalMonitorForEventsMatchingMask_handler_(
+                NSEventMaskLeftMouseDown | NSEventMaskRightMouseDown, self._global_click_away)
+        elif not wanted and monitor is not None:
+            NSEvent.removeMonitor_(monitor)
+            self.click_away_monitor = None
+
+    @objc.python_method
+    def _global_click_away(self, _event):
+        panel = getattr(self, "mini_panel", None)
+        pill = getattr(self, "pill", None)
+        if panel is None or pill is None or getattr(self, "_pill_menu_open", False):
+            return
+        mouse = NSEvent.mouseLocation()
+        frame = panel.frame()
+        box = (float(frame.origin.x), float(frame.origin.y), float(frame.size.width), float(frame.size.height))
+        if clicked_outside_popover(pill.expanded, (float(mouse.x), float(mouse.y)), box):
+            self._close_popover_on_click_away()
+
+    @objc.python_method
+    def _close_popover_on_click_away(self):
+        """Close only the popover. The orb stays where it is, and the next open starts on the greeting."""
+        self.pill.click_away()
+        self.bar.reply = ""
+        field = getattr(self, "mini_field", None)
+        if field is not None:
+            field.setStringValue_("")
+        self._popover_history_open = False
+        keys = getattr(self, "pill_keys", None)
+        if keys is not None:
+            keys.previous = None  # the click already chose the next front app; don't yield back over it
+            keys.release(NSApp, getattr(self, "mini_panel", None))
+        self._refresh_trailing_symbol()
+        self._apply_pill_presentation()
+        self._keep_orb_visible()
 
     @objc.python_method
     def _place_expanded_on_main_screen(self):
@@ -4239,6 +4319,7 @@ class AppDelegate(NSObject):
             NSEvent.removeMonitor_(self.key_monitor)
         if getattr(self, "type_monitor", None) is not None:
             NSEvent.removeMonitor_(self.type_monitor)
+        self._sync_click_away_monitor(False)
 
 
     def checkForUpdates_(self, _sender):

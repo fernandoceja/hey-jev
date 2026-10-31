@@ -647,6 +647,27 @@ def pointer_inside(point, frame):
     return fx <= x < fx + fw and fy <= y < fy + fh
 
 
+def clicked_outside_popover(expanded, point, popover_frame):
+    """True when the popover is open and a mouse-down landed outside its window frame."""
+    if not expanded or point is None or popover_frame is None:
+        return False
+    return not pointer_inside(point, popover_frame)
+
+
+def orb_after_click_away(should_show, panel_visible, fade_out_pending):
+    """What the orb window does once a click outside has closed the popover.
+
+    'keep': it is on screen and stays. 'show': put it back at full opacity, cancelling a fade-out that is
+    still running, because that fade would order it out after the popover closed. 'none': the bar is
+    meant to be hidden (main window up, Hide Mini Bar, quitting), so leave it alone. Never 'hide'.
+    """
+    if not should_show:
+        return "none"
+    if not panel_visible or fade_out_pending:
+        return "show"
+    return "keep"
+
+
 def choice_origin(anchor, screen, panel_size, gap=8.0):
     """Put the panel above the pill, clamped to the visible screen."""
     px, py, pw, ph = anchor
@@ -1775,6 +1796,13 @@ class PillPresentation:
         self.showing_reply = False
         self.expanded = False
         return self._mode()
+
+    def click_away(self):
+        """A click outside the popover. Close it the way Esc does, so the next open starts on the greeting.
+
+        Only the popover closes. The orb is a separate question for BarController and orb_after_click_away.
+        """
+        return self.escape()
 
     def keep_typing(self):
         """The user typed over the reply. Stay open, and a later blur can close it."""
