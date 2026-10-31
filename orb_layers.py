@@ -27,6 +27,8 @@ from orb_motion import (
     GLYPH_RGB,
     HIGHLIGHT_ALPHA,
     LISTEN_GLYPH_RGB,
+    OUTLINE_ALPHA,
+    ORB_GRADIENT_ANGLE,
     ORB_PALETTE,
     PRESS_SCALE,
     PRESS_SECONDS,
@@ -36,6 +38,7 @@ from orb_motion import (
     SHADE_ALPHA,
     SHADE_RGB,
     SHADOW_OPACITY,
+    SHADOW_RGB,
     SHADOW_SIZE,
     SPRING_DROP_JIGGLE,
     SPRING_RELEASE,
@@ -52,10 +55,10 @@ MOUTH_RGB = (0.04, 0.06, 0.22)
 _SHADOW_IMAGES = {}  # backing scale -> CGImage; the shadow does not depend on appearance
 SQUASH_KEY = "squash"  # press, release and jiggle share one key, so each replaces the last
 
-# Radial gradient ellipse radii come from the start and end points in unit space.
-# This reaches the body's edge at a circular radius of about 40 pt.
-_BODY_LIGHT = (0.325, 0.725)
-_BODY_LIGHT_END = (0.325 + 40.0 / BODY_SIZE, 0.725 + 40.0 / BODY_SIZE)
+# The body gradient runs along ORB_GRADIENT_ANGLE through the centre of the body, as 1c63b74's NSGradient did.
+_ANGLE = math.radians(ORB_GRADIENT_ANGLE)
+_BODY_START = (0.5 - 0.5 * math.cos(_ANGLE), 0.5 - 0.5 * math.sin(_ANGLE))
+_BODY_END = (0.5 + 0.5 * math.cos(_ANGLE), 0.5 + 0.5 * math.sin(_ANGLE))
 
 
 def _cg_color(rgb, alpha=1.0):
@@ -97,7 +100,8 @@ def _shadow_image(scale):
             # Squash a circle of radius `radius` into an ellipse `height` tall, centred in the image.
             CGContextTranslateCTM(ctx, width / 2.0, height / 2.0)
             CGContextScaleCTM(ctx, 1.0, (height / 2.0) / radius)
-            soft = _gradient([(0.0, 0.0, 0.0, SHADOW_OPACITY, 0.0), (0.0, 0.0, 0.0, 0.0, 1.0)])
+            r, g, b = SHADOW_RGB
+            soft = _gradient([(r, g, b, SHADOW_OPACITY, 0.0), (r, g, b, 0.0, 1.0)])
             centre = CGPointMake(0.0, 0.0)
             CGContextDrawRadialGradient(ctx, soft, centre, 0.0, centre, radius, 0)
 
@@ -281,14 +285,14 @@ class OrbLayers:
         self.body = place(CALayer.layer(), geometry["body"])
         self.body.setMask_(_circle_mask(BODY_SIZE))
         self.base = _gradient_layer(local, [(c, 1.0, loc) for c, loc in zip(ORB_PALETTE, (0.0, 0.5, 1.0))],
-                                          _BODY_LIGHT, _BODY_LIGHT_END)
+                                          _BODY_START, _BODY_END, kind="axial")
         self.shade = _gradient_layer(local, _shade_stops(False), (0.5, 0.5), (0.5, 0.0), kind="axial")
         self.rim = _gradient_layer(local, [(RIM_RGB, 0.0, 0.0), (RIM_RGB, RIM_ALPHA, 1.0)],
                                          (0.5, 0.5), (1.0, 1.0))
         self.outline = CAShapeLayer.layer()
         place(self.outline, local)
         self.outline.setFillColor_(None)
-        self.outline.setStrokeColor_(_cg_color((1.0, 1.0, 1.0), 0.18))
+        self.outline.setStrokeColor_(_cg_color((1.0, 1.0, 1.0), OUTLINE_ALPHA))
         self.outline.setLineWidth_(0.75)
         self.outline.setPath_(_ellipse_path(0.375, 0.375, BODY_SIZE - 0.75, BODY_SIZE - 0.75))
         self.body.setSublayers_([self.base, self.shade, self.rim, self.outline])
@@ -305,8 +309,9 @@ class OrbLayers:
         for side in ("L", "R"):
             eye_rect = geometry["eye" + side]
             pupil_rect = geometry["pupil" + side]
+            # Restored from 1c63b74: a solid cream bar, so both stops are the same colour.
             eye = _gradient_layer((0, 0, EYE_SIZE, EYE_SIZE),
-                                        [((1.0, 1.0, 1.0), 1.0, 0.0), (EYE_EDGE_RGB, 1.0, 1.0)],
+                                        [(EYE_EDGE_RGB, 1.0, 0.0), (EYE_EDGE_RGB, 1.0, 1.0)],
                                         (0.5, 0.5), (1.0, 1.0))
             # The eye's mask is a path that morphs between eye shapes. It starts as the open eye.
             mask = _shape_layer(self._eye_paths["open"], EYE_SIZE)
@@ -332,10 +337,11 @@ class OrbLayers:
         self.glyph_stroke.setFillColor_(None)
         self.glyph_stroke.setLineWidth_(1.5)
 
-        self.highlight = _gradient_layer(geometry["highlight"],
-                                               [((1.0, 1.0, 1.0), HIGHLIGHT_ALPHA, 0.0),
-                                                ((1.0, 1.0, 1.0), 0.0, 1.0)],
-                                               (0.5, 0.5), (1.0, 1.0))
+        # Restored from 1c63b74: a flat white oval, not a radial fade.
+        hx, hy, hw, hh = geometry["highlight"]
+        self.highlight = place(CAShapeLayer.layer(), (hx, hy, hw, hh))
+        self.highlight.setFillColor_(_cg_color((1.0, 1.0, 1.0), HIGHLIGHT_ALPHA))
+        self.highlight.setPath_(_ellipse_path(0, 0, hw, hh))
 
         self.body_group = place(CALayer.layer(), (0, 0, DESIGN_SIZE, DESIGN_SIZE))
         self.body_group.setSublayers_([self.body, self.ring, self.eyes["L"], self.eyes["R"],

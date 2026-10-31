@@ -855,6 +855,7 @@ class TypedHistory:
         self.limit = int(limit)
         self.rows = []
         self.pending = ""
+        self.added = 0  # rows ever added, so a view can start "from here" even after old rows are trimmed
 
     def note_request(self, text):
         cleaned = " ".join(str(text or "").split())
@@ -862,6 +863,7 @@ class TypedHistory:
             return ""
         self.pending = cleaned
         self.rows.append(("you", cleaned))
+        self.added += 1
         self._trim()
         return cleaned
 
@@ -875,6 +877,7 @@ class TypedHistory:
         if cleaned.strip(" .?!'\"").lower() == self.pending.strip(" .?!'\"").lower():
             return ""  # the heard echo of the request is not the reply
         self.rows.append(("jev", cleaned))
+        self.added += 1
         self.pending = ""
         self._trim()
         return cleaned

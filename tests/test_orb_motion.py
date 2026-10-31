@@ -15,7 +15,9 @@ from orb_motion import (
     CLIP_FPS,
     FLOAT_FRAMES,
     ORB_PALETTE,
+    SHADOW_MIN_OPACITY,
     SHADOW_MIN_SCALE,
+    SHADOW_OPACITY,
     cursor_moved,
     idle_active,
     layer_geometry,
@@ -149,7 +151,7 @@ def test_shadow_is_smallest_and_faintest_at_the_top_of_the_bob():
     bottom_scale, bottom_opacity = shadow_for_bob(-BOB_AMPLITUDE)
     assert top_scale == pytest.approx(SHADOW_MIN_SCALE)
     assert bottom_scale == pytest.approx(1.0)
-    assert top_opacity == pytest.approx(0.28 / 0.35)
+    assert top_opacity == pytest.approx(SHADOW_MIN_OPACITY / SHADOW_OPACITY)
     assert bottom_opacity == pytest.approx(1.0)
 
 
