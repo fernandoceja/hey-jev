@@ -746,6 +746,7 @@ class TestChoicesAndAskJev(unittest.TestCase):
         origin = choice_origin((100, 80, 420, 44), (0, 0, 1440, 900), (300, 420))
         self.assertGreater(origin[1], 80 + 44)
         self.assertTrue(capture_saved("Saved a full screen screenshot to /tmp."))
+        self.assertTrue(capture_saved("Saved an area screenshot to /tmp."))
         self.assertTrue(capture_saved("Saved the recording as an MP4 in /tmp."))
         self.assertFalse(capture_saved("Saved it to a new note in Notes."))
         hidden = capture_choice_actions(False)
@@ -778,3 +779,21 @@ class TestChoicesAndAskJev(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AreaSavedSentenceTests(unittest.TestCase):
+    """The saved line uses the right article for each kind, and the choice panel still opens for an area capture."""
+
+    def test_each_kind_has_its_own_article(self):
+        from commands.captures import _saved_sentence
+        self.assertEqual(_saved_sentence("area", "/tmp/a.png"), "Saved an area screenshot to /tmp.")
+        self.assertEqual(_saved_sentence("full", "/tmp/a.png"), "Saved a full screen screenshot to /tmp.")
+        self.assertEqual(_saved_sentence("window", "/tmp/a.png"), "Saved a window screenshot to /tmp.")
+        self.assertEqual(_saved_sentence("recording", "/tmp/a.mp4"), "Saved a recording to /tmp.")
+
+    def test_area_capture_reads_as_saved_an_area_and_shows_choices(self):
+        from mini_bar import capture_saved
+        from commands.captures import _saved_sentence
+        sentence = _saved_sentence("area", "/tmp/a.png")
+        self.assertNotIn("Saved a area", sentence)
+        self.assertTrue(capture_saved(sentence))

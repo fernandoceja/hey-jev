@@ -248,10 +248,10 @@ class CaptureZone:
         self.rest = rest
         if self.panel is None:
             self.panel = self.make_panel(orb_window)
+        self.place()  # place before ordering, so the panel never appears at its default frame
         if not self.showing:
             self.panel.order_below(orb_window)
             self.showing = True
-        self.place()
 
     def retract(self, now):
         if self.edge is None or self.retracting:

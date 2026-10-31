@@ -158,13 +158,14 @@ def _open_privacy(run):
 
 def _saved_sentence(kind, path):
     folder = os.path.dirname(path)
+    # Each label carries its own article, so "an area" reads correctly.
     labels = {
-        "full": "full screen screenshot",
-        "area": "area screenshot",
-        "window": "window screenshot",
-        "recording": "recording",
+        "full": "a full screen screenshot",
+        "area": "an area screenshot",
+        "window": "a window screenshot",
+        "recording": "a recording",
     }
-    return "Saved a {0} to {1}.".format(labels.get(kind, "screenshot"), folder)
+    return "Saved {0} to {1}.".format(labels.get(kind, "a screenshot"), folder)
 
 
 def take_screenshot(mode="full", folder=None, when=None, run=None, book=None, env=None):

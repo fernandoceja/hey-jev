@@ -668,7 +668,7 @@ def _hazard_alerts_item(enabled):
 def capture_saved(sentence):
     """True for a new screenshot or recording, not for a later Notes save."""
     text = " ".join(str(sentence or "").split())
-    return text.startswith("Saved a ") or text.startswith("Saved the recording")
+    return text.startswith(("Saved a ", "Saved an ")) or text.startswith("Saved the recording")
 
 
 def choice_due(shown_at, now, hovered):

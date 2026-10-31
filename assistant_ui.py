@@ -585,8 +585,16 @@ class CaptureZonePanel:
 
     def order_below(self, orb_window):
         self.panel.orderWindow_relativeTo_(NSWindowBelow, orb_window.windowNumber())
+        # Diagnostic (PR 4 hand test): is our zone really on screen, and is anything covering it?
+        # NSWindowOcclusionStateVisible is 2. If it is missing, another window covers the zone.
+        visible = bool(self.panel.occlusionState() & 2)
+        print("  capture zone: shown frame={0} level={1} orb_level={2} visible={3} occlusion_visible={4}".format(
+            tuple(round(v, 1) for v in (self.panel.frame().origin.x, self.panel.frame().origin.y,
+                                        self.panel.frame().size.width, self.panel.frame().size.height)),
+            self.panel.level(), orb_window.level(), self.panel.isVisible(), visible))
 
     def order_out(self):
+        print("  capture zone: hidden")
         self.panel.orderOut_(None)
 
 
@@ -645,10 +653,13 @@ class MiniBarBackground(NSView):
         else:
             moved = self._drag_exactly(window, start, origin, delegate)
             if moved and delegate is not None and hasattr(delegate, "_finalize_mini_bar_drag"):
-                capture = False
+                capture, cancelled = False, False
                 if hasattr(delegate, "_zone_release"):
-                    capture, _cancelled = delegate._zone_release()
-                delegate._finalize_mini_bar_drag(window)
+                    capture, cancelled = delegate._zone_release()
+                home = capture or cancelled
+                if home and not capture:
+                    window.setFrameOrigin_(NSMakePoint(origin[0], origin[1]))  # cancelled: back where the drag began
+                delegate._finalize_mini_bar_drag(window, peek=not home)
                 if capture:
                     delegate._capture_zone_landed()
                 return
@@ -725,7 +736,7 @@ class MiniBarBackground(NSView):
             if capture or cancelled:
                 # A capture drop or an Esc-cancelled drag: the orb springs home, and it does not snap to an edge.
                 orb.dropJiggle()
-                self._start_drag_settle(window, delegate, pos, vel, origin, capture=capture)
+                self._start_drag_settle(window, delegate, pos, vel, origin, capture=capture, home=True)
                 return True
         orb.dropJiggle()
         if delegate is not None:
@@ -735,15 +746,16 @@ class MiniBarBackground(NSView):
         return True
 
     @objc.python_method
-    def _start_drag_settle(self, window, delegate, origin, velocity, target, capture=False):
+    def _start_drag_settle(self, window, delegate, origin, velocity, target, capture=False, home=False):
         """Spring the window from where the drag left it to the snap target, at 60 Hz.
 
-        capture (PR 4): the landing runs the area capture after the orb is home.
+        capture and home (PR 4): the orb springs back to where the drag began, and does not re-tuck on landing.
+        The capture starts after the spring when capture is set.
         """
         self._stop_drag_settle()
         self._drag_settle = {"window": window, "delegate": delegate, "origin": origin,
                              "velocity": velocity, "target": target, "started": time.monotonic(),
-                             "capture": capture}
+                             "capture": capture, "home": home}
         self._drag_settle_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             DRAG_TICK_SECONDS, self, "settleDragTick:", None, True)
 
@@ -768,8 +780,9 @@ class MiniBarBackground(NSView):
     def _land_drag_settle(self, state):
         self._stop_drag_settle()
         delegate = state["delegate"]
+        home = bool(state.get("home"))  # PR 4: capture drop or cancelled drag, back where the drag began
         if delegate is not None and hasattr(delegate, "_finalize_mini_bar_drag"):
-            delegate._finalize_mini_bar_drag(state["window"])
+            delegate._finalize_mini_bar_drag(state["window"], peek=not home)
         if state.get("capture") and delegate is not None and hasattr(delegate, "_capture_zone_landed"):
             delegate._capture_zone_landed()  # PR 4: the orb is home, so the area capture starts now
 
@@ -2476,8 +2489,12 @@ class AppDelegate(NSObject):
         return frames
 
     @objc.python_method
-    def _finalize_mini_bar_drag(self, window):
-        """Clamp and snap when a drag ends. Dragging never opens the typing pill."""
+    def _finalize_mini_bar_drag(self, window, peek=True):
+        """Clamp and snap when a drag ends. Dragging never opens the typing pill.
+
+        peek=False (PR 4): a capture drop or a cancelled drag puts the orb back where it started, so it
+        must not re-tuck to the edge. The orb stays visible.
+        """
         self._orb_dragging = False
         self._peek_disengage(move=False)
         frame = window.frame()
@@ -2492,7 +2509,8 @@ class AppDelegate(NSObject):
         if saved is not None:
             NSUserDefaults.standardUserDefaults().setObject_forKey_(
                 format_origin(saved[0], saved[1]), ORIGIN_KEY)
-        self._peek_consider()
+        if peek:
+            self._peek_consider()
 
     # PR 4: edge capture zone. During an orb drag, a 260 x 56 strip slides in from an outer screen edge. A drop on it
     # springs the orb home and takes the usual area capture. Esc during the drag, or while the orb springs home, cancels.
@@ -2572,6 +2590,8 @@ class AppDelegate(NSObject):
         zone = self._capture_zone_state()
         zone.hide_now()
         zone.pending = False
+        self._apply_bar_visibility()  # the orb is back in view if it was ordered out (PR 4 hand test)
+        print("  capture zone: orb home, visible={0}".format(bool(self.mini_panel.isVisible())))
         if zone.cancelled:
             return
         threading.Thread(target=self._capture_for_bar, args=("area",), daemon=True).start()

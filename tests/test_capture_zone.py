@@ -1,5 +1,6 @@
 """Edge capture zone: geometry, show and hide rules, and slide maths, headless. No AppKit, Quartz or Cocoa."""
 import math
+import os
 
 import pytest
 
@@ -346,3 +347,33 @@ def test_drop_state_reflects_the_zone_being_fully_shown():
     assert zone.visible_for_drop() is True
     zone.retract(0.1)
     assert zone.visible_for_drop() is False
+
+
+def test_the_panel_is_placed_before_it_is_ordered_front():
+    zone = _zone()
+    zone.show("left", REST, ORB, 0.0)
+    names = [c[0] for c in zone.made[0].calls]
+    assert names.index("frame") < names.index("below")
+
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _source(name):
+    with open(os.path.join(ROOT, name), encoding="utf-8") as f:
+        return f.read()
+
+
+def test_a_capture_drop_springs_home_without_re_tucking_the_orb():
+    ui = _source("assistant_ui.py")
+    # The landing finalizes with peek=False, so _peek_consider cannot re-tuck and latch the orb.
+    assert 'delegate._finalize_mini_bar_drag(state["window"], peek=not home)' in ui
+    assert "if peek:\n            self._peek_consider()" in ui
+    # The reduce-motion path follows the same rule.
+    assert "delegate._finalize_mini_bar_drag(window, peek=not home)" in ui
+
+
+def test_the_capture_landing_brings_the_orb_back_into_view():
+    ui = _source("assistant_ui.py")
+    landed = ui.split("def _capture_zone_landed(self):", 1)[1].split("@objc.python_method", 1)[0]
+    assert "self._apply_bar_visibility()" in landed
