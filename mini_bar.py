@@ -1958,6 +1958,11 @@ class BarController:
             self.dismissed = False
         return self.should_show()
 
+    def reveal(self):
+        """Control-Option-J shows a hidden orb again. Clears the hide. The main window still hides it while on screen."""
+        self.dismissed = False
+        return self.should_show()
+
     def dismiss(self):
         """Hide Mini Bar, while the pill is up.
 

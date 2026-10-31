@@ -6416,18 +6416,33 @@ class AppDelegate(NSObject):
         keys.release(NSApp, getattr(self, "mini_panel", None))
 
     def focusTypeField_(self, _sender):
-        panel = getattr(self, "mini_panel", None)
-        if self.bar.should_show() and panel is not None and panel.isVisible():
-            if getattr(self, "pillCollapsed", False):
-                self.expandMiniBar_(None)
-                return
-            self._focus_pill_field()
+        """Control-Option-J (PR 8 follow-up). Shows the floating orb if it is hidden, untucks it, and opens the input
+        pill with its field focused. Pressed again while the pill is open, it hides the pill.
+
+        It never opens or focuses the full window. That happens only from the orb click, Open Jev, or Settings.
+        """
+        if not hasattr(self, "pill"):
             return
-        self.showMain_(None)
-        self._select_tab("home")
-        field = getattr(self, "home_field", None)
-        if field is not None:
-            self.panel.makeFirstResponder_(field)
+        docked = self._orb_docked_now()
+        tucked = self._tuck_active()
+        hidden = not self.bar.should_show()
+        print("orb hotkey: show orb (tucked={0}, hidden={1})".format(tucked, hidden), flush=True)
+        if docked:
+            return  # the full window is already open with its own field, and this hotkey leaves it alone
+        if self.pill.expanded and not getattr(self, "pillCollapsed", False):
+            print("orb hotkey: hide pill", flush=True)
+            self.pill.escape()
+            self._restore_front_app()
+            self._apply_pill_presentation()
+            return
+        if hidden:
+            self.bar.reveal()
+            self._apply_bar_visibility()
+        if not self.bar.should_show():
+            return  # the main window is on screen, so the orb stays hidden by design
+        if tucked:
+            self._tuck_untuck("hotkey", instant=True)
+        self.expandMiniBar_(None)
 
     @objc.python_method
     def _refresh_home_history(self):
