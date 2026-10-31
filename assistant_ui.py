@@ -508,6 +508,73 @@ class SolidFullView(NSView):
             path.stroke()
 
 
+class FullSidebarDocView(NSView):
+    """Document view of the sidebar list. Flipped, so the list reads from the top down."""
+
+    def isFlipped(self):
+        return True
+
+
+class FullRowButton(NSButton):
+    """A sidebar row, or a pill button (New chat, Jev Home). Drawn in REA tokens, so light and dark both follow."""
+
+    def initWithFrame_(self, frame):
+        self = objc.super(FullRowButton, self).initWithFrame_(frame)
+        if self is None:
+            return None
+        self.setBordered_(False)
+        self.setTitle_("")
+        self.setAction_("fullRow:")
+        self.rowLabel = ""
+        self.rowStyle = "row"
+        self.rowAction = ("", "")
+        return self
+
+    @objc.python_method
+    def configure(self, label, style="row", action=("", ""), target=None, action_name=None):
+        self.rowLabel = str(label or "")
+        self.rowStyle = str(style or "row")
+        self.rowAction = tuple(action or ("", ""))
+        if action_name:
+            self.setAction_(action_name)
+        if target is not None:
+            self.setTarget_(target)
+        self.setToolTip_(self.rowLabel)
+        self.setAccessibilityLabel_(self.rowLabel)
+        self.setNeedsDisplay_(True)
+
+    def drawRect_(self, _rect):
+        try:
+            b = self.bounds()
+            w, h = float(b.size.width), float(b.size.height)
+            if w < 4.0 or h < 4.0:
+                return
+            dark = "Dark" in str(self.effectiveAppearance().name())
+            pill = getattr(self, "rowStyle", "row") == "pill"
+            pressed = bool(self.isHighlighted())
+            if pill or pressed:
+                radius = min(h / 2.0, 14.0) if pill else 8.0
+                path = NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+                    NSInsetRect(NSMakeRect(0, 0, w, h), 0.5, 0.5), radius, radius)
+                r, g, bl = fw.token("soft" if pill else "line", dark)
+                NSColor.colorWithSRGBRed_green_blue_alpha_(r, g, bl, 1.0).setFill()
+                path.fill()
+                if pill:
+                    r, g, bl = fw.token("line", dark)
+                    NSColor.colorWithSRGBRed_green_blue_alpha_(r, g, bl, 1.0).setStroke()
+                    path.setLineWidth_(1.0)
+                    path.stroke()
+            r, g, bl = fw.token("ink", dark)
+            attrs = {NSFontAttributeName: NSFont.systemFontOfSize_weight_(13.0 if pill else 12.5, 0.3 if pill else 0.0),
+                     NSForegroundColorAttributeName: NSColor.colorWithSRGBRed_green_blue_alpha_(r, g, bl, 1.0)}
+            text = NSString.stringWithString_(getattr(self, "rowLabel", "") or "")
+            size = text.sizeWithAttributes_(attrs)
+            x = (w - size.width) / 2.0 if pill else 10.0
+            text.drawAtPoint_withAttributes_(NSMakePoint(x, (h - size.height) / 2.0), attrs)
+        except Exception as exc:
+            print(f"  row draw failed: {exc}")
+
+
 class PassThroughEffect(NSVisualEffectView):
     """HUD vibrancy that does not eat clicks. Drag and resize stay on the pill."""
 
@@ -4204,9 +4271,18 @@ class AppDelegate(NSObject):
             win.contentView().displayIfNeeded()
         view = win.contentView()
         bounds = view.bounds()
-        rep = view.bitmapImageRepForCachingDisplayInRect_(bounds)
-        if rep is not None:
-            view.cacheDisplayInRect_toBitmapImageRep_(bounds, rep)
+        # Vibrancy draws blank into a bitmap, so the sidebar is a flat stand-in for the cache only.
+        effect_hidden = self.full_effect.isHidden()
+        solid_hidden = self.full_solid.isHidden()
+        self.full_effect.setHidden_(True)
+        self.full_solid.setHidden_(False)
+        try:
+            rep = view.bitmapImageRepForCachingDisplayInRect_(bounds)
+            if rep is not None:
+                view.cacheDisplayInRect_toBitmapImageRep_(bounds, rep)
+        finally:
+            self.full_effect.setHidden_(effect_hidden)
+            self.full_solid.setHidden_(solid_hidden)
         if not was_visible:
             win.orderOut_(None)
             win.setAlphaValue_(1.0)
@@ -4500,6 +4576,15 @@ class AppDelegate(NSObject):
         return NSColor.colorWithSRGBRed_green_blue_alpha_(r, g, b, alpha)
 
     @objc.python_method
+    def _full_rows(self):
+        """(rows on screen since "+ New chat", every typed row for Recent)."""
+        if not hasattr(self, "typed"):
+            return [], []
+        allrows = list(self.typed.rows)
+        shown = fw.chat_rows(allrows, getattr(self.typed, "added", len(allrows)), getattr(self, "_full_chat_cut", 0))
+        return shown, allrows
+
+    @objc.python_method
     def _build_full_window(self):
         w, h = fw.FULL_DEFAULT
         style = (NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable
@@ -4529,55 +4614,53 @@ class AppDelegate(NSObject):
         self.full_main = SolidFullView.alloc().initWithFrame_(NSMakeRect(fw.SIDEBAR_W, 0, w - fw.SIDEBAR_W, h))
         self.full_main.fill = "page"
         root.addSubview_(self.full_main)
-
-        def label(text, size, weight, color):
-            f = NSTextField.labelWithString_(text)
-            f.setFont_(NSFont.systemFontOfSize_weight_(size, weight))
-            f.setTextColor_(color)
-            root.addSubview_(f)
-            return f
-
-        self.full_side_title = label("History", 11, 0.4, NSColor.secondaryLabelColor())
-        self.full_header = label("Jev", 17, 0.4, NSColor.labelColor())
-        self.full_home_btn = NSButton.buttonWithTitle_target_action_("Jev Home", self, "fullOpenHome:")
-        self.full_home_btn.setBezelStyle_(14 if hasattr(self.full_home_btn, "setBezelStyle_") else 1)
-        self.full_home_btn.setBordered_(False)
-        self.full_home_btn.setContentTintColor_(NSColor.secondaryLabelColor())
-        self.full_home_btn.setFont_(NSFont.systemFontOfSize_(12))
-        root.addSubview_(self.full_home_btn)
-
-        def scrolled(font, card):
-            tv = NSTextView.alloc().initWithFrame_(NSMakeRect(0, 0, 100, 100))
-            tv.setEditable_(False)
-            tv.setSelectable_(True)
-            tv.setDrawsBackground_(False)
-            tv.setFont_(font)
-            tv.setTextContainerInset_(NSMakeSize(10, 10) if card else NSMakeSize(4, 6))
-            tv.setAutoresizingMask_(NSViewWidthSizable)
-            tv.setVerticallyResizable_(True)
-            tv.setHorizontallyResizable_(False)
-            tv.textContainer().setWidthTracksTextView_(True)
-            sc = NSScrollView.alloc().initWithFrame_(NSMakeRect(0, 0, 100, 100))
-            sc.setDrawsBackground_(False)
-            sc.setHasVerticalScroller_(True)
-            sc.setAutohidesScrollers_(True)
-            sc.setDocumentView_(tv)
-            root.addSubview_(sc)
-            return tv, sc
-
-        self.full_card = SolidFullView.alloc().initWithFrame_(NSMakeRect(0, 0, 10, 10))
-        self.full_card.fill = "soft"
-        self.full_card.radius = 12.0
-        self.full_card.stroke = "line"
-        root.addSubview_(self.full_card)
-        self.full_result_title = label("Result", 11, 0.4, NSColor.secondaryLabelColor())
-        self.full_divider = SolidFullView.alloc().initWithFrame_(NSMakeRect(0, 0, 1, 10))
+        self.full_divider = SolidFullView.alloc().initWithFrame_(NSMakeRect(fw.SIDEBAR_W, 0, 1, h))
         self.full_divider.fill = "line"
         root.addSubview_(self.full_divider)
-        self.full_history, self.full_history_scroll = scrolled(NSFont.systemFontOfSize_(12.5), False)
-        self.full_convo, self.full_convo_scroll = scrolled(NSFont.systemFontOfSize_(13.5), False)
-        self.full_result, self.full_result_scroll = scrolled(
-            NSFont.monospacedSystemFontOfSize_weight_(12, 0.0), True)
+
+        # Sidebar: "+ New chat" stays put; the list below it scrolls.
+        self.full_new_chat = FullRowButton.alloc().initWithFrame_(NSMakeRect(0, 0, 10, 10))
+        self.full_new_chat.configure("+ New chat", "pill", ("", ""), self, "fullNewChat:")
+        root.addSubview_(self.full_new_chat)
+        self.full_side_doc = FullSidebarDocView.alloc().initWithFrame_(NSMakeRect(0, 0, fw.SIDEBAR_W, 10))
+        self.full_side_scroll = NSScrollView.alloc().initWithFrame_(NSMakeRect(0, 0, 10, 10))
+        self.full_side_scroll.setDrawsBackground_(False)
+        self.full_side_scroll.setHasVerticalScroller_(True)
+        self.full_side_scroll.setAutohidesScrollers_(True)
+        self.full_side_scroll.setBorderType_(0)
+        self.full_side_scroll.setDocumentView_(self.full_side_doc)
+        root.addSubview_(self.full_side_scroll)
+        self.full_side_heads = []
+        self._full_side_height = 0.0
+        self.full_header_btn = FullRowButton.alloc().initWithFrame_(NSMakeRect(0, 0, 10, 10))
+        self.full_header_btn.configure("Jev Home", "pill", ("", ""), self, "fullOpenHome:")
+        root.addSubview_(self.full_header_btn)
+
+        # Main column: greeting (no conversation yet), or the conversation.
+        self.full_greeting = NSTextField.labelWithString_(greeting_text())
+        self.full_greeting.setFont_(NSFont.systemFontOfSize_weight_(24.0, 0.3))
+        self.full_greeting.setAlignment_(NSTextAlignmentCenter)
+        root.addSubview_(self.full_greeting)
+
+        tv = NSTextView.alloc().initWithFrame_(NSMakeRect(0, 0, 100, 100))
+        tv.setEditable_(False)
+        tv.setSelectable_(True)
+        tv.setDrawsBackground_(False)
+        tv.setFont_(NSFont.systemFontOfSize_(13.5))
+        tv.setTextContainerInset_(NSMakeSize(4, 6))
+        tv.setAutoresizingMask_(NSViewWidthSizable)
+        tv.setVerticallyResizable_(True)
+        tv.setHorizontallyResizable_(False)
+        tv.textContainer().setWidthTracksTextView_(True)
+        sc = NSScrollView.alloc().initWithFrame_(NSMakeRect(0, 0, 100, 100))
+        sc.setDrawsBackground_(False)
+        sc.setHasVerticalScroller_(True)
+        sc.setAutohidesScrollers_(True)
+        sc.setDocumentView_(tv)
+        root.addSubview_(sc)
+        self.full_convo, self.full_convo_scroll = tv, sc
+
+        # Input: a pill, the field inside it and the mic at its right end.
         self.full_input_bg = SolidFullView.alloc().initWithFrame_(NSMakeRect(0, 0, 10, 10))
         self.full_input_bg.fill = "soft"
         self.full_input_bg.radius = fw.INPUT_H / 2.0
@@ -4586,8 +4669,8 @@ class AppDelegate(NSObject):
         self.full_field.setBezeled_(False)
         self.full_field.setDrawsBackground_(False)
         self.full_field.setFocusRingType_(1)
-        self.full_field.setFont_(NSFont.systemFontOfSize_(14))
-        self.full_field.setPlaceholderString_("Ask Jev anything…")
+        self.full_field.setFont_(NSFont.systemFontOfSize_(15))
+        self.full_field.setPlaceholderString_(fw.PLACEHOLDER)
         self.full_field.setTarget_(self)
         self.full_field.setAction_("fullSubmit:")
         root.addSubview_(self.full_field)
@@ -4607,6 +4690,7 @@ class AppDelegate(NSObject):
             root.addSubview_(btn)
             self.full_chips.append(btn)
         self._apply_full_chrome()
+        self._rebuild_full_sidebar()
         self._layout_full_window()
 
     @objc.python_method
@@ -4620,12 +4704,12 @@ class AppDelegate(NSObject):
         self.full_effect.setHidden_(chrome["backing"] == "solid")
         self.full_solid.fill = "soft"
         self.full_solid.setHidden_(chrome["backing"] != "solid")
-        for view in (self.full_solid, self.full_main, self.full_input_bg):
+        for view in (self.full_solid, self.full_main, self.full_input_bg, self.full_divider):
             view.setNeedsDisplay_(True)
-        self.full_card.setNeedsDisplay_(True)
-        self.full_result_title.setTextColor_(self._fw_color("muted"))
-        self.full_header.setTextColor_(self._fw_color("ink"))
-        self.full_side_title.setTextColor_(self._fw_color("muted"))
+        self.full_greeting.setTextColor_(self._fw_color("ink"))
+        self.full_field.setTextColor_(self._fw_color("ink"))
+        for head in getattr(self, "full_side_heads", []):
+            head.setTextColor_(self._fw_color("muted"))
 
     @objc.python_method
     def _layout_full_window(self):
@@ -4633,29 +4717,29 @@ class AppDelegate(NSObject):
         if win is None:
             return
         size = win.contentView().frame().size
-        lay = fw.full_layout(size.width, size.height)
+        has_conversation = bool(self._full_rows()[0])
+        lay = fw.full_layout(size.width, size.height, has_conversation=has_conversation)
         R = lambda r: NSMakeRect(*r)
         cw, ch = lay["size"]
         self.full_solid.setFrame_(R((0, 0, cw, ch)))
         self.full_effect.setFrame_(R(lay["sidebar"]))
         self.full_main.setFrame_(R((fw.SIDEBAR_W, 0, cw - fw.SIDEBAR_W, ch)))
-        self.full_side_title.setFrame_(R(lay["sidebar_title"]))
-        self.full_history_scroll.setFrame_(R(lay["history"]))
-        hx, hy, hw, hh = lay["header"]
-        self.full_header.setFrame_(R((hx, hy, hw - 90, hh)))
-        self.full_home_btn.setFrame_(R((hx + hw - 84, hy, 84, hh)))
-        self.full_convo_scroll.setFrame_(R(lay["conversation"]))
         self.full_divider.setFrame_(R((fw.SIDEBAR_W, 0, 1, ch)))
-        if lay["result"]:
-            rx, ry, rw, rh = lay["result"]
-            self.full_card.setFrame_(R((rx, ry, rw, rh - 18)))
-            self.full_result_scroll.setFrame_(R((rx + 1, ry + 1, rw - 2, rh - 20)))
-            self.full_result_title.setFrame_(R((rx + 2, ry + rh - 16, rw, 16)))
-        self.full_input_bg.setFrame_(R(lay["field"]))
+        self.full_new_chat.setFrame_(R(lay["new_chat"]))
+        list_x, list_y, list_w, list_h = lay["sidebar_list"]
+        self.full_side_scroll.setFrame_(R(lay["sidebar_list"]))
+        self.full_side_doc.setFrame_(NSMakeRect(0, 0, fw.SIDEBAR_W, max(getattr(self, "_full_side_height", 0.0), list_h)))
+        self.full_header_btn.setFrame_(R(lay["header"]))
+        self.full_greeting.setHidden_(lay["greeting"] is None)
+        if lay["greeting"]:
+            self.full_greeting.setFrame_(R(lay["greeting"]))
+        self.full_convo_scroll.setHidden_(lay["conversation"] is None)
+        if lay["conversation"]:
+            self.full_convo_scroll.setFrame_(R(lay["conversation"]))
+        self.full_input_bg.setFrame_(R(lay["input"]))
         fx, fy, fwid, fh = lay["field"]
-        self.full_field.setFrame_(R((fx + 16, fy + (fh - 20) / 2.0, fwid - 32, 20)))
-        mx, my, mw, mh = lay["mic"]
-        self.full_mic.setFrame_(R((mx + 8, my + 8, mw - 16, mh - 16)))
+        self.full_field.setFrame_(R((fx, fy + (fh - 20.0) / 2.0, fwid, 20.0)))
+        self.full_mic.setFrame_(R(lay["mic"]))
         widths = {b.chipId: chip_width(b.chipId) for b in self.full_chips}
         placed = {c["id"]: c["frame"] for c in fw.chip_frames([b.chipId for b in self.full_chips], widths, lay["chips"])}
         for b in self.full_chips:
@@ -4665,31 +4749,49 @@ class AppDelegate(NSObject):
                 b.setFrame_(R(frame))
 
     @objc.python_method
+    def _rebuild_full_sidebar(self):
+        """Sidebar rows from the sections and the typed history. Recent lists everything typed, not only what is on screen."""
+        doc = getattr(self, "full_side_doc", None)
+        if doc is None:
+            return
+        for view in list(doc.subviews()):
+            view.removeFromSuperview()
+        _shown, allrows = self._full_rows()
+        items, height = fw.sidebar_items(fw.history_items(allrows))
+        self._full_side_height = float(height)
+        self.full_side_heads = []
+        for item in items:
+            x, y, w, h = item["frame"]
+            if item["kind"] == "row":
+                btn = FullRowButton.alloc().initWithFrame_(NSMakeRect(x, y, w, h))
+                btn.configure(item["label"], "row", item["action"], self)
+                doc.addSubview_(btn)
+                continue
+            label = NSTextField.labelWithString_(item["label"])
+            label.setFont_(NSFont.systemFontOfSize_weight_(11.0 if item["kind"] == "head" else 12.0, 0.4))
+            label.setFrame_(NSMakeRect(x + 2.0, y + 2.0, w - 2.0, h - 4.0))
+            label.setTextColor_(self._fw_color("muted"))
+            doc.addSubview_(label)
+            if item["kind"] == "head":
+                self.full_side_heads.append(label)
+
+    @objc.python_method
     def _refresh_full_window(self):
         if getattr(self, "full_window", None) is None or not hasattr(self, "typed"):
             return
-        rows = list(self.typed.rows)
-        items = fw.history_items(rows)
-        self.full_history.setString_("\n\n".join(items) if items else "Nothing yet.")
-        self.full_history.setTextColor_(self._fw_color("ink"))
+        shown, _allrows = self._full_rows()
+        self._rebuild_full_sidebar()
         text = NSMutableAttributedString.alloc().init()
-        for who, line in fw.conversation_lines(rows):
+        for who, line in fw.conversation_lines(shown):
             name_attrs = {NSFontAttributeName: NSFont.systemFontOfSize_weight_(12, 0.4),
                           NSForegroundColorAttributeName: self._fw_color("accent" if who == "Jev" else "muted")}
             body_attrs = {NSFontAttributeName: NSFont.systemFontOfSize_(13.5),
                           NSForegroundColorAttributeName: self._fw_color("ink")}
             text.appendAttributedString_(NSAttributedString.alloc().initWithString_attributes_(who + "\n", name_attrs))
             text.appendAttributedString_(NSAttributedString.alloc().initWithString_attributes_(line + "\n\n", body_attrs))
-        if not rows:
-            text = NSAttributedString.alloc().initWithString_attributes_(
-                "Hi, I'm Jev. Type below, tap a chip, or hold the mic to talk.",
-                {NSFontAttributeName: NSFont.systemFontOfSize_(13.5),
-                 NSForegroundColorAttributeName: self._fw_color("muted")})
         self.full_convo.textStorage().setAttributedString_(text)
         self.full_convo.scrollToEndOfDocument_(None)
-        result = fw.last_result(rows) or "Results and tool output show here."
-        self.full_result.setString_(result)
-        self.full_result.setTextColor_(self._fw_color("ink" if fw.last_result(rows) else "muted"))
+        self._layout_full_window()
 
     @objc.python_method
     def _show_full_window(self, draft=""):
@@ -4711,6 +4813,36 @@ class AppDelegate(NSObject):
         self.full_field.setStringValue_("")
         self._dispatch_text_plan(plan)
         self._refresh_full_window()
+
+    def fullNewChat_(self, _sender):
+        """+ New chat clears what is on screen only. The typed history, Recent and the popover keep their rows."""
+        if hasattr(self, "typed"):
+            self._full_chat_cut = int(getattr(self.typed, "added", 0))
+        self.full_field.setStringValue_("")
+        self._refresh_full_window()
+        self.full_window.makeFirstResponder_(self.full_field)
+
+    def fullRow_(self, sender):
+        """A sidebar row: a command (same path as a typed line), a main-window page, or a past request put back in the field."""
+        kind, payload = getattr(sender, "rowAction", ("", "")) or ("", "")
+        if kind == "page":
+            self._open_main_page(payload)
+            return
+        if kind == "fill":
+            self.full_field.setStringValue_(payload)
+            self.full_window.makeFirstResponder_(self.full_field)
+            return
+        if kind == "send":
+            plan = submission(payload, "")
+            if plan is not None:
+                self._dispatch_text_plan(plan)
+            self._refresh_full_window()
+
+    @objc.python_method
+    def _open_main_page(self, key):
+        """The other pages (Dictionary, Apps, Dictation history, Privacy, Settings, Keys) live in the main window."""
+        self.showMain_(None)
+        self._select_tab(key)
 
     @objc.python_method
     def _pill_flags(self):
