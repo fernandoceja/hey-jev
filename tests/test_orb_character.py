@@ -51,12 +51,14 @@ def test_every_eye_shape_stays_inside_the_eye_bounds(name, size):
         assert -1e-9 <= y <= size + 1e-9
 
 
-def test_open_eye_is_a_circle_through_its_segment_midpoints():
+def test_open_eye_is_a_cream_bar_through_its_segment_midpoints():
+    # Restored from 1c63b74: a 4 x 10 pt bar centred in the 11 pt eye frame, so an ellipse of radii 2 and 5.
     points = eye_shape("open", EYE)
-    radius = EYE / 2.0
+    cx, cy = EYE / 2.0, EYE / 2.0
+    rx, ry = 2.0, 5.0
     for i in range(1, len(points), 3):
         mid = _bezier_midpoint(points[i - 1], points[i], points[i + 1], points[i + 2])
-        assert math.hypot(mid[0] - radius, mid[1] - radius) == pytest.approx(radius, rel=0.01)
+        assert math.hypot((mid[0] - cx) / rx, (mid[1] - cy) / ry) == pytest.approx(1.0, rel=0.02)
 
 
 def test_eye_shape_rejects_unknown_names():

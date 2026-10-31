@@ -14,19 +14,21 @@ DESIGN_CENTER = DESIGN_SIZE / 2.0
 BODY_SIZE = 56.0
 BODY_ORIGIN = (DESIGN_SIZE - BODY_SIZE) / 2.0
 
-EYE_SIZE = 11.0
+EYE_SIZE = 11.0  # the eye's own frame; the cream bar inside it is EYE_BAR_W wide
+EYE_BAR_W = 4.0  # restored from 1c63b74: cream bars, 4 x 10 pt
 EYE_SPACING = 8.0  # each eye sits this far left or right of the body centre
-EYE_CENTER_Y = 38.0
-PUPIL_SIZE = 4.4
+EYE_CENTER_Y = 40.0  # restored from 1c63b74 (bars span y 35-45)
+PUPIL_SIZE = 2.2  # small, so eye tracking still shows on the bar
 
-HIGHLIGHT_SIZE = (20.0, 12.0)
-HIGHLIGHT_ORIGIN = (18.0, 46.0)  # fixed: the highlight is a sibling of the bob group
-HIGHLIGHT_ALPHA = 0.85
+HIGHLIGHT_SIZE = (23.0, 12.0)  # restored from 1c63b74: a flat oval
+HIGHLIGHT_ORIGIN = (18.0, 43.0)  # fixed: the highlight is a sibling of the bob group
+HIGHLIGHT_ALPHA = 0.20
 
-SHADOW_SIZE = (44.0, 10.0)
-SHADOW_ORIGIN = (14.0, 1.0)
+SHADOW_SIZE = (56.0, 16.0)  # restored from 1c63b74: the old drop shadow footprint
+SHADOW_ORIGIN = (8.0, 3.0)
 SHADOW_RADIUS = 8.0
-SHADOW_OPACITY = 0.35
+SHADOW_OPACITY = 0.14
+SHADOW_RGB = (0.02, 0.04, 0.14)
 
 RING_INSET = 5.0
 RING_DIAMETER = 62.0
@@ -34,17 +36,19 @@ RING_DIAMETER = 62.0
 MAX_PUPIL_OFFSET = 3.0
 PUPIL_REACH = 300.0
 
-# Jev's existing cyan → blue → indigo, as 0–1 floats (was NSColor in orb_view).
+# Body gradient, restored from 1c63b74 orb_view: a linear gradient at 65 degrees, indigo to cyan-green.
 ORB_PALETTE = (
-    (0.36, 0.95, 0.92),
-    (0.16, 0.42, 0.95),
-    (0.08, 0.07, 0.36),
+    (0.07, 0.05, 0.28),
+    (0.12, 0.29, 0.83),
+    (0.24, 0.91, 0.81),
 )
+ORB_GRADIENT_ANGLE = 65.0
 SHADE_RGB = (0.02, 0.02, 0.2)
-SHADE_ALPHA = {"light": 0.40, "dark": 0.50}  # tune on the hand test
+SHADE_ALPHA = {"light": 0.0, "dark": 0.0}  # restored from 1c63b74: no shade over the body
 RIM_RGB = (0.45, 0.85, 1.0)
-RIM_ALPHA = 0.35
-EYE_EDGE_RGB = (0.894, 0.902, 0.933)  # #E4E6EE, the matte eye edge
+RIM_ALPHA = 0.0  # restored from 1c63b74: no rim
+OUTLINE_ALPHA = 0.0  # restored from 1c63b74: no outline stroke
+EYE_EDGE_RGB = (1.0, 0.98, 0.88)  # restored from 1c63b74: cream eyes, solid
 GLYPH_RGB = (1.0, 0.98, 0.88)  # the cream used for the thinking, speaking and error cues
 LISTEN_GLYPH_RGB = (0.55, 0.86, 1.0)
 RING_RGB = (0.18, 0.65, 1.0)
@@ -91,7 +95,7 @@ CLIP_FPS = 60  # assumed, not confirmed: see docs/plans/eney-bubble-v2-rea-notes
 BOB_AMPLITUDE = 2.5
 BOB_PERIOD = 2.6
 SHADOW_MIN_SCALE = 0.94
-SHADOW_MIN_OPACITY = 0.28
+SHADOW_MIN_OPACITY = 0.07  # half of SHADOW_OPACITY, so the bob pulse stays under the peak
 BREATH_FRAMES = 450
 BREATH_SCALE_X = 0.995
 BREATH_SCALE_Y = 1.015

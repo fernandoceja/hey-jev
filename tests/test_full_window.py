@@ -287,6 +287,13 @@ class FullWindowWiringTests(unittest.TestCase):
         self.assertIn("finally:", snap)
         self.assertLess(snap.index("cacheDisplayInRect_toBitmapImageRep_"), snap.index("finally:"))
 
+    def test_glass_covers_the_whole_window(self):
+        ui = _ui()
+        layout = _func(ui, "_layout_full_window")
+        self.assertIn("self.full_effect.setFrame_(R((0, 0, cw, ch)))", layout)
+        chrome = _func(ui, "_apply_full_chrome")
+        self.assertIn('self.full_main.setHidden_(chrome["backing"] != "solid")', chrome)
+
     def test_respects_reduce_transparency(self):
         chrome = _func(_ui(), "_apply_full_chrome")
         self.assertIn("accessibilityDisplayShouldReduceTransparency", chrome)

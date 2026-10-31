@@ -18,12 +18,14 @@ HANDLE = 0.2762
 EYE_POINTS = 13  # one move, then four cubic segments (three points each), per eye shape
 
 # Four anchors per shape (top, right, bottom, left) as fractions of the eye size. Every point stays in 0..1.
+# Restored from 1c63b74: the eyes are cream bars, 4 pt wide (0.318..0.682 of 11 pt) and 10 pt tall, so the
+# open shape is a stadium and the closed shapes are flat bars. Blink and thinking still morph between them.
 EYE_SHAPES = {
-    "open": ((0.5, 0.0), (1.0, 0.5), (0.5, 1.0), (0.0, 0.5)),
-    "closedDown": ((0.5, 0.5), (1.0, 0.56), (0.5, 0.62), (0.0, 0.56)),
-    "closedUp": ((0.5, 0.36), (1.0, 0.44), (0.5, 0.5), (0.0, 0.44)),
-    "smileClosed": ((0.5, 0.28), (1.0, 0.62), (0.5, 0.5), (0.0, 0.62)),
-    "wide": ((0.5, 0.0), (0.92, 0.5), (0.5, 1.0), (0.08, 0.5)),
+    "open": ((0.5, 0.045), (0.682, 0.5), (0.5, 0.955), (0.318, 0.5)),
+    "closedDown": ((0.5, 0.5), (0.682, 0.56), (0.5, 0.62), (0.318, 0.56)),
+    "closedUp": ((0.5, 0.36), (0.682, 0.44), (0.5, 0.5), (0.318, 0.44)),
+    "smileClosed": ((0.5, 0.28), (0.682, 0.62), (0.5, 0.5), (0.318, 0.62)),
+    "wide": ((0.5, 0.0), (0.75, 0.5), (0.5, 1.0), (0.25, 0.5)),
 }
 
 # lookIntensity by character state. Only "idle" is driven by PR 2; the other rows are the plan's table for later PRs.

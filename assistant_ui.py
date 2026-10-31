@@ -4704,6 +4704,8 @@ class AppDelegate(NSObject):
         self.full_effect.setHidden_(chrome["backing"] == "solid")
         self.full_solid.fill = "soft"
         self.full_solid.setHidden_(chrome["backing"] != "solid")
+        # Glass: the whole window is one NSVisualEffectView, so the flat page under the main column is hidden.
+        self.full_main.setHidden_(chrome["backing"] != "solid")
         for view in (self.full_solid, self.full_main, self.full_input_bg, self.full_divider):
             view.setNeedsDisplay_(True)
         self.full_greeting.setTextColor_(self._fw_color("ink"))
@@ -4722,7 +4724,7 @@ class AppDelegate(NSObject):
         R = lambda r: NSMakeRect(*r)
         cw, ch = lay["size"]
         self.full_solid.setFrame_(R((0, 0, cw, ch)))
-        self.full_effect.setFrame_(R(lay["sidebar"]))
+        self.full_effect.setFrame_(R((0, 0, cw, ch)))  # glass behind the whole window
         self.full_main.setFrame_(R((fw.SIDEBAR_W, 0, cw - fw.SIDEBAR_W, ch)))
         self.full_divider.setFrame_(R((fw.SIDEBAR_W, 0, 1, ch)))
         self.full_new_chat.setFrame_(R(lay["new_chat"]))
