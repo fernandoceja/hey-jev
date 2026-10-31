@@ -4490,6 +4490,23 @@ class AppDelegate(NSObject):
             eye = tree.eyes["L"]
             print("  orb {0} eyeL: hidden={1} opacity={2:.2f} bounds={3} mask={4}".format(
                 tag, bool(eye.isHidden()), float(eye.opacity()), rect(eye.bounds()), eye.mask() is not None))
+            from Quartz import CGPathGetBoundingBox
+            pos, anchor = tree.root.position(), tree.root.anchorPoint()
+            print("  orb {0} root position=({1:.2f},{2:.2f}) anchor=({3:.2f},{4:.2f}) view=({5:.1f},{6:.1f})".format(
+                tag, pos.x, pos.y, anchor.x, anchor.y, float(orb.bounds().size.width),
+                float(orb.bounds().size.height)))
+            mask_box = CGPathGetBoundingBox(tree.body.mask().path())
+            print("  orb {0} body mask path bbox=({1:.1f},{2:.1f},{3:.1f},{4:.1f})".format(
+                tag, mask_box.origin.x, mask_box.origin.y, mask_box.size.width, mask_box.size.height))
+            base = tree.base
+            print("  orb {0} base type={1} start=({2:.2f},{3:.2f}) end=({4:.2f},{5:.2f}) locations={6} colors={7}".format(
+                tag, base.type(), base.startPoint().x, base.startPoint().y, base.endPoint().x, base.endPoint().y,
+                list(base.locations() or []), len(base.colors() or [])))
+            print("  orb {0} window opaque={1} alpha={2:.2f} shadow={3} full window visible={4} "
+                  "occlusion={5}".format(
+                      tag, bool(self.full_window.isOpaque()), float(self.full_window.alphaValue()),
+                      bool(self.full_window.hasShadow()), bool(self.full_window.isVisible()),
+                      int(self.full_window.occlusionState())))
         except Exception as exc:
             print("  orb {0} log failed: {1}".format(tag, exc))
 
