@@ -2077,12 +2077,11 @@ class AppDelegate(NSObject):
         self.mini_panel = KeyablePanel.alloc().initWithContentRect_styleMask_backing_defer_(
             NSMakeRect(0, 0, size[0], size[1]), style, NSBackingStoreBuffered, False
         )
+        self.mini_panel.setLevel_(BAR_LEVEL)
         self.mini_panel.setOpaque_(False)
         self.mini_panel.setBackgroundColor_(NSColor.clearColor())
         self.mini_panel.setHasShadow_(True)
-        # setFloatingPanel_ resets the level to NSFloatingWindowLevel (3), so the level must come after it.
         self.mini_panel.setFloatingPanel_(True)
-        self.mini_panel.setLevel_(BAR_LEVEL)
         self.mini_panel.setHidesOnDeactivate_(False)
         self.mini_panel.setBecomesKeyOnlyIfNeeded_(PILL_BECOMES_KEY_ONLY_IF_NEEDED)
         self.mini_panel.setMovableByWindowBackground_(True)
@@ -3685,8 +3684,8 @@ class AppDelegate(NSObject):
         style = NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel
         panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
             NSMakeRect(0, 0, 300, 420), style, NSBackingStoreBuffered, False)
-        panel.setFloatingPanel_(True)  # resets the level to 3, so the level comes after it
         panel.setLevel_(BAR_LEVEL)
+        panel.setFloatingPanel_(True)
         panel.setHidesOnDeactivate_(False)
         panel.setBecomesKeyOnlyIfNeeded_(True)
         panel.setOpaque_(False)
