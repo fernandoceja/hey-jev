@@ -27,8 +27,6 @@ from AppKit import (
     NSColor,
     NSEvent,
     NSEventMaskFlagsChanged,
-    NSEventMaskLeftMouseDown,
-    NSEventMaskRightMouseDown,
     NSEventMaskKeyDown,
     NSEventModifierFlagControl,
     NSEventModifierFlagOption,
@@ -148,12 +146,6 @@ from mini_bar import (
     choice_origin,
     choice_panel_box,
     pointer_inside,
-    clicked_outside_popover,
-    orb_should_reassert,
-    orb_window_log_line,
-    orb_window_needs_fix,
-    orb_window_config,
-    orb_after_click_away,
     migrate_saved_origin,
     place_bar,
     plus_item,
@@ -180,7 +172,6 @@ from mini_bar import (
     is_our_app,
 )
 from orb_motion import DRAG_TICK_SECONDS, SPRING_FOLLOW, SPRING_SNAP, drag_roughness, drag_stretch, follow_step, spring, spring_done
-from orb_health import render_problems, render_summary
 from orb_view import make_orb_view, orb_frame
 import full_window as fw
 from ptt import PushToTalk
@@ -192,7 +183,7 @@ from updates import check_upstream, safe_browser_url
 KeyablePanel = keyable_panel(NSPanel)
 
 NORMAL, FLOATING = 0, 3  # NSNormalWindowLevel, NSFloatingWindowLevel
-BAR_LEVEL = 28  # above NSStatusWindowLevel, so the capsule stays over status items. Same as mini_bar.ORB_WINDOW_LEVEL.
+BAR_LEVEL = 28  # above NSStatusWindowLevel, so the capsule stays over status items
 SIDEBAR_MATERIAL = 7  # NSVisualEffectMaterialSidebar
 HINTS = {"ptt": "Hold right Option to talk", "wake": "Say “Hey Jev”, then your command"}
 MODES = ("ptt", "wake")
@@ -1937,7 +1928,6 @@ class AppDelegate(NSObject):
 
     def activeSpaceDidChange_(self, _notification):
         self._force_ptt_release("space")
-        self._reassert_orb()
 
     @objc.python_method
     def _accessibility_trusted(self):
@@ -2090,9 +2080,25 @@ class AppDelegate(NSObject):
         self.mini_panel.setOpaque_(False)
         self.mini_panel.setBackgroundColor_(NSColor.clearColor())
         self.mini_panel.setHasShadow_(True)
-        self._apply_orb_window_flags(self.mini_panel)
+        # setFloatingPanel_ resets the level to NSFloatingWindowLevel (3), so the level must come after it.
+        self.mini_panel.setFloatingPanel_(True)
+        self.mini_panel.setLevel_(BAR_LEVEL)
+        self.mini_panel.setHidesOnDeactivate_(False)
         self.mini_panel.setBecomesKeyOnlyIfNeeded_(PILL_BECOMES_KEY_ONLY_IF_NEEDED)
         self.mini_panel.setMovableByWindowBackground_(True)
+        # Every Space, including over full-screen apps. The numeric mask matches
+        # these AppKit flags; Stationary stops the pill hopping between Spaces.
+        self.mini_panel.setCollectionBehavior_(
+            NSWindowCollectionBehaviorCanJoinAllSpaces
+            | NSWindowCollectionBehaviorFullScreenAuxiliary
+            | NSWindowCollectionBehaviorStationary
+        )
+        if BAR_COLLECTION != (
+            int(NSWindowCollectionBehaviorCanJoinAllSpaces)
+            | int(NSWindowCollectionBehaviorFullScreenAuxiliary)
+            | int(NSWindowCollectionBehaviorStationary)
+        ):
+            self.mini_panel.setCollectionBehavior_(BAR_COLLECTION)
         self.mini_panel.setReleasedWhenClosed_(False)
         self.mini_panel.setRestorable_(False)
         # No forced Dark Aqua. Label colors and the glass follow light and dark.
@@ -2234,8 +2240,6 @@ class AppDelegate(NSObject):
         if self.bar.should_show():
             if not panel.isVisible():
                 self._order_bar_front()
-            elif getattr(self, "_bar_hiding", False):
-                self._keep_orb_visible()
         elif panel.isVisible():
             self._hide_bar()
         self._sync_orb()
@@ -2251,147 +2255,17 @@ class AppDelegate(NSObject):
             panel.setAlphaValue_(1.0)
             panel.orderOut_(None)
             return
-        self._bar_hiding = True
 
         def done():
-            # The bar can be wanted again before this fade lands (the main window hid again, or a click
-            # outside closed the popover). Ordering out then would lose the orb until the next sync.
-            self._bar_hiding = False
-            if not self.bar.should_show() and panel.isVisible():
+            if panel.isVisible():
                 panel.orderOut_(None)
             panel.setAlphaValue_(1.0)
             view = panel.contentView()
             layer = view.layer() if view is not None else None
             if layer is not None:
                 layer.setOpacity_(1.0)
-            if self.bar.should_show():
-                self._sync_orb()
 
         self._fade_bar(0.0, done)
-
-    @objc.python_method
-    def _apply_orb_window_flags(self, panel):
-        """Status-level, every Space, Stationary, out of the window cycle, never hidden on deactivate or Hide."""
-        config = orb_window_config()
-        # setFloatingPanel_ resets the level to NSFloatingWindowLevel (3), so it must come before setLevel_.
-        panel.setFloatingPanel_(config["floating"])
-        panel.setHidesOnDeactivate_(config["hides_on_deactivate"])
-        panel.setCanHide_(config["can_hide"])
-        panel.setCollectionBehavior_(config["collection"])
-        panel.setLevel_(config["level"])
-
-    @objc.python_method
-    def _ensure_orb_window_flags(self, reason, quiet=False):
-        """Put the live orb window back on orb_window_config if anything changed it, then log it to stderr."""
-        panel = getattr(self, "mini_panel", None)
-        if panel is None:
-            return
-        if orb_window_needs_fix(panel.level(), panel.collectionBehavior(),
-                                panel.hidesOnDeactivate(), panel.canHide()):
-            self._apply_orb_window_flags(panel)
-        wanted = hasattr(self, "bar") and self.bar.should_show() and bool(panel.isVisible())
-        snapshot = self._orb_render_snapshot() if wanted else None
-        problems = render_problems(snapshot) if snapshot is not None else []
-        if quiet and not problems:
-            return
-        try:
-            line = orb_window_log_line(reason, panel.windowNumber(), panel.level(),
-                                       panel.collectionBehavior(), panel.isVisible())
-            if snapshot is not None:
-                line += " " + render_summary(snapshot, problems)  # values before any heal below
-            sys.stderr.write(line + "\n")
-        except Exception:
-            pass
-        if problems:
-            self._heal_orb_render(problems)
-
-    @objc.python_method
-    def _orb_render_snapshot(self):
-        """What the orb window, its content view and the orb layers look like right now."""
-        panel = self.mini_panel
-        content = panel.contentView()
-        orb = getattr(self, "orb_view", None)
-        if content is None or orb is None:
-            return None
-        def rect(r):
-            return (float(r.origin.x), float(r.origin.y), float(r.size.width), float(r.size.height))
-        layer = content.layer()
-        attached, layers = orb.renderLayers() if hasattr(orb, "renderLayers") else (True, {})
-        return {
-            "content_hidden": bool(content.isHidden()),
-            "content_alpha": float(content.alphaValue()),
-            "content_layer_opacity": None if layer is None else float(layer.opacity()),
-            "content_bounds": rect(content.bounds()),
-            "orb_hidden": bool(orb.isHidden()),
-            "orb_frame": rect(orb.frame()),
-            "tree_attached": attached,
-            "layers": layers,
-        }
-
-    @objc.python_method
-    def _heal_orb_render(self, problems):
-        """Undo whatever render_problems found, so the orb draws again at its current spot."""
-        panel = self.mini_panel
-        content = panel.contentView()
-        if content is not None:
-            content.setHidden_(False)
-            content.setAlphaValue_(1.0)
-            layer = content.layer()
-            if layer is not None and float(layer.opacity()) < 0.99:
-                layer.removeAnimationForKey_("pillAppear")
-                layer.setOpacity_(1.0)
-        if any(p.startswith("orb_frame") for p in problems):
-            size = panel.frame().size
-            self._layout_mini_bar(float(size.width), float(size.height))
-        orb = getattr(self, "orb_view", None)
-        if orb is not None and hasattr(orb, "healRender"):
-            orb.healRender()
-        self._sync_orb()
-
-    @objc.python_method
-    def _reassert_orb(self):
-        """Re-show the orb with orderFrontRegardless when it should be visible."""
-        panel = getattr(self, "mini_panel", None)
-        if panel is None or not hasattr(self, "bar"):
-            return
-        if orb_should_reassert(self.bar.should_show(), bool(panel.isVisible())) != "front":
-            return
-        self._keep_orb_visible()
-        panel.orderFrontRegardless()
-        self._ensure_orb_window_flags("reshow")
-
-    def applicationDidBecomeActive_(self, _notification):
-        self._reassert_orb()
-
-    def applicationDidResignActive_(self, _notification):
-        self._reassert_orb()
-
-    @objc.python_method
-    def _keep_orb_visible(self):
-        """After the popover closes, the orb stays on screen at its spot, even if a fade-out was running."""
-        panel = getattr(self, "mini_panel", None)
-        if panel is None or not hasattr(self, "bar"):
-            return
-        pending = bool(getattr(self, "_bar_hiding", False)) or getattr(self, "_bar_fade_done", None) is not None
-        plan = orb_after_click_away(self.bar.should_show(), bool(panel.isVisible()), pending)
-        if plan != "show":
-            return
-        timer = getattr(self, "_fade_timer", None)
-        if timer is not None:
-            timer.invalidate()
-        self._fade_timer = None
-        self._bar_fade_done = None
-        self._bar_hiding = False
-        view = panel.contentView()
-        layer = view.layer() if view is not None else None
-        if layer is not None:
-            layer.removeAnimationForKey_("pillAppear")
-            layer.setOpacity_(1.0)
-        panel.setAlphaValue_(1.0)
-        if not panel.isVisible():
-            panel.orderFrontRegardless()
-        self._ensure_orb_window_flags("keep-visible")
-        self._sync_orb()
 
     @objc.python_method
     def _fade_bar(self, target, completion):
@@ -2473,7 +2347,6 @@ class AppDelegate(NSObject):
         if saved is not None:
             NSUserDefaults.standardUserDefaults().setObject_forKey_(
                 format_origin(saved[0], saved[1]), ORIGIN_KEY)
-        self._ensure_orb_window_flags("drag")
 
     @objc.python_method
     def _order_bar_front(self):
@@ -2496,7 +2369,6 @@ class AppDelegate(NSObject):
         else:
             self.mini_panel.setAlphaValue_(1.0)
         self.mini_panel.orderFrontRegardless()
-        self._ensure_orb_window_flags("show")
         if motion:
             self._fade_bar(1.0, None)
 
@@ -2664,7 +2536,6 @@ class AppDelegate(NSObject):
         pill.focus_lost()
         if pill.collapsed:
             self._apply_pill_presentation()
-            self._reassert_orb()
 
     def layoutMiniBar_(self, _sender):
         panel = getattr(self, "mini_panel", None)
@@ -2904,51 +2775,6 @@ class AppDelegate(NSObject):
             panel.setAlphaValue_(1.0)
         self._apply_mic_tint()
         self._sync_orb()
-        self._sync_click_away_monitor(not self.pillCollapsed)
-        if self.pillCollapsed:
-            self._reassert_orb()  # every way the popover closes leaves the orb up front
-        elif panel.isVisible():
-            self._ensure_orb_window_flags("popover-open")
-
-    @objc.python_method
-    def _sync_click_away_monitor(self, wanted):
-        """Watch for clicks in other apps only while the popover is open. Mouse monitors need no permission."""
-        monitor = getattr(self, "click_away_monitor", None)
-        if wanted and monitor is None:
-            self.click_away_monitor = NSEvent.addGlobalMonitorForEventsMatchingMask_handler_(
-                NSEventMaskLeftMouseDown | NSEventMaskRightMouseDown, self._global_click_away)
-        elif not wanted and monitor is not None:
-            NSEvent.removeMonitor_(monitor)
-            self.click_away_monitor = None
-
-    @objc.python_method
-    def _global_click_away(self, _event):
-        panel = getattr(self, "mini_panel", None)
-        pill = getattr(self, "pill", None)
-        if panel is None or pill is None or getattr(self, "_pill_menu_open", False):
-            return
-        mouse = NSEvent.mouseLocation()
-        frame = panel.frame()
-        box = (float(frame.origin.x), float(frame.origin.y), float(frame.size.width), float(frame.size.height))
-        if clicked_outside_popover(pill.expanded, (float(mouse.x), float(mouse.y)), box):
-            self._close_popover_on_click_away()
-
-    @objc.python_method
-    def _close_popover_on_click_away(self):
-        """Close only the popover. The orb stays where it is, and the next open starts on the greeting."""
-        self.pill.click_away()
-        self.bar.reply = ""
-        field = getattr(self, "mini_field", None)
-        if field is not None:
-            field.setStringValue_("")
-        self._popover_history_open = False
-        keys = getattr(self, "pill_keys", None)
-        if keys is not None:
-            keys.previous = None  # the click already chose the next front app; don't yield back over it
-            keys.release(NSApp, getattr(self, "mini_panel", None))
-        self._refresh_trailing_symbol()
-        self._apply_pill_presentation()
-        self._reassert_orb()
 
     @objc.python_method
     def _place_expanded_on_main_screen(self):
@@ -3859,8 +3685,8 @@ class AppDelegate(NSObject):
         style = NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel
         panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
             NSMakeRect(0, 0, 300, 420), style, NSBackingStoreBuffered, False)
+        panel.setFloatingPanel_(True)  # resets the level to 3, so the level comes after it
         panel.setLevel_(BAR_LEVEL)
-        panel.setFloatingPanel_(True)
         panel.setHidesOnDeactivate_(False)
         panel.setBecomesKeyOnlyIfNeeded_(True)
         panel.setOpaque_(False)
@@ -4038,7 +3864,6 @@ class AppDelegate(NSObject):
             main.orderOut_(None)
         if self.bar.should_show() and not panel.isVisible():
             panel.orderFrontRegardless()
-        self._ensure_orb_window_flags("focus")
 
     @objc.python_method
     def _place_pill_caret(self, field, caret):
@@ -4322,10 +4147,6 @@ class AppDelegate(NSObject):
         self._sync_choice_dismiss()
         self._sync_zoe_ui()
         self._sync_orb()
-        # Catches an orb that stopped drawing between re-shows (for example after the show fade turns on
-        # the content view's layer). Logs only when it finds and heals a problem.
-        if hasattr(self, "pill") and self.pill.collapsed:
-            self._ensure_orb_window_flags("tick", quiet=True)
 
     @objc.python_method
     def _sync_choice_dismiss(self):
@@ -4419,7 +4240,6 @@ class AppDelegate(NSObject):
             NSEvent.removeMonitor_(self.key_monitor)
         if getattr(self, "type_monitor", None) is not None:
             NSEvent.removeMonitor_(self.type_monitor)
-        self._sync_click_away_monitor(False)
 
 
     def checkForUpdates_(self, _sender):

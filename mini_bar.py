@@ -544,58 +544,9 @@ def normalize_typed(text):
 # it on every Space, including over a full-screen app.
 # IgnoresCycle (64) keeps the capsule out of the Command-` window cycle.
 CAN_JOIN_ALL_SPACES = 1
-STATIONARY = 16
-IGNORES_CYCLE = 64
 FULL_SCREEN_AUXILIARY = 256
-BAR_COLLECTION = CAN_JOIN_ALL_SPACES | STATIONARY | IGNORES_CYCLE | FULL_SCREEN_AUXILIARY
-# Above NSStatusWindowLevel (25), so the orb stays over status items and normal windows.
-ORB_WINDOW_LEVEL = 28
-
-
-def orb_window_config():
-    """Flags for the orb and popover window (one panel), so the desktop never sweeps it away.
-
-    Floating and status-level (setFloatingPanel_ resets the level to NSFloatingWindowLevel, 3, so the level
-    must be set after it); on every Space and over full-screen apps; Stationary so Mission Control,
-    Show Desktop and the Sonoma "Click wallpaper to reveal desktop" sweep leave it put; out of the
-    Command-` cycle. It never hides on deactivate or with Hide Jev (Command-H). The popover still closes
-    on a click away; that is PillPresentation's job, not the window's.
-    """
-    return {
-        "level": ORB_WINDOW_LEVEL,
-        "collection": BAR_COLLECTION,
-        "floating": True,
-        "hides_on_deactivate": False,
-        "can_hide": False,
-    }
-
-
-def orb_window_needs_fix(level, collection, hides_on_deactivate=False, can_hide=False):
-    """True when a live orb window has drifted from orb_window_config (wrong level or collection, or it hides)."""
-    config = orb_window_config()
-    try:
-        return (int(level) != config["level"] or int(collection) != config["collection"]
-                or bool(hides_on_deactivate) != config["hides_on_deactivate"]
-                or bool(can_hide) != config["can_hide"])
-    except (TypeError, ValueError):
-        return True
-
-
-def orb_window_log_line(reason, window_number, level, collection, visible):
-    """One stderr line to match against CGWindowListCopyWindowInfo (kCGWindowNumber, kCGWindowLayer)."""
-    return "jev orb window: reason={0} windowNumber={1} level={2} collectionBehavior={3} visible={4}".format(
-        reason, int(window_number), int(level), int(collection), bool(visible))
-
-
-def orb_should_reassert(should_show, panel_visible):
-    """Order the orb front again (orderFrontRegardless) after the popover closes or the app (de)activates.
-
-    'front' when the bar is wanted: it re-raises a visible orb and puts back one the system took away.
-    'none' when the bar is meant to be hidden (main window up, Hide Mini Bar, quitting).
-    """
-    if not should_show:
-        return "none"
-    return "front"
+BAR_COLLECTION = CAN_JOIN_ALL_SPACES | FULL_SCREEN_AUXILIARY | 16
+BAR_COLLECTION |= 64
 
 
 def attachments_supported():
@@ -694,27 +645,6 @@ def pointer_inside(point, frame):
     x, y = point
     fx, fy, fw, fh = frame
     return fx <= x < fx + fw and fy <= y < fy + fh
-
-
-def clicked_outside_popover(expanded, point, popover_frame):
-    """True when the popover is open and a mouse-down landed outside its window frame."""
-    if not expanded or point is None or popover_frame is None:
-        return False
-    return not pointer_inside(point, popover_frame)
-
-
-def orb_after_click_away(should_show, panel_visible, fade_out_pending):
-    """What the orb window does once a click outside has closed the popover.
-
-    'keep': it is on screen and stays. 'show': put it back at full opacity, cancelling a fade-out that is
-    still running, because that fade would order it out after the popover closed. 'none': the bar is
-    meant to be hidden (main window up, Hide Mini Bar, quitting), so leave it alone. Never 'hide'.
-    """
-    if not should_show:
-        return "none"
-    if not panel_visible or fade_out_pending:
-        return "show"
-    return "keep"
 
 
 def choice_origin(anchor, screen, panel_size, gap=8.0):
@@ -1845,13 +1775,6 @@ class PillPresentation:
         self.showing_reply = False
         self.expanded = False
         return self._mode()
-
-    def click_away(self):
-        """A click outside the popover. Close it the way Esc does, so the next open starts on the greeting.
-
-        Only the popover closes. The orb is a separate question for BarController and orb_after_click_away.
-        """
-        return self.escape()
 
     def keep_typing(self):
         """The user typed over the reply. Stay open, and a later blur can close it."""
