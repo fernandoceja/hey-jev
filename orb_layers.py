@@ -13,6 +13,7 @@ import random
 
 from orb_character import EYE_SHAPES, accent_seconds, accent_timeline, breath_batch, eye_shape
 from orb_motion import (
+    MOUTH_PULSE_HZ,
     BODY_SIZE,
     BOB_AMPLITUDE,
     BOB_PERIOD,
@@ -21,36 +22,54 @@ from orb_motion import (
     DESIGN_SIZE,
     EYE_EDGE_RGB,
     EYE_SIZE,
+    ENVELOPE_HZ,
     FLOAT_AMPLITUDE,
     FLOAT_FRAMES,
     CLIP_FPS,
     GLYPH_RGB,
     HIGHLIGHT_ALPHA,
     LISTEN_GLYPH_RGB,
+    MOUTH_GLYPH_HEIGHT,
     OUTLINE_ALPHA,
     ORB_GRADIENT_ANGLE,
     ORB_PALETTE,
     PRESS_SCALE,
     PRESS_SECONDS,
+    PUPIL_SIZE,
     RIM_ALPHA,
     RIM_RGB,
     RING_RGB,
+    SEARCH_SWEEP_SECONDS,
     SHADE_ALPHA,
     SHADE_RGB,
     SHADOW_OPACITY,
     SHADOW_RGB,
     SHADOW_SIZE,
+    SPINNER_LINE_WIDTH,
+    SPINNER_RADIUS,
+    SPINNER_ALPHA,
+    SPINNER_SECONDS,
+    SPINNER_SWEEP_DEGREES,
     SPRING_DROP_JIGGLE,
     SPRING_RELEASE,
     layer_geometry,
+    mouth_height,
+    pulse_mouth,
     shadow_for_bob,
     sine_samples,
+    squint_scale,
     stretch_matrix,
 )
 
 FLOAT_SECONDS = FLOAT_FRAMES / float(CLIP_FPS)
 MOUTH_RECT = (33.0, 23.0, 6.0, 6.0)  # design space, centred under the eyes. yawn opens it to 6 pt.
 MOUTH_RGB = (0.04, 0.06, 0.22)
+POSE_SECONDS = 0.25  # eye shapes morph and the body eases over this long when the pose changes
+LEVEL_SECONDS = 0.12  # the listening body follows the mic level with a short implicit ease
+SPIN_KEY = "spin"
+SWEEP_KEY = "sweep"
+SPEECH_KEY = "speech"
+SPEECH_GLYPH_ANCHOR_Y = 20.5  # centre of the speaking glyph (18 to 23 pt), where its scale pivots
 
 _SHADOW_IMAGES = {}  # backing scale -> CGImage; the shadow does not depend on appearance
 SQUASH_KEY = "squash"  # press, release and jiggle share one key, so each replaces the last
@@ -122,6 +141,27 @@ def _ellipse_path(x, y, w, h):
     path = CGPathCreateMutable()
     CGPathAddEllipseInRect(path, None, CGRectMake(x, y, w, h))
     return path
+
+
+def _arc_path(cx, cy, radius, sweep):
+    """An arc of the given sweep (radians) starting at 3 o'clock, for the thinking spinner."""
+    from Quartz import CGPathAddArc, CGPathCreateMutable
+    path = CGPathCreateMutable()
+    CGPathAddArc(path, None, float(cx), float(cy), float(radius), 0.0, float(sweep), False)
+    return path
+
+
+def _scale_y(scale):
+    """Eye height only: the bar grows or shrinks, and its width stays put."""
+    from Quartz import CGAffineTransformMakeScale
+    return CGAffineTransformMakeScale(1.0, float(scale))
+
+
+def _body_transform(scale, lean_degrees):
+    """Body scale (listening level, 1 at rest) with a small lean. Both are about the body's centre."""
+    from Quartz import CATransform3DMakeScale, CATransform3DRotate
+    s = float(scale)
+    return CATransform3DRotate(CATransform3DMakeScale(s, s, 1.0), math.radians(float(lean_degrees)), 0.0, 0.0, 1.0)
 
 
 def _circle_mask(size):
@@ -337,6 +377,21 @@ class OrbLayers:
         self.glyph_stroke.setFillColor_(None)
         self.glyph_stroke.setLineWidth_(1.5)
 
+        # PR 7: a 270 degree arc around the body. It is hidden except in thinking and searching.
+        self.spinner = place(CAShapeLayer.layer(), (0, 0, DESIGN_SIZE, DESIGN_SIZE))
+        self.spinner.setFillColor_(None)
+        self.spinner.setStrokeColor_(_cg_color((1.0, 1.0, 1.0), SPINNER_ALPHA))
+        self.spinner.setLineWidth_(SPINNER_LINE_WIDTH)
+        self.spinner.setLineCap_("round")
+        self.spinner.setPath_(_arc_path(DESIGN_CENTER, DESIGN_CENTER, SPINNER_RADIUS,
+                                        math.radians(SPINNER_SWEEP_DEGREES)))
+        self.spinner.setHidden_(True)
+        self.pupil_bias = (0.0, 0.0)  # PR 7: per-clip or per-state offset, added to the cursor offset
+        self.pupil_size = PUPIL_SIZE
+        self.pupil_cursor = {"L": (0.0, 0.0), "R": (0.0, 0.0)}
+        self.speech_glyph_pivot = False
+        self.lean = 0.0  # body lean in degrees, from the current clip
+
         # Restored from 1c63b74: a flat white oval, not a radial fade.
         hx, hy, hw, hh = geometry["highlight"]
         self.highlight = place(CAShapeLayer.layer(), (hx, hy, hw, hh))
@@ -345,7 +400,7 @@ class OrbLayers:
 
         self.body_group = place(CALayer.layer(), (0, 0, DESIGN_SIZE, DESIGN_SIZE))
         self.body_group.setSublayers_([self.body, self.ring, self.eyes["L"], self.eyes["R"],
-                                       self.mouth, self.glyph, self.glyph_stroke])
+                                       self.mouth, self.glyph, self.glyph_stroke, self.spinner])
         # Press squash and drag stretch live on their own layer, so they never fight the bob, breath and accents
         # on the body group. The highlight goes in too, so the shine squashes with the body.
         self.squash = place(CALayer.layer(), (0, 0, DESIGN_SIZE, DESIGN_SIZE))
@@ -373,8 +428,7 @@ class OrbLayers:
         ))
 
     def apply(self, state, solid, ring_width):
-        """State cues and the thinking eye squash. Motion is not in this PR."""
-        from Quartz import CGAffineTransformIdentity, CGAffineTransformMakeScale
+        """State cues: ring, mic, ellipsis, speaking mouth glyph and the error "!". The eye pose is apply_pose."""
         fill, fill_rgb, stroke = _glyph_paths(state)
 
         def update():
@@ -385,13 +439,139 @@ class OrbLayers:
             self.glyph_stroke.setPath_(stroke)
             self.ring.setHidden_(state != "listening")
             self.ring.setLineWidth_(ring_width)
-            squash = CGAffineTransformMakeScale(1.0, 0.5) if state == "thinking" else CGAffineTransformIdentity
-            for eye in self.eyes.values():
-                eye.setAffineTransform_(squash)
         self._disable_actions(update)
 
     def set_ring_width(self, width):
         self._disable_actions(lambda: self.ring.setLineWidth_(width))
+
+    def apply_pose(self, pose, clip=None, static=False):
+        """Static pose from voice_pose, with a clip's overrides. Eye shapes morph and the body eases over POSE_SECONDS.
+
+        static is the Reduce Motion (still) case: the arc is drawn but does not turn. Otherwise this only sets
+        values; the spinner and the sweep have their own loops, which applyClip starts.
+        """
+        shapes = clip.eyes if clip is not None else (pose["eye_shape"], pose["eye_shape"])
+        scale_y = clip.scale_y if clip is not None else pose["eye_scale_y"]
+        lean = clip.lean if clip is not None else 0.0
+        spinning = bool(clip.spinner) if clip is not None else bool(pose["spinner_on"])
+
+        def update():
+            for side, shape in (("L", shapes[0]), ("R", shapes[1])):
+                self.eye_masks[side].setPath_(self._eye_paths[shape])
+                self.eyes[side].setAffineTransform_(_scale_y(scale_y))
+            self.lean = lean
+            self.body_group.setTransform_(_body_transform(pose["body_scale"], lean))
+            self.spinner.setHidden_(not spinning)
+            self.set_pupil_look(pose["pupil_bias"] if clip is None else clip.bias, pose["pupil_size"])
+        self._timed(POSE_SECONDS, update)
+        self._set_spin(spinning and not static)
+
+    def set_listen_level(self, scale):
+        """The listening body follows the mic level with a short ease, and keeps the clip's lean."""
+        self._timed(LEVEL_SECONDS, lambda: self.body_group.setTransform_(_body_transform(scale, self.lean)))
+
+    def set_pupil_look(self, bias, size):
+        """Bias and size for the pupils. The cursor offset is added on top of the bias, in set_pupils."""
+        self.pupil_bias = (float(bias[0]), float(bias[1]))
+        self.pupil_size = float(size)
+        self._write_pupils()
+
+    def _write_pupils(self):
+        from Quartz import CAMediaTimingFunction, CATransaction, CGAffineTransformMake
+        scale = self.pupil_size / PUPIL_SIZE
+        CATransaction.begin()
+        CATransaction.setAnimationDuration_(0.08)
+        CATransaction.setAnimationTimingFunction_(CAMediaTimingFunction.functionWithName_("linear"))
+        try:
+            for side in ("L", "R"):
+                cx, cy = self.pupil_cursor[side]
+                # Scale about the pupil's centre, then move by the cursor offset plus the bias.
+                transform = CGAffineTransformMake(scale, 0.0, 0.0, scale,
+                                                  cx + self.pupil_bias[0], cy + self.pupil_bias[1])
+                self.pupils[side].setAffineTransform_(transform)
+        finally:
+            CATransaction.commit()
+
+    def _timed(self, seconds, work):
+        """Run work with implicit animations on, for the given time, so poses ease instead of snapping."""
+        from Quartz import CAMediaTimingFunction, CATransaction
+        CATransaction.begin()
+        CATransaction.setAnimationDuration_(float(seconds))
+        CATransaction.setAnimationTimingFunction_(CAMediaTimingFunction.functionWithName_("easeInEaseOut"))
+        try:
+            work()
+        finally:
+            CATransaction.commit()
+
+    def _set_spin(self, on):
+        """The thinking and searching spinner: one endless 1.2 s linear turn, added once and removed when it stops."""
+        from Quartz import CABasicAnimation, CAMediaTimingFunction
+        if on:
+            if self.spinner.animationForKey_(SPIN_KEY) is not None:  # already turning
+                return
+            anim = CABasicAnimation.animationWithKeyPath_("transform.rotation.z")
+            anim.setFromValue_(0.0)
+            anim.setToValue_(math.tau)
+            anim.setDuration_(SPINNER_SECONDS)
+            anim.setTimingFunction_(CAMediaTimingFunction.functionWithName_("linear"))
+            anim.setRepeatCount_(float("inf"))
+            self.spinner.addAnimation_forKey_(anim, SPIN_KEY)
+        else:
+            self.spinner.removeAnimationForKey_(SPIN_KEY)
+
+    def set_sweep(self, amplitude):
+        """Searching: the pupils scan left and right over 1.6 s. Additive, so the cursor offset still applies."""
+        for side in ("L", "R"):
+            layer = self.pupils[side]
+            layer.removeAnimationForKey_(SWEEP_KEY)
+            if amplitude <= 0.0:
+                continue
+            samples = sine_samples(SEARCH_SWEEP_SECONDS, float(amplitude), 24)
+            anim = _track("position.x", samples, SEARCH_SWEEP_SECONDS, calc="cubic")
+            anim.setAdditive_(True)
+            anim.setRepeatCount_(float("inf"))
+            layer.addAnimation_forKey_(anim, SWEEP_KEY)
+
+    def start_speech(self, levels):
+        """Speaking: the mouth glyph follows the reply's loudness, and the eyes squint on the peaks.
+
+        levels is wav_envelope(), 30 values a second, built once per reply. An empty list gives the 3.5 Hz pulse.
+        """
+        self.stop_speech()
+        if levels:
+            pairs = [(i / float(ENVELOPE_HZ), mouth_height(v) / MOUTH_GLYPH_HEIGHT) for i, v in enumerate(levels)]
+            duration = len(levels) / float(ENVELOPE_HZ)
+            self.glyph.addAnimation_forKey_(_track("transform.scale.y", pairs, duration), SPEECH_KEY)
+            squint = [(i / float(ENVELOPE_HZ), squint_scale(v)) for i, v in enumerate(levels)]
+            for side in ("L", "R"):
+                self.eyes[side].addAnimation_forKey_(_track("transform.scale.y", squint, duration), SPEECH_KEY)
+        else:
+            period = 1.0 / MOUTH_PULSE_HZ
+            pairs = [(period * i / 10.0, pulse_mouth(period * i / 10.0) / MOUTH_GLYPH_HEIGHT) for i in range(11)]
+            self.glyph.addAnimation_forKey_(_loop("transform.scale.y", pairs, period), SPEECH_KEY)
+        self._set_glyph_pivot(True)
+
+    def stop_speech(self):
+        """Remove the speech loops and put the glyph's pivot back to the centre."""
+        self.glyph.removeAnimationForKey_(SPEECH_KEY)
+        for eye in self.eyes.values():
+            eye.removeAnimationForKey_(SPEECH_KEY)
+        self._set_glyph_pivot(False)
+
+    def _set_glyph_pivot(self, speech):
+        """The speaking glyph scales about its own centre, so it grows up and down, not from the body's middle."""
+        from Quartz import CGPointMake
+        if speech == self.speech_glyph_pivot:
+            return
+        self.speech_glyph_pivot = speech
+        if speech:
+            anchor, position = (0.5, SPEECH_GLYPH_ANCHOR_Y / DESIGN_SIZE), (DESIGN_CENTER, SPEECH_GLYPH_ANCHOR_Y)
+        else:
+            anchor, position = (0.5, 0.5), (DESIGN_CENTER, DESIGN_CENTER)
+        self._disable_actions(lambda: (
+            self.glyph.setAnchorPoint_(CGPointMake(*anchor)),
+            self.glyph.setPosition_(CGPointMake(*position)),
+        ))
 
     def set_passives(self, on):
         """Bob, float, breath and shadow pulse. They run in the render server, so Python does no per-frame work."""
@@ -499,28 +679,24 @@ class OrbLayers:
         return float(animation.duration())
 
     def set_pupils(self, offsets):
-        """offsets: {"L": (dx, dy), "R": (dx, dy)} in design points. Eases over 0.08 s, linear."""
-        from Quartz import CAMediaTimingFunction, CATransaction, CGAffineTransformMakeTranslation
-        CATransaction.begin()
-        CATransaction.setAnimationDuration_(0.08)
-        CATransaction.setAnimationTimingFunction_(CAMediaTimingFunction.functionWithName_("linear"))
-        try:
-            for side, (dx, dy) in offsets.items():
-                self.pupils[side].setAffineTransform_(CGAffineTransformMakeTranslation(dx, dy))
-        finally:
-            CATransaction.commit()
+        """offsets: {"L": (dx, dy), "R": (dx, dy)} in design points, the cursor part. Eases over 0.08 s, linear."""
+        self.pupil_cursor = {side: (float(dx), float(dy)) for side, (dx, dy) in offsets.items()}
+        self._write_pupils()
 
     def reset_motion(self):
-        """Stop every animation and centre the pupils. Used when motion stops or the orb hides."""
-        from Quartz import CATransform3DIdentity, CGAffineTransformIdentity
+        """Stop the idle motion and centre the cursor offset. Keeps the state's pupil bias, and the clip loops.
+
+        Used when motion stops or the orb is docked. The spinner, sweep and speech belong to the character state,
+        so they keep running while the orb is docked.
+        """
+        from Quartz import CATransform3DIdentity
         self.set_passives(False)
         for layer in [self.body_group, self.mouth] + list(self.eye_masks.values()) + list(self.pupils.values()):
             layer.removeAnimationForKey_("accent")
         self.squash.removeAnimationForKey_(SQUASH_KEY)
-        self._disable_actions(lambda: (
-            [pupil.setAffineTransform_(CGAffineTransformIdentity) for pupil in self.pupils.values()],
-            self.squash.setTransform_(CATransform3DIdentity),
-        ))
+        self.pupil_cursor = {"L": (0.0, 0.0), "R": (0.0, 0.0)}
+        self._disable_actions(lambda: self.squash.setTransform_(CATransform3DIdentity))
+        self._write_pupils()
 
     @staticmethod
     def _disable_actions(work):

@@ -1,14 +1,20 @@
 """Original Jev vector orb. Pure presentation rules are usable without AppKit."""
 import math
 import random
+import sys
 import time
 
-from orb_character import look_intensity, next_accent_delay, pick_accent
+from orb_character import (CLIPS, STATE_CLIPS, clip_switch_delay, ease_look, look_intensity, next_accent_delay,
+                           next_clip, orb_state, pick_accent, resolve)
 from orb_motion import BODY_SIZE as ORB_SIZE
 from orb_motion import CURSOR_POLL_SECONDS, DESIGN_CENTER, EYE_CENTER_Y, EYE_SPACING
 from orb_motion import DESIGN_EXTENT as ORB_DESIGN_EXTENT
 from orb_motion import DESIGN_SIZE as PANEL_SIZE
-from orb_motion import cursor_moved, idle_active, pupil_offset, tracking_active
+from orb_motion import cursor_moved, idle_active, pupil_offset, tracking_active, voice_pose, wav_envelope
+
+LOOK_EASE = 0.25  # lookIntensity eases over this many seconds when the character state changes
+SPEECH_WATCH_SECONDS = 0.2  # while the reply's WAV is not known yet, check for it this often
+SPEECH_WATCH_LIMIT = 30.0  # give up on the WAV after this long and keep the pulse
 
 
 def orb_frame(expanded):
@@ -17,16 +23,10 @@ def orb_frame(expanded):
     return (x + w - PANEL_SIZE, y + (h - PANEL_SIZE) / 2, PANEL_SIZE, PANEL_SIZE)
 
 
-def orb_state(status, held=False):
-    if held or status in ("Listening", "Dictating"):
-        return "listening"
-    if status in ("Transcribing", "Thinking", "Doing it", "Finishing"):
-        return "thinking"
-    if status == "Speaking":
-        return "speaking"
-    if status in ("Something went wrong", "Time's up"):
-        return "error"
-    return "idle"
+def current_reply_wav():
+    """The Fish reply WAV that siri last played, or None. Read the same way the level meter reads siri."""
+    siri = sys.modules.get("siri")
+    return getattr(siri, "LAST_REPLY_WAV", None) if siri is not None else None
 
 
 def orb_pose(state, seconds, level=0.0, reduce_motion=False):
@@ -96,6 +96,20 @@ def make_orb_view(frame):
                     self.setWantsLayer_(True)
                     self.setLayerContentsRedrawPolicy_(NSViewLayerContentsRedrawNever)
                     self.tree = orb_layers.OrbLayers(self.layer(), self.rng)
+                    # PR 7: the character state, and the clip and speech timers that run inside it.
+                    self.statusText = "Ready"
+                    self.held = False
+                    self.character = "idle"
+                    self.key = None  # (character, orb_state) of the last applied pose
+                    self.clipTicker = OrbTicker()  # one single-shot clip switch at a time
+                    self.speechTicker = OrbTicker()  # one single-shot watch for the reply WAV at a time
+                    self.clipDelay = 0.0
+                    self.speechEntry = None  # the WAV path that was already there when speaking began
+                    self.speechBuilt = False
+                    self.speechDeadline = 0.0
+                    self.lookFrom = 1.0
+                    self.lookTo = 1.0
+                    self.lookStart = 0.0
                     self.setAccessibilityElement_(True)
                     self.setAccessibilityRole_("AXButton")
                     self.setAccessibilityLabel_("Jev — Ready. Click to type; hold right Option to speak.")
@@ -135,10 +149,12 @@ def make_orb_view(frame):
 
             def screensDidSleep_(self, _notification):
                 self.asleep = True
+                self.refreshCharacter()  # sleeping holds the orb still
                 self.syncMotion()
 
             def screensDidWake_(self, _notification):
                 self.asleep = False
+                self.refreshCharacter()
                 self.syncMotion()
 
             def trackCursor_(self, _timer):
@@ -146,7 +162,7 @@ def make_orb_view(frame):
 
             def playAccent_(self, _timer):
                 self.accentTicker.fired()
-                if not self.alive or self.state != "idle" or self.cfg[3]:
+                if not self.alive or self.character != "idle" or self.cfg[3]:
                     return
                 name = pick_accent(self.rng, self.previousAccent)
                 self.previousAccent = name
@@ -159,6 +175,53 @@ def make_orb_view(frame):
             def scheduleAccent(self):
                 return NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
                     next_accent_delay(self.rng), self, "playAccent:", None, False)
+
+            def switchClip_(self, _timer):
+                """The single-shot clip timer for the current state fired: move to another clip of that state."""
+                self.clipTicker.fired()
+                character = self.character
+                if self.reduceMotion or self.asleep or not STATE_CLIPS.get(character):
+                    return
+                self.applyClip(next_clip(character, self.rng, self.clipName))
+                self.scheduleClipSwitch()
+
+            @objc.python_method
+            def scheduleClipSwitch(self):
+                """One single-shot timer per state, from clip_switch_delay. A state change invalidates it."""
+                delay = clip_switch_delay(self.character, self.rng)
+                if delay is None:
+                    self.clipTicker.sync(False, None)
+                    return
+                self.clipDelay = delay
+                self.clipTicker.sync(True, self.scheduleClip)
+
+            @objc.python_method
+            def scheduleClip(self):
+                return NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                    self.clipDelay, self, "switchClip:", None, False)
+
+            def watchSpeech_(self, _timer):
+                """Speaking starts before the reply WAV is fetched. Watch for the WAV, then build the mouth from it."""
+                self.speechTicker.fired()
+                if self.character != "speaking" or self.speechBuilt:
+                    return
+                wav = current_reply_wav()
+                if wav and wav != self.speechEntry:
+                    self.speechBuilt = True
+                    levels = wav_envelope(wav)
+                    self.tree.start_speech(levels)  # an empty list keeps the pulse
+                    print("orb speech: %s" % ("envelope" if levels else "pulse fallback"), flush=True)
+                    return
+                if time.monotonic() >= self.speechDeadline:
+                    self.speechBuilt = True
+                    print("orb speech: pulse fallback", flush=True)
+                    return
+                self.speechTicker.sync(True, self.scheduleSpeech)
+
+            @objc.python_method
+            def scheduleSpeech(self):
+                return NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                    SPEECH_WATCH_SECONDS, self, "watchSpeech:", None, False)
 
             @objc.python_method
             def scheduleCursor(self):
@@ -200,11 +263,62 @@ def make_orb_view(frame):
                     NSViewLayerContentsRedrawOnSetNeedsDisplay if solid else NSViewLayerContentsRedrawNever)
                 if not solid:
                     self.layer().setContents_(None)  # Clear any solid frame from a previous draw.
+                self.statusText = status or "Ready"
+                self.held = bool(held)
                 self.tree.apply(self.state, solid, orb_pose(self.state, 0, self.level, self.reduceMotion)[3])
                 self.fitLayers()
+                self.refreshCharacter()  # PR 7: before syncMotion, which gates the idle motion on the character
                 self.syncMotion()
                 if solid:
                     self.setNeedsDisplay_(True)
+
+            @objc.python_method
+            def refreshCharacter(self):
+                """Resolve the character from the status, hold, Reduce Motion, sleep and popover, and apply a change."""
+                if not self.cfg[0] or self.halted:
+                    # Hidden: no timers run. The next time it is shown, the state is entered again.
+                    self.key = None
+                    self.clipTicker.sync(False, None)
+                    self.speechTicker.sync(False, None)
+                    return
+                reduce = self.reduceMotion or self.asleep
+                character = resolve(self.statusText, self.held, reduce, self.cfg[3])
+                key = (character, self.state)
+                if key == self.key:
+                    return
+                self.key = key
+                self.enterCharacter(character)
+
+            @objc.python_method
+            def enterCharacter(self, character):
+                """A new character state: cancel the old clip and speech timers, then set the first pose."""
+                self.character = character
+                self.clipTicker.sync(False, None)
+                self.speechTicker.sync(False, None)
+                self.lastCursor = None  # the pupils must recompute, even if the cursor has not moved
+                if character == "speaking":
+                    self.speechEntry = current_reply_wav()
+                    self.speechBuilt = False
+                    self.speechDeadline = time.monotonic() + SPEECH_WATCH_LIMIT
+                    self.tree.start_speech([])  # the pulse until the reply's WAV is known
+                    self.speechTicker.sync(True, self.scheduleSpeech)
+                else:
+                    self.tree.stop_speech()
+                name = next_clip(character, self.rng) if STATE_CLIPS.get(character) else None
+                self.applyClip(name)
+                if name is not None:
+                    self.scheduleClipSwitch()
+
+            @objc.python_method
+            def applyClip(self, name):
+                """Set the pose for the current character and the given clip, and log it. Still uses the status's own pose."""
+                clip = CLIPS.get(name) if name else None
+                base = self.state if self.character == "still" else self.character
+                self.clipName = name
+                self.clipEnd = float("inf") if name else 0.0
+                self.tree.apply_pose(voice_pose(base, 0.0, self.level), clip, static=self.character == "still")
+                self.tree.set_sweep(clip.sweep if clip is not None else 0.0)
+                print("orb state: %s clip=%s" % (self.character, name or "-"), flush=True)
 
             @objc.python_method
             def syncMotion(self):
@@ -217,7 +331,7 @@ def make_orb_view(frame):
                 self.alive = alive
                 # PR 6a: docking stops the bob, but the pupils keep following the cursor.
                 self.tracking = tracking_active(visible, motion, self.asleep) and not self.halted
-                idle = alive and self.state == "idle"
+                idle = alive and self.character == "idle"  # PR 7: every other character state suspends the idle motion
                 self.tree.set_passives(idle and not self.solid)
                 self.ticker.sync(self.tracking and not self.solid, self.scheduleCursor)
                 self.accentTicker.sync(idle and not popover and not self.solid, self.scheduleAccent)
@@ -229,10 +343,13 @@ def make_orb_view(frame):
                     return
                 mouse = NSEvent.mouseLocation()
                 cursor = (float(mouse.x), float(mouse.y))
-                if not cursor_moved(self.lastCursor, cursor):
+                now = time.monotonic()
+                target = look_intensity(self.character, self.currentClip())
+                easing = target != self.lookTo or now - self.lookStart < LOOK_EASE
+                if not cursor_moved(self.lastCursor, cursor) and not easing:
                     return
                 self.lastCursor = cursor
-                intensity = look_intensity(self.state, self.currentClip())
+                intensity = self.lookNow(now, target)
                 scale = self.tree.scale or 1.0
                 offsets = {}
                 for side, sign in (("L", -1.0), ("R", 1.0)):
@@ -258,11 +375,21 @@ def make_orb_view(frame):
                 return None
 
             @objc.python_method
+            def lookNow(self, now, target):
+                """lookIntensity right now. A change of target eases from the value it had, over LOOK_EASE seconds."""
+                if target != self.lookTo:
+                    self.lookFrom = ease_look(self.lookFrom, self.lookTo, now - self.lookStart, LOOK_EASE)
+                    self.lookTo = target
+                    self.lookStart = now
+                return ease_look(self.lookFrom, self.lookTo, now - self.lookStart, LOOK_EASE)
+
+            @objc.python_method
             def followLevel(self):
-                """The listening ring width follows the mic level. The old 30 fps loop did this."""
-                if self.solid or not self.alive or self.state != "listening":
+                """The listening ring width and body follow the mic level. The old 30 fps loop did this."""
+                if self.solid or self.character != "listening":
                     return
                 self.tree.set_ring_width(orb_pose(self.state, 0, self.level, self.reduceMotion)[3])
+                self.tree.set_listen_level(voice_pose("listening", 0.0, self.level)["body_scale"])
 
             @objc.python_method
             def pressSquash(self):
@@ -295,6 +422,9 @@ def make_orb_view(frame):
             @objc.python_method
             def stop(self):
                 self.halted = True
+                self.clipTicker.sync(False, None)  # PR 7: a hidden orb runs no clip or speech timers
+                self.speechTicker.sync(False, None)
+                self.key = None  # the next configure enters the character state again, and restarts its timers
                 self.syncMotion()
 
             def drawRect_(self, _rect):

@@ -686,3 +686,132 @@ def collapse_target(saved_origin, screens, size=None):
         return placed
     vx, vy, vw, _vh = frames[0]
     return (vx + (vw - orb_w) / 2.0, vy + BAR_DOCK_GAP)
+
+
+# PR 7: voice states. Pure math for the listening, thinking, searching and speaking poses.
+PUPIL_LISTEN_SIZE = PUPIL_SIZE * 1.35  # 2.97 pt. The plan's 5.2 pt pupil is wider than the 4 pt cream bar, so it is scaled down.
+THINK_PUPIL_BIAS = (1.8, 1.8)  # up and to the right, as in the plan
+SEARCH_SWEEP_SECONDS = 1.6  # one left-right scan
+SPINNER_RADIUS = 30.0  # around the body, just outside it (body radius 28)
+SPINNER_SECONDS = 1.2  # one full turn
+SPINNER_SWEEP_DEGREES = 270.0
+SPINNER_LINE_WIDTH = 1.5
+SPINNER_ALPHA = 0.7
+LISTEN_BODY_GAIN = 0.04  # body scale is 1 + 0.04 * level while listening
+MOUTH_MIN_HEIGHT = 2.0  # pt, closed to open. The speaking glyph is 5 pt tall at full open.
+MOUTH_MAX_HEIGHT = 5.0
+MOUTH_GLYPH_HEIGHT = 5.0
+MOUTH_PULSE_HZ = 3.5  # the fallback when the reply WAV can't be read
+ENVELOPE_HZ = 30
+SQUINT_DEPTH = 0.3  # eyes drop to 70% height on the loudest peaks
+SQUINT_KNEE = 0.8  # envelope level where the squint starts
+
+
+def _unit(value):
+    """A finite float clamped to 0..1, or 0 for bad input."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(number):
+        return 0.0
+    return min(1.0, max(0.0, number))
+
+
+def mouth_height(level):
+    """Mouth height in points for a 0..1 level, from MOUTH_MIN_HEIGHT to MOUTH_MAX_HEIGHT."""
+    return MOUTH_MIN_HEIGHT + (MOUTH_MAX_HEIGHT - MOUTH_MIN_HEIGHT) * _unit(level)
+
+
+def pulse_mouth(t):
+    """The fallback mouth: a 3.5 Hz pulse between 2 and 5 pt, used when the reply's audio can't be read."""
+    try:
+        seconds = float(t)
+    except (TypeError, ValueError):
+        seconds = 0.0
+    if not math.isfinite(seconds):
+        seconds = 0.0
+    mid = (MOUTH_MIN_HEIGHT + MOUTH_MAX_HEIGHT) / 2.0
+    amp = (MOUTH_MAX_HEIGHT - MOUTH_MIN_HEIGHT) / 2.0
+    return mid + amp * math.sin(math.tau * MOUTH_PULSE_HZ * seconds)
+
+
+def squint_scale(level):
+    """Eye height multiplier on a speech peak: 1.0 below the knee, down to 1 - SQUINT_DEPTH at full level."""
+    over = (_unit(level) - SQUINT_KNEE) / (1.0 - SQUINT_KNEE)
+    return 1.0 - SQUINT_DEPTH * min(1.0, max(0.0, over))
+
+
+def voice_pose(state, t, level):
+    """The base pose for a character state at time t. Clips add eye shapes, lean and sweep on top of this.
+
+    Keys: eye_shape, eye_scale_y, pupil_size, pupil_bias, body_scale, spinner_on, mouth_h.
+    Speaking uses the pulse fallback here. The real mouth follows wav_envelope, which orb_layers builds once per reply.
+    """
+    pose = {
+        "eye_shape": "open",
+        "eye_scale_y": 1.0,
+        "pupil_size": PUPIL_SIZE,
+        "pupil_bias": (0.0, 0.0),
+        "body_scale": 1.0,
+        "spinner_on": False,
+        "mouth_h": 0.0,
+    }
+    if state == "listening":
+        pose.update(eye_shape="wide", eye_scale_y=1.15, pupil_size=PUPIL_LISTEN_SIZE,
+                    body_scale=1.0 + LISTEN_BODY_GAIN * _unit(level))
+    elif state == "thinking":
+        pose.update(pupil_bias=THINK_PUPIL_BIAS, spinner_on=True)
+    elif state == "searching":
+        pose.update(spinner_on=True)
+    elif state == "speaking":
+        pose.update(mouth_h=pulse_mouth(t))
+    return pose
+
+
+def wav_envelope(path, hz=ENVELOPE_HZ):
+    """Loudness of a WAV file, hz values per second, each 0..1 (RMS over the window, normalised to the peak).
+
+    Plain Python on the stdlib wave module, 8- or 16-bit PCM, mono or stereo. Any problem gives [].
+    """
+    try:
+        import array
+        import operator
+        import sys
+        import wave
+
+        with wave.open(path, "rb") as wav:
+            channels = wav.getnchannels()
+            width = wav.getsampwidth()
+            rate = wav.getframerate()
+            raw = wav.readframes(wav.getnframes())
+        if channels not in (1, 2) or width not in (1, 2) or rate <= 0 or hz <= 0:
+            return []
+        frame_bytes = width * channels
+        frames = len(raw) // frame_bytes
+        if frames <= 0:
+            return []
+        if width == 1:
+            samples = array.array("h", [byte - 128 for byte in raw])  # 8-bit WAV is unsigned, centred on 128
+        else:
+            samples = array.array("h")
+            samples.frombytes(raw[:frames * frame_bytes])
+            if sys.byteorder == "big":
+                samples.byteswap()
+        count = max(1, int(math.ceil(frames * hz / float(rate))))
+        per_step = rate / float(hz)
+        levels = []
+        for i in range(count):
+            start = min(frames, int(i * per_step)) * channels
+            end = min(frames, int((i + 1) * per_step)) * channels
+            if end <= start:
+                levels.append(0.0)
+                continue
+            window = samples[start:end]
+            levels.append(math.sqrt(sum(map(operator.mul, window, window)) / float(len(window))))
+        peak = max(levels)
+        if not math.isfinite(peak) or peak <= 0.0:
+            return [0.0] * count
+        return [level / peak for level in levels]
+    except Exception:
+        return []
