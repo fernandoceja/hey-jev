@@ -350,9 +350,10 @@ def drag_roughness(samples):
 
 
 # Peek-dock (PR 3b). A snapped orb on a free screen edge tucks most of itself off-screen.
-PEEK_VISIBLE_FRACTION = 0.6  # share of the orb window still on screen at rest (about 26 pt of a 44 pt window)
-PEEK_MIN_VISIBLE = 24.0  # pt still on screen at rest, whatever the window size
-PEEK_GLOW_WIDTH = 10.0  # pt: the soft blue edge on the visible side of a tucked orb
+PEEK_VISIBLE_FRACTION = 0.75  # share of the orb window still on screen at rest (33 pt of a 44 pt window)
+PEEK_MIN_VISIBLE = 32.0  # pt still on screen at rest, whatever the window size
+PEEK_GLOW_WIDTH = 14.0  # pt: the soft blue edge on the visible side of a tucked orb
+PEEK_GLOW_ALPHA = 0.85  # opacity of the glow at the screen edge (fades to 0 across its width)
 PEEK_GLOW_FADE_SECONDS = 0.15
 PEEK_HOT_DISTANCE = 24.0  # cursor this close to the edge slides the orb in
 PEEK_HOT_Y = 100.0  # ... and within this many points of the orb's centre height

@@ -176,7 +176,8 @@ from mini_bar import (
     is_our_app,
 )
 from orb_motion import (
-    CURSOR_POLL_SECONDS, DRAG_TICK_SECONDS, PEEK_FADE_SECONDS, PEEK_GLOW_FADE_SECONDS, PEEK_GLOW_WIDTH,
+    CURSOR_POLL_SECONDS, DRAG_TICK_SECONDS, PEEK_FADE_SECONDS, PEEK_GLOW_ALPHA, PEEK_GLOW_FADE_SECONDS,
+    PEEK_GLOW_WIDTH,
     PEEK_RETRACT_DISTANCE, RIM_RGB, SPRING_FOLLOW, SPRING_PEEK_IN, SPRING_PEEK_OUT, SPRING_SNAP,
     drag_roughness, drag_stretch, follow_step, in_hot_zone, peek_frame, peek_visible_width, should_retract,
     spring, spring_done,
@@ -2473,7 +2474,7 @@ class AppDelegate(NSObject):
         if layer is None:
             layer = CAGradientLayer.layer()
             r, g, b = RIM_RGB
-            layer.setColors_([CGColorCreateGenericRGB(r, g, b, 0.6), CGColorCreateGenericRGB(r, g, b, 0.0)])
+            layer.setColors_([CGColorCreateGenericRGB(r, g, b, PEEK_GLOW_ALPHA), CGColorCreateGenericRGB(r, g, b, 0.0)])
             layer.setOpacity_(0.0)
             host.addSublayer_(layer)
             self._peek_glow_layer = layer
