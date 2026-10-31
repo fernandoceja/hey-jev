@@ -136,6 +136,7 @@ def make_orb_view(frame):
                 if not solid:
                     self.layer().setContents_(None)  # Clear any solid frame from a previous draw.
                 self.tree.apply(self.state, solid, orb_pose(self.state, 0, self.level, self.reduceMotion)[3])
+                self.fitLayers()
                 # The solid path keeps its old 30 fps pose. The layer path only refreshes the listening ring.
                 self.ticker.sync(visible and motion and (solid or self.state == "listening"),
                                  lambda: NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(

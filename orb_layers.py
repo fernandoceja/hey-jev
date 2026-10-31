@@ -1,8 +1,12 @@
 """Core Animation layer tree for the orb. AppKit and Quartz load only when a tree is built.
 
-Layer order, back to front: shadow, body group (body, ring, eyes with pupils,
-glyphs), then highlight. The highlight is a sibling of the body group so the
-bob moves the body and not the shine.
+Layer order, back to front: shadow, body group, highlight. The body group holds
+the body (gradient layers masked to a circle), the ring, the eyes with pupils,
+and the glyphs. The highlight is a sibling of the body group, so the bob moves
+the body and not the shine.
+
+The body, eyes and highlight are native CAGradientLayers with circular masks.
+Only the soft shadow is a pre-rendered image, rendered once per backing scale.
 """
 import math
 
@@ -14,7 +18,6 @@ from orb_motion import (
     EYE_SIZE,
     GLYPH_RGB,
     HIGHLIGHT_ALPHA,
-    HIGHLIGHT_SIZE,
     LISTEN_GLYPH_RGB,
     ORB_PALETTE,
     RIM_ALPHA,
@@ -23,11 +26,16 @@ from orb_motion import (
     SHADE_ALPHA,
     SHADE_RGB,
     SHADOW_OPACITY,
-    SHADOW_RADIUS,
+    SHADOW_SIZE,
     layer_geometry,
 )
 
-_IMAGES = {}  # (kind, palette, scale, dark) -> CGImage; rendered once per key
+_SHADOW_IMAGES = {}  # backing scale -> CGImage; the shadow does not depend on appearance
+
+# Radial gradient ellipse radii come from the start and end points in unit space.
+# This reaches the body's edge at a circular radius of about 40 pt.
+_BODY_LIGHT = (0.325, 0.725)
+_BODY_LIGHT_END = (0.325 + 40.0 / BODY_SIZE, 0.725 + 40.0 / BODY_SIZE)
 
 
 def _cg_color(rgb, alpha=1.0):
@@ -36,7 +44,7 @@ def _cg_color(rgb, alpha=1.0):
 
 
 def _gradient(stops):
-    """stops: (r, g, b, a, location) tuples, location 0–1."""
+    """Quartz gradient for the shadow image. stops: (r, g, b, a, location)."""
     from Quartz import CGColorSpaceCreateDeviceRGB, CGGradientCreateWithColorComponents
     components = []
     locations = []
@@ -58,77 +66,23 @@ def _bitmap(width, height, scale, draw):
     return CGBitmapContextCreateImage(ctx)
 
 
-def _render_body(scale, dark):
-    from Quartz import (CGContextAddEllipseInRect, CGContextClip, CGContextDrawLinearGradient,
-                        CGContextDrawRadialGradient, CGContextRestoreGState, CGContextSaveGState,
-                        CGContextSetLineWidth, CGContextSetRGBStrokeColor, CGContextStrokeEllipseInRect,
-                        CGPointMake, CGRectMake)
-    size = BODY_SIZE
-    centre = size / 2.0
-    light_point = CGPointMake(centre - 0.35 * centre, centre + 0.45 * centre)
+def _shadow_image(scale):
+    key = round(float(scale), 2)
+    if key not in _SHADOW_IMAGES:
+        from Quartz import (CGContextDrawRadialGradient, CGContextScaleCTM, CGContextTranslateCTM, CGPointMake)
+        width, height = SHADOW_SIZE
+        radius = width / 2.0
 
-    def draw(ctx):
-        CGContextSaveGState(ctx)
-        CGContextAddEllipseInRect(ctx, CGRectMake(0, 0, size, size))
-        CGContextClip(ctx)
-        base = _gradient([(c[0], c[1], c[2], 1.0, loc) for c, loc in zip(ORB_PALETTE, (0.0, 0.5, 1.0))])
-        CGContextDrawRadialGradient(ctx, base, light_point, 0.0, light_point, 40.0, 0)
-        shade = _gradient([
-            (SHADE_RGB[0], SHADE_RGB[1], SHADE_RGB[2], 0.0, 0.0),
-            (SHADE_RGB[0], SHADE_RGB[1], SHADE_RGB[2], SHADE_ALPHA["dark" if dark else "light"], 1.0)])
-        CGContextDrawLinearGradient(ctx, shade, CGPointMake(centre, centre), CGPointMake(centre, 0.0), 0)
-        rim = _gradient([(RIM_RGB[0], RIM_RGB[1], RIM_RGB[2], 0.0, 0.0),
-                         (RIM_RGB[0], RIM_RGB[1], RIM_RGB[2], RIM_ALPHA, 1.0)])
-        CGContextDrawRadialGradient(ctx, rim, CGPointMake(centre, centre), 0.0,
-                                    CGPointMake(centre, centre), centre, 0)
-        CGContextRestoreGState(ctx)
-        CGContextSetRGBStrokeColor(ctx, 1.0, 1.0, 1.0, 0.18)
-        CGContextSetLineWidth(ctx, 0.75)
-        CGContextStrokeEllipseInRect(ctx, CGRectMake(0.375, 0.375, size - 0.75, size - 0.75))
+        def draw(ctx):
+            # Squash a circle of radius `radius` into an ellipse `height` tall, centred in the image.
+            CGContextTranslateCTM(ctx, width / 2.0, height / 2.0)
+            CGContextScaleCTM(ctx, 1.0, (height / 2.0) / radius)
+            soft = _gradient([(0.0, 0.0, 0.0, SHADOW_OPACITY, 0.0), (0.0, 0.0, 0.0, 0.0, 1.0)])
+            centre = CGPointMake(0.0, 0.0)
+            CGContextDrawRadialGradient(ctx, soft, centre, 0.0, centre, radius, 0)
 
-    return _bitmap(size, size, scale, draw)
-
-
-def _render_eye(scale):
-    from Quartz import (CGContextAddEllipseInRect, CGContextClip, CGContextDrawRadialGradient,
-                        CGPointMake, CGRectMake, CGContextSaveGState, CGContextRestoreGState)
-    half = EYE_SIZE / 2.0
-    centre = CGPointMake(half, half)
-
-    def draw(ctx):
-        CGContextSaveGState(ctx)
-        CGContextAddEllipseInRect(ctx, CGRectMake(0, 0, EYE_SIZE, EYE_SIZE))
-        CGContextClip(ctx)
-        white = _gradient([(1.0, 1.0, 1.0, 1.0, 0.0),
-                           (EYE_EDGE_RGB[0], EYE_EDGE_RGB[1], EYE_EDGE_RGB[2], 1.0, 1.0)])
-        CGContextDrawRadialGradient(ctx, white, centre, 0.0, centre, half, 0)
-        CGContextRestoreGState(ctx)
-
-    return _bitmap(EYE_SIZE, EYE_SIZE, scale, draw)
-
-
-def _render_highlight(scale):
-    from Quartz import (CGContextAddEllipseInRect, CGContextClip, CGContextDrawRadialGradient,
-                        CGContextRestoreGState, CGContextSaveGState, CGPointMake, CGRectMake)
-    width, height = HIGHLIGHT_SIZE
-    centre = CGPointMake(width / 2.0, height / 2.0)
-
-    def draw(ctx):
-        CGContextSaveGState(ctx)
-        CGContextAddEllipseInRect(ctx, CGRectMake(0, 0, width, height))
-        CGContextClip(ctx)
-        soft = _gradient([(1.0, 1.0, 1.0, HIGHLIGHT_ALPHA, 0.0), (1.0, 1.0, 1.0, 0.0, 1.0)])
-        CGContextDrawRadialGradient(ctx, soft, centre, 0.0, centre, width / 2.0, 0)
-        CGContextRestoreGState(ctx)
-
-    return _bitmap(width, height, scale, draw)
-
-
-def _cached(kind, scale, dark, render):
-    key = (kind, ORB_PALETTE, round(float(scale), 2), bool(dark))
-    if key not in _IMAGES:
-        _IMAGES[key] = render()
-    return _IMAGES[key]
+        _SHADOW_IMAGES[key] = _bitmap(width, height, scale, draw)
+    return _SHADOW_IMAGES[key]
 
 
 def is_dark(appearance):
@@ -144,6 +98,47 @@ def _ellipse_path(x, y, w, h):
     path = CGPathCreateMutable()
     CGPathAddEllipseInRect(path, None, CGRectMake(x, y, w, h))
     return path
+
+
+def _circle_mask(size):
+    """Circular mask in its layer's own coordinates."""
+    from Quartz import CAShapeLayer, CGRectMake
+    mask = CAShapeLayer.layer()
+    mask.setFrame_(CGRectMake(0, 0, size, size))
+    mask.setPath_(_ellipse_path(0, 0, size, size))
+    return mask
+
+
+def _set_stops(layer, stops):
+    """stops: (rgb, alpha, location) tuples."""
+    layer.setColors_([_cg_color(rgb, alpha) for rgb, alpha, _ in stops])
+    layer.setLocations_([location for _, _, location in stops])
+
+
+def _gradient_layer(rect, stops, start, end, kind="radial"):
+    from Quartz import CAGradientLayer, CGPointMake, CGRectMake
+    layer = CAGradientLayer.layer()
+    layer.setFrame_(CGRectMake(*rect))
+    layer.setType_(kind)
+    layer.setStartPoint_(CGPointMake(*start))
+    layer.setEndPoint_(CGPointMake(*end))
+    _set_stops(layer, stops)
+    return layer
+
+
+def _each_layer(layer):
+    """The layer, its mask, and every sublayer below it."""
+    yield layer
+    mask = layer.mask()
+    if mask is not None:
+        yield from _each_layer(mask)
+    for sub in layer.sublayers() or []:
+        yield from _each_layer(sub)
+
+
+def _shade_stops(dark):
+    alpha = SHADE_ALPHA["dark" if dark else "light"]
+    return [(SHADE_RGB, 0.0, 0.0), (SHADE_RGB, alpha, 1.0)]
 
 
 def _glyph_paths(state):
@@ -180,7 +175,7 @@ class OrbLayers:
         from Quartz import CALayer, CAShapeLayer, CGPointMake, CGRectMake
         geometry = layer_geometry()
 
-        def frame(layer, rect):
+        def place(layer, rect):
             layer.setFrame_(CGRectMake(*rect))
             return layer
 
@@ -189,27 +184,41 @@ class OrbLayers:
         self.root.setAnchorPoint_(CGPointMake(0.5, 0.5))
         host.addSublayer_(self.root)
 
-        self.shadow = frame(CALayer.layer(), geometry["shadow"])
-        shadow_w, shadow_h = geometry["shadow"][2], geometry["shadow"][3]
-        self.shadow.setShadowPath_(_ellipse_path(0, 0, shadow_w, shadow_h))
-        self.shadow.setShadowColor_(_cg_color((0.0, 0.0, 0.0)))
-        self.shadow.setShadowOpacity_(SHADOW_OPACITY)
-        self.shadow.setShadowRadius_(SHADOW_RADIUS)
-        self.shadow.setShadowOffset_((0.0, 0.0))
+        self.shadow = place(CALayer.layer(), geometry["shadow"])
 
-        self.body_group = frame(CALayer.layer(), (0, 0, DESIGN_SIZE, DESIGN_SIZE))
-        self.body = frame(CALayer.layer(), geometry["body"])
-        self.ring = frame(CAShapeLayer.layer(), (0, 0, DESIGN_SIZE, DESIGN_SIZE))
+        # Body: gradient layers, clipped to a circle by the container's mask.
+        local = (0, 0, BODY_SIZE, BODY_SIZE)
+        self.body = place(CALayer.layer(), geometry["body"])
+        self.body.setMask_(_circle_mask(BODY_SIZE))
+        self.base = _gradient_layer(local, [(c, 1.0, loc) for c, loc in zip(ORB_PALETTE, (0.0, 0.5, 1.0))],
+                                          _BODY_LIGHT, _BODY_LIGHT_END)
+        self.shade = _gradient_layer(local, _shade_stops(False), (0.5, 0.5), (0.5, 0.0), kind="axial")
+        self.rim = _gradient_layer(local, [(RIM_RGB, 0.0, 0.0), (RIM_RGB, RIM_ALPHA, 1.0)],
+                                         (0.5, 0.5), (1.0, 1.0))
+        self.outline = CAShapeLayer.layer()
+        place(self.outline, local)
+        self.outline.setFillColor_(None)
+        self.outline.setStrokeColor_(_cg_color((1.0, 1.0, 1.0), 0.18))
+        self.outline.setLineWidth_(0.75)
+        self.outline.setPath_(_ellipse_path(0.375, 0.375, BODY_SIZE - 0.75, BODY_SIZE - 0.75))
+        self.body.setSublayers_([self.base, self.shade, self.rim, self.outline])
+
+        self.ring = place(CAShapeLayer.layer(), (0, 0, DESIGN_SIZE, DESIGN_SIZE))
         self.ring.setFillColor_(None)
         self.ring.setStrokeColor_(_cg_color(RING_RGB))
-        self.ring.setPath_(_ellipse_path(geometry["ring"][0], geometry["ring"][1],
-                                         geometry["ring"][2], geometry["ring"][3]))
+        ring = geometry["ring"]
+        self.ring.setPath_(_ellipse_path(ring[0], ring[1], ring[2], ring[3]))
+
         self.eyes = {}
         self.pupils = {}
         for side in ("L", "R"):
             eye_rect = geometry["eye" + side]
             pupil_rect = geometry["pupil" + side]
-            eye = frame(CALayer.layer(), eye_rect)
+            eye = _gradient_layer((0, 0, EYE_SIZE, EYE_SIZE),
+                                        [((1.0, 1.0, 1.0), 1.0, 0.0), (EYE_EDGE_RGB, 1.0, 1.0)],
+                                        (0.5, 0.5), (1.0, 1.0))
+            eye.setMask_(_circle_mask(EYE_SIZE))
+            place(eye, eye_rect)
             pupil = CAShapeLayer.layer()
             pupil.setFrame_(CGRectMake(pupil_rect[0] - eye_rect[0], pupil_rect[1] - eye_rect[1],
                                        pupil_rect[2], pupil_rect[3]))
@@ -219,19 +228,20 @@ class OrbLayers:
             self.eyes[side] = eye
             self.pupils[side] = pupil
 
-        self.glyph = frame(CAShapeLayer.layer(), (0, 0, DESIGN_SIZE, DESIGN_SIZE))
-        self.glyph_stroke = frame(CAShapeLayer.layer(), (0, 0, DESIGN_SIZE, DESIGN_SIZE))
+        self.glyph = place(CAShapeLayer.layer(), (0, 0, DESIGN_SIZE, DESIGN_SIZE))
+        self.glyph_stroke = place(CAShapeLayer.layer(), (0, 0, DESIGN_SIZE, DESIGN_SIZE))
         self.glyph_stroke.setFillColor_(None)
         self.glyph_stroke.setLineWidth_(1.5)
 
-        self.highlight = frame(CALayer.layer(), geometry["highlight"])
+        self.highlight = _gradient_layer(geometry["highlight"],
+                                               [((1.0, 1.0, 1.0), HIGHLIGHT_ALPHA, 0.0),
+                                                ((1.0, 1.0, 1.0), 0.0, 1.0)],
+                                               (0.5, 0.5), (1.0, 1.0))
 
-        self.root.setSublayers_([self.shadow, self.body_group, self.highlight])
+        self.body_group = place(CALayer.layer(), (0, 0, DESIGN_SIZE, DESIGN_SIZE))
         self.body_group.setSublayers_([self.body, self.ring, self.eyes["L"], self.eyes["R"],
                                        self.glyph, self.glyph_stroke])
-        self._all = [self.root, self.shadow, self.body_group, self.body, self.ring,
-                     self.eyes["L"], self.eyes["R"], self.pupils["L"], self.pupils["R"],
-                     self.glyph, self.glyph_stroke, self.highlight]
+        self.root.setSublayers_([self.shadow, self.body_group, self.highlight])
 
     def fit(self, width, height):
         """Centre the design space in the view and scale it like the old drawRect_ path."""
@@ -243,17 +253,13 @@ class OrbLayers:
         ))
 
     def rescale(self, backing_scale, dark):
-        """Set contents and contentsScale at the backing scale. Images are cached per key."""
-        body = _cached("body", backing_scale, dark, lambda: _render_body(backing_scale, dark))
-        eye = _cached("eye", backing_scale, dark, lambda: _render_eye(backing_scale))
-        highlight = _cached("highlight", backing_scale, dark, lambda: _render_highlight(backing_scale))
-        for layer in self._all:
+        """Set contentsScale on every layer, the shadow image, and the shade colours for the appearance."""
+        image = _shadow_image(backing_scale)
+        for layer in _each_layer(self.root):
             layer.setContentsScale_(backing_scale)
         self._disable_actions(lambda: (
-            self.body.setContents_(body),
-            self.highlight.setContents_(highlight),
-            self.eyes["L"].setContents_(eye),
-            self.eyes["R"].setContents_(eye),
+            self.shadow.setContents_(image),
+            _set_stops(self.shade, _shade_stops(dark)),
         ))
 
     def apply(self, state, solid, ring_width):
