@@ -8,7 +8,7 @@ from orb_motion import BODY_SIZE as ORB_SIZE
 from orb_motion import CURSOR_POLL_SECONDS, DESIGN_CENTER, EYE_CENTER_Y, EYE_SPACING
 from orb_motion import DESIGN_EXTENT as ORB_DESIGN_EXTENT
 from orb_motion import DESIGN_SIZE as PANEL_SIZE
-from orb_motion import cursor_moved, idle_active, pupil_offset
+from orb_motion import cursor_moved, idle_active, pupil_offset, tracking_active
 
 
 def orb_frame(expanded):
@@ -84,7 +84,8 @@ def make_orb_view(frame):
                     self.solid = False
                     self.cfg = (False, True, False, False)  # visible, motion, docked, popover
                     self.halted = False  # stop() sets this; a later configure with visible clears it
-                    self.alive = False  # timers and passives are running
+                    self.alive = False  # bob, breath and accents are running
+                    self.tracking = False  # the pupil poll is running (it keeps going while docked)
                     self.asleep = False
                     self.lastCursor = None
                     self.clipName = None
@@ -112,7 +113,7 @@ def make_orb_view(frame):
                 window = self.window()
                 if window is None:
                     return False
-                window.delegate().expandMiniBar_(self)
+                window.delegate().expandOrbToFull_(self)  # PR 6a: a press is a click, and a click opens the window
                 return True
 
             def setFrameSize_(self, size):
@@ -212,16 +213,19 @@ def make_orb_view(frame):
                 alive = not self.halted and idle_active(visible, motion, docked, self.asleep)
                 if self.alive and not alive:
                     self.tree.reset_motion()
+                    self.lastCursor = None  # the pupils were just centred, so the next poll must place them
                 self.alive = alive
+                # PR 6a: docking stops the bob, but the pupils keep following the cursor.
+                self.tracking = tracking_active(visible, motion, self.asleep) and not self.halted
                 idle = alive and self.state == "idle"
                 self.tree.set_passives(idle and not self.solid)
-                self.ticker.sync(alive and not self.solid, self.scheduleCursor)
+                self.ticker.sync(self.tracking and not self.solid, self.scheduleCursor)
                 self.accentTicker.sync(idle and not popover and not self.solid, self.scheduleAccent)
 
             @objc.python_method
             def followCursor(self):
                 """Pupils follow the mouse anywhere on any display. Exits early when the cursor hasn't moved."""
-                if self.window() is None or not self.alive or self.solid:
+                if self.window() is None or not self.tracking or self.solid:
                     return
                 mouse = NSEvent.mouseLocation()
                 cursor = (float(mouse.x), float(mouse.y))

@@ -23,6 +23,7 @@ CHIP_ROW_H = 40.0
 RESULT_H = 118.0
 TITLEBAR_H = 28.0
 CORNER = 16.0
+DOCK_ORB = 36.0  # PR 6a: the orb's size when it is docked on the sidebar/chat divider
 
 # REA design tokens (light, dark) as RGB 0-255.
 PALETTE = {
@@ -80,6 +81,16 @@ def full_layout(width, height, show_result=True):
         "result": result, "chips": chips, "input": input_row,
         "field": field, "mic": mic,
     }
+
+
+def dock_rect(layout, dock=DOCK_ORB):
+    """The docked orb's frame (x, y, w, h) in window coordinates, for a full_layout result.
+
+    Its centre is dock/2 left of the divider and dock/2 + 12 pt below the titlebar.
+    """
+    _w, h = layout["size"]
+    half = dock / 2.0
+    return (SIDEBAR_W - half - half, h - TITLEBAR_H - half - 12.0 - half, dock, dock)
 
 
 def history_items(rows):
