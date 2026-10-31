@@ -454,3 +454,61 @@ def should_retract(cursor, orb_center, seconds_outside, busy):
     if seconds < PEEK_RETRACT_SECONDS:
         return False
     return math.hypot(cx - ox, cy - oy) > PEEK_RETRACT_DISTANCE
+
+
+# PR 5a: post-capture action menu. Opens after a real drop (R3). Pure geometry only.
+MENU_BUTTON = 40.0  # round button diameter
+MENU_GAP = 10.0  # vertical gap between buttons, and between the orb and the menu
+MENU_PAD = 10.0  # panel inset around the button column
+MENU_LABEL_GAP = 8.0  # button edge to label
+MENU_LABEL_WIDTH = 96.0
+MENU_SCREEN_INSET = 8.0  # keep the panel this far inside the visible frame
+MENU_STAGGER_SECONDS = 0.03  # each button starts 30 ms after the one above it
+MENU_FAN_START_SCALE = 0.6
+MENU_FILL_REST = 0.08  # white alpha of a button at rest
+MENU_FILL_HOVER = 0.18  # white alpha under the pointer
+MENU_HOVER_SECONDS = 0.12
+MENU_CORNER_RADIUS = 14.0
+
+
+def menu_layout(orb_frame, screen, n=4, button=MENU_BUTTON, gap=MENU_GAP):
+    """Frames for the action menu beside the orb.
+
+    Returns a dict: "panel" (x, y, w, h), "buttons" and "labels" (one (x, y, w, h) each, top row first),
+    "side" ("left" or "right", from mini_bar.popover_side), and "delays" (seconds, one per row).
+    Buttons always sit on the orb's side of the panel, so the fan-out starts at the orb's centre.
+    """
+    from mini_bar import popover_side  # lazy: mini_bar imports this module at load time
+    ox, oy, ow, oh = (float(v) for v in orb_frame)
+    sx, sy, sw, sh = (float(v) for v in screen)
+    count = max(1, int(n))
+    panel_w = 2.0 * MENU_PAD + button + MENU_LABEL_GAP + MENU_LABEL_WIDTH
+    panel_h = 2.0 * MENU_PAD + count * button + (count - 1) * gap
+    side = popover_side((ox, oy, ow, oh), panel_w, (sx, sy, sw, sh))
+    if side == "right":
+        px = ox + ow + gap
+    else:
+        px = ox - gap - panel_w
+    px = min(max(px, sx + MENU_SCREEN_INSET), sx + sw - MENU_SCREEN_INSET - panel_w)
+    py = oy + oh / 2.0 - panel_h / 2.0
+    py = min(max(py, sy + MENU_SCREEN_INSET), sy + sh - MENU_SCREEN_INSET - panel_h)
+    buttons = []
+    labels = []
+    for row in range(count):
+        top = py + panel_h - MENU_PAD - (row + 1) * button - row * gap
+        if side == "right":
+            bx = px + MENU_PAD
+            lx = bx + button + MENU_LABEL_GAP
+        else:
+            bx = px + panel_w - MENU_PAD - button
+            lx = px + MENU_PAD
+        buttons.append((bx, top, button, button))
+        labels.append((lx, top + (button - 18.0) / 2.0, MENU_LABEL_WIDTH, 18.0))
+    delays = [round(row * MENU_STAGGER_SECONDS, 6) for row in range(count)]
+    return {
+        "panel": (px, py, panel_w, panel_h),
+        "buttons": buttons,
+        "labels": labels,
+        "side": side,
+        "delays": delays,
+    }

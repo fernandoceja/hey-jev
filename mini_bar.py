@@ -739,6 +739,24 @@ def capture_choice_actions(ask_jev=True, video=False):
     return rows
 
 
+def orb_action_menu():
+    """The rows of the action menu that fans out after a drop (PR 5a), in order top to bottom.
+
+    Ask, Copy Image and Find Image reuse the ids of the post-capture panel. Mark up has no panel row yet (PR 5b).
+    """
+    return [
+        {"id": "ask_jev", "title": "Ask", "symbol": "bubble.left"},
+        {"id": "share_copy", "title": "Copy Image", "symbol": "doc.on.doc"},
+        {"id": "ask_google", "title": "Find Image", "symbol": "magnifyingglass"},
+        {"id": "markup", "title": "Mark up", "symbol": "pencil.tip"},
+    ]
+
+
+def menu_on_drop(moved):
+    """The action menu opens only after a real drag (past the click threshold). A click never opens it."""
+    return moved
+
+
 def choice_button_frames(actions, width=300.0, margin=12.0):
     """(action, x, top, w, h) from the top of the button stack. Ask Jev is full width."""
     frames = []

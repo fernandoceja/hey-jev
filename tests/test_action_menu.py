@@ -1,0 +1,278 @@
+"""Action menu (PR 5a): four rows after a drop, the drop gate, the fan-out layout, and the wiring. AppKit is not imported.
+
+The pure parts are tested directly. The AppKit parts are checked by reading the source, the same way
+tests/test_magic_wand.py does.
+"""
+import os
+import re
+
+import pytest
+
+import orb_motion as om
+from mini_bar import capture_choice_actions, menu_on_drop, orb_action_menu
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SCREEN = (0.0, 0.0, 1440.0, 900.0)
+
+
+def _ui():
+    with open(os.path.join(ROOT, "assistant_ui.py"), encoding="utf-8") as f:
+        return f.read()
+
+
+def _body(source, header):
+    """The text of the function that starts at `header`, up to the next def at the same indent."""
+    start = source.index(header)
+    indent = len(header) - len(header.lstrip())
+    rest = source[start + len(header):]
+    match = re.search(r"\n {%d}(def |@)" % indent, rest)
+    return rest[:match.start()] if match else rest
+
+
+# The four rows, in order.
+
+def test_the_action_menu_is_exactly_four_rows_in_order():
+    rows = orb_action_menu()
+    assert [(row["id"], row["title"]) for row in rows] == [
+        ("ask_jev", "Ask"),
+        ("share_copy", "Copy Image"),
+        ("ask_google", "Find Image"),
+        ("markup", "Mark up"),
+    ]
+
+
+def test_each_row_has_the_sf_symbol_from_the_plan():
+    symbols = [row["symbol"] for row in orb_action_menu()]
+    assert symbols == ["bubble.left", "doc.on.doc", "magnifyingglass", "pencil.tip"]
+
+
+def test_menu_ids_reuse_the_post_capture_panel_except_mark_up():
+    panel_ids = {row["id"] for row in capture_choice_actions(ask_jev=True)}
+    for row in orb_action_menu():
+        if row["id"] == "markup":
+            assert row["id"] not in panel_ids  # PR 5b adds the overlay; until then the id is handled in assistant_ui
+        else:
+            assert row["id"] in panel_ids
+
+
+# The drop gate.
+
+def test_menu_on_drop_is_true_only_for_a_real_drag():
+    assert menu_on_drop(True) is True
+    assert menu_on_drop(False) is False
+
+
+# The fan-out layout.
+
+def test_stagger_delays_are_zero_30_60_and_90_milliseconds():
+    layout = om.menu_layout((600.0, 400.0, 72.0, 72.0), SCREEN)
+    assert layout["delays"] == pytest.approx([0.0, 0.03, 0.06, 0.09])
+    assert len(layout["buttons"]) == 4
+    assert len(layout["labels"]) == 4
+
+
+def test_buttons_are_round_forty_points_with_ten_point_gaps():
+    layout = om.menu_layout((600.0, 400.0, 72.0, 72.0), SCREEN)
+    tops = []
+    for x, y, w, h in layout["buttons"]:
+        assert (w, h) == (40.0, 40.0)
+        tops.append(y)
+    # Top row first: each row sits 50 pt (40 + 10) below the one above it.
+    gaps = [tops[i] - tops[i + 1] for i in range(3)]
+    assert gaps == pytest.approx([50.0, 50.0, 50.0])
+
+
+def test_the_menu_opens_to_the_right_of_an_orb_near_the_left_edge():
+    layout = om.menu_layout((100.0, 400.0, 72.0, 72.0), SCREEN)
+    assert layout["side"] == "right"
+    px, py, pw, ph = layout["panel"]
+    assert px >= 100.0 + 72.0  # clear of the orb
+    for bx, _by, bw, _bh in layout["buttons"]:
+        assert px <= bx and bx + bw <= px + pw  # buttons sit inside the panel
+
+
+def test_the_menu_flips_to_the_left_near_the_right_edge():
+    orb = (1400.0, 400.0, 72.0, 72.0)
+    layout = om.menu_layout(orb, SCREEN)
+    assert layout["side"] == "left"
+    px, _py, pw, _ph = layout["panel"]
+    assert px + pw <= orb[0]  # the panel is clear of the orb on its left
+    # The buttons sit on the orb's side, so the fan-out starts from the orb.
+    for bx, _by, bw, _bh in layout["buttons"]:
+        assert bx + bw >= px + pw - om.MENU_PAD - 1e-6
+
+
+@pytest.mark.parametrize("orb", [
+    (0.0, 0.0, 72.0, 72.0),  # bottom-left corner
+    (1368.0, 828.0, 72.0, 72.0),  # top-right corner
+    (700.0, 0.0, 72.0, 72.0),  # bottom edge
+    (20.0, 300.0, 72.0, 72.0),  # left edge
+])
+def test_the_panel_stays_on_screen_at_every_edge(orb):
+    layout = om.menu_layout(orb, SCREEN)
+    px, py, pw, ph = layout["panel"]
+    assert px >= SCREEN[0] and px + pw <= SCREEN[0] + SCREEN[2]
+    assert py >= SCREEN[1] and py + ph <= SCREEN[1] + SCREEN[3]
+    for bx, by, bw, bh in layout["buttons"]:
+        assert by >= py and by + bh <= py + ph
+
+
+def test_the_layout_follows_the_popover_side_rule():
+    from mini_bar import popover_side
+    orb = (1200.0, 300.0, 72.0, 72.0)
+    panel_w = 2 * om.MENU_PAD + om.MENU_BUTTON + om.MENU_LABEL_GAP + om.MENU_LABEL_WIDTH
+    assert om.menu_layout(orb, SCREEN)["side"] == popover_side(orb, panel_w, SCREEN)
+
+
+def test_the_layout_module_still_imports_with_no_appkit(monkeypatch):
+    import sys
+    for blocked in ("AppKit", "Quartz", "Foundation", "objc"):
+        monkeypatch.setitem(sys.modules, blocked, None)
+    assert om.menu_layout((600.0, 400.0, 72.0, 72.0), SCREEN)["side"] in ("left", "right")
+
+
+# Wiring, read from the source.
+
+def test_a_real_drop_opens_the_menu_only_after_the_peek_check():
+    ui = _ui()
+    finalize = _body(ui, "    def _finalize_mini_bar_drag(self, window):")
+    assert "self._peek_consider()" in finalize
+    assert "menu_on_drop(True)" in finalize
+    # The tuck runs first, so a drop that tucks the orb into the edge never opens the menu.
+    assert finalize.index("self._peek_consider()") < finalize.index("self._open_action_menu()")
+    assert "self._peek_edge is None" in finalize
+
+
+def test_a_click_never_opens_the_menu():
+    ui = _ui()
+    click = _body(ui, "    def _collapsed_click_or_drag(self, window, delegate, _event):")
+    assert "_open_action_menu" not in click
+    assert "expandMiniBar_" in click  # a still click still opens the window
+
+
+def test_tuck_waits_while_the_menu_is_open():
+    ui = _ui()
+    busy = _body(ui, "    def _peek_is_busy(self):")
+    assert "self._action_menu_open" in busy
+
+
+def test_the_menu_panel_sits_at_the_bar_level_and_does_not_touch_the_orb_panel():
+    ui = _ui()
+    build = _body(ui, "    def _build_action_menu(self):")
+    assert "panel.setLevel_(BAR_LEVEL)" in build
+    assert "panel.setFloatingPanel_(True)" in build
+    for header in ("    def _open_action_menu(self):", "    def _fill_action_menu(self, layout):",
+                   "    def _close_action_menu(self):"):
+        body = _body(ui, header)
+        assert "mini_panel.setLevel_" not in body
+        assert "mini_panel.setFloatingPanel_" not in body
+        assert "setStyleMask_" not in body
+
+
+def test_the_menu_is_nonactivating_and_uses_the_hud_material():
+    ui = _ui()
+    build = _body(ui, "    def _build_action_menu(self):")
+    assert "NSWindowStyleMaskNonactivatingPanel" in build
+    fill = _body(ui, "    def _fill_action_menu(self, layout):")
+    assert "NSVisualEffectMaterialHUDWindow" in fill
+    assert "MENU_CORNER_RADIUS" in fill
+
+
+def test_every_new_layer_gets_the_window_contents_scale():
+    ui = _ui()
+    fill = _body(ui, "    def _fill_action_menu(self, layout):")
+    assert fill.count("setContentsScale_(scale)") >= 2  # the panel content layer and each button layer
+    assert "scale = float(panel.backingScaleFactor())" in fill
+
+
+def test_the_menu_adds_no_shadow_path():
+    ui = _ui()
+    for header in ("    def _build_action_menu(self):", "    def _fill_action_menu(self, layout):",
+                   "    def _animate_action_menu_button(self, layer, start, end, delay):"):
+        assert "shadowPath" not in _body(ui, header)
+
+
+def test_the_fan_uses_the_section_three_spring_and_stagger():
+    ui = _ui()
+    fan = _body(ui, "    def _animate_action_menu_button(self, layer, start, end, delay):")
+    assert "SPRING_MENU_FAN" in fan
+    assert "MENU_FAN_START_SCALE" in ui
+    assert om.SPRING_MENU_FAN == (500.0, 30.0)
+    opened = _body(ui, "    def _open_action_menu(self):")
+    assert "layout[\"delays\"][row]" in opened
+
+
+def test_close_is_instant_with_order_out_and_no_animation():
+    ui = _ui()
+    close = _body(ui, "    def _close_action_menu(self):")
+    assert "panel.orderOut_(None)" in close
+    assert "animator" not in close
+    assert "NSAnimationContext" not in close
+
+
+def test_a_click_on_an_action_closes_first_then_runs_the_capture():
+    ui = _ui()
+    pick = _body(ui, "    def actionMenuPick_(self, sender):")
+    assert pick.index("self._close_action_menu()") < pick.index("_run_action_menu_capture")
+
+
+def test_the_menu_captures_through_the_existing_area_path_and_respects_esc():
+    ui = _ui()
+    run = _body(ui, "    def _run_action_menu_capture(self, ident):")
+    assert 'commands.take_screenshot("area")' in run
+    assert "capture_saved(sentence)" in run  # an Esc-cancelled capture returns "Cancelled." and does nothing
+    assert "if not path:" in run
+
+
+def test_ask_copy_and_find_reuse_the_post_capture_handlers():
+    ui = _ui()
+    captured = _body(ui, "    def actionMenuCaptured_(self, payload):")
+    assert '_show_capture_choices()' in captured and '_open_choice_question()' in captured
+    assert "self._queue_choice(ident)" in captured  # share_copy and ask_google
+
+
+def test_mark_up_opens_the_capture_in_preview_until_pr_5b():
+    ui = _ui()
+    run = _body(ui, "    def _run_action_menu_capture(self, ident):")
+    assert 'if ident == "markup":' in run
+    assert '["open", "-a", "Preview", path]' in run
+
+
+def test_esc_and_click_away_and_the_timeout_close_the_menu():
+    ui = _ui()
+    local = _body(ui, "    def _local_key(self, event):")
+    assert "self._action_menu_open" in local and "self._close_action_menu()" in local
+    globe = _body(ui, "    def _global_type_key(self, event):")
+    assert "self._close_action_menu()" in globe
+    click = _body(ui, "    def _action_menu_mouse_down(self, event):")
+    assert "self._close_action_menu()" in click
+    tick = _body(ui, "    def _sync_action_menu_dismiss(self):")
+    assert "choice_due(" in tick and "CHOICE" not in tick  # the same 20 s rule as the post-capture panel
+    assert "self._sync_action_menu_dismiss()" in ui
+
+
+def test_the_menu_buttons_are_labelled_for_accessibility():
+    ui = _ui()
+    fill = _body(ui, "    def _fill_action_menu(self, layout):")
+    assert "setAccessibilityLabel_(action[\"title\"])" in fill
+
+
+def test_hover_lightens_the_fill_from_eight_to_eighteen_percent_in_point_one_two_seconds():
+    assert om.MENU_FILL_REST == 0.08
+    assert om.MENU_FILL_HOVER == 0.18
+    assert om.MENU_HOVER_SECONDS == 0.12
+    ui = _ui()
+    cls = _body(ui, "class ActionMenuButton(NSButton):")
+    assert "set_action_fill(self, MENU_FILL_HOVER)" in cls
+    assert "set_action_fill(self, MENU_FILL_REST)" in cls
+
+
+def test_click_away_uses_the_app_activation_notification_not_a_global_monitor():
+    ui = _ui()
+    opened = _body(ui, "    def _open_action_menu(self):")
+    assert "addGlobalMonitorForEventsMatchingMask_handler_" not in opened  # no new global monitor, no new permission
+    assert "addLocalMonitorForEventsMatchingMask_handler_" in opened
+    assert "NSWorkspaceDidActivateApplicationNotification" in opened
+    closed = _body(ui, "    def _close_action_menu(self):")
+    assert "removeObserver_name_object_" in closed
+    assert "def actionMenuAppActivated_" in ui
