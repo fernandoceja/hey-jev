@@ -237,11 +237,14 @@ def test_menu_actions_never_send_worker_phrases_or_open_the_main_window():
     assert "_show_capture_choices()" in captured and "_open_choice_question()" in captured  # Ask, the thumbnail panel
 
 
-def test_mark_up_opens_the_capture_in_preview_until_pr_5b():
+def test_mark_up_opens_the_overlay_and_no_longer_falls_back_to_preview():
+    """PR 5b replaces the PR 5a Preview fallback. Mark up goes to the overlay, not an area capture."""
     ui = _ui()
+    pick = _body(ui, "    def actionMenuPick_(self, sender):")
+    assert 'if ident == "markup":' in pick and "self._open_markup()" in pick
     run = _body(ui, "    def _run_action_menu_capture(self, ident):")
-    assert 'if ident == "markup":' in run
-    assert '["open", "-a", "Preview", path]' in run
+    assert '"open", "-a", "Preview"' not in ui
+    assert 'if ident == "markup"' not in run
 
 
 def test_esc_and_click_away_and_the_timeout_close_the_menu():
