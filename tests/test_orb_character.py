@@ -26,11 +26,11 @@ from orb_motion import BREATH_SCALE_X, BREATH_SCALE_Y, CLIP_FPS
 EYE = 11.0
 EXPECTED_LOOK = {
     "blink": 1.0, "blink_stagger": 1.0, "double_blink": 1.0, "look_around": 0.0,
-    "yawn": 0.0, "bounce": 0.5, "jiggle": 1.0, "happy": 0.0,
+    "yawn": 0.0, "bounce": 0.5, "jiggle": 1.0, "happy": 0.0, "wave": 0.5, "balance_eyes": 0.2,
 }
 EXPECTED_WEIGHT = {
     "blink": 30, "blink_stagger": 15, "double_blink": 10, "look_around": 12,
-    "yawn": 6, "bounce": 8, "jiggle": 4, "happy": 8,
+    "yawn": 6, "bounce": 8, "jiggle": 4, "happy": 8, "wave": 5, "balance_eyes": 2,
 }
 
 
@@ -63,7 +63,7 @@ def test_open_eye_is_a_cream_bar_through_its_segment_midpoints():
 
 def test_eye_shape_rejects_unknown_names():
     with pytest.raises(ValueError):
-        eye_shape("sad", EYE)
+        eye_shape("bogus", EYE)
 
 
 def test_accent_table_matches_the_plan():

@@ -30,11 +30,24 @@ class _EventHotKeyID(ctypes.Structure):
 _HANDLER = ctypes.CFUNCTYPE(ctypes.c_int32, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p)
 
 
-class AreaCaptureHotKey:
-    """Registers the chord and calls on_press() each time it is pressed. on_press runs on the main thread."""
+_EVENT_PARAM_DIRECT_OBJECT = 0x2D2D2D2D  # kEventParamDirectObject '----'
+_TYPE_EVENT_HOT_KEY_ID = 0x686B6964  # typeEventHotKeyID 'hkid'
+_EVENT_NOT_HANDLED = -9874  # eventNotHandledErr: another hotkey's handler should see this press
 
-    def __init__(self, on_press):
+
+class CarbonHotKey:
+    """Registers one chord with Carbon and calls on_press() each time it is pressed. on_press runs on the main thread.
+
+    Each hotkey has its own id. Several can share the application target, so a press is handled only by the
+    handler whose id it carries. Other presses are passed on with eventNotHandledErr.
+    """
+
+    def __init__(self, on_press, key_code, modifiers, label, hotkey_id=1):
         self._on_press = on_press
+        self._key_code = int(key_code)
+        self._modifiers = int(modifiers)
+        self._label = str(label)
+        self._id = int(hotkey_id)
         self._handler = None
         self._handler_ref = None
         self._hotkey_ref = None
@@ -49,6 +62,11 @@ class AreaCaptureHotKey:
         self._carbon = carbon
         carbon.GetApplicationEventTarget.restype = ctypes.c_void_p
         carbon.GetApplicationEventTarget.argtypes = []
+        carbon.GetEventParameter.restype = ctypes.c_int32
+        carbon.GetEventParameter.argtypes = [
+            ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p,
+            ctypes.c_uint32, ctypes.c_void_p, ctypes.c_void_p,
+        ]
         carbon.InstallEventHandler.restype = ctypes.c_int32
         carbon.InstallEventHandler.argtypes = [
             ctypes.c_void_p, _HANDLER, ctypes.c_uint32, ctypes.POINTER(_EventTypeSpec),
@@ -64,11 +82,17 @@ class AreaCaptureHotKey:
         carbon.UnregisterEventHotKey.restype = ctypes.c_int32
         carbon.UnregisterEventHotKey.argtypes = [ctypes.c_void_p]
 
-        def handle(_call, _event, _user):
+        def handle(_call, event, _user):
             try:
+                pressed = _EventHotKeyID(0, 0)
+                status = carbon.GetEventParameter(
+                    event, _EVENT_PARAM_DIRECT_OBJECT, _TYPE_EVENT_HOT_KEY_ID, None,
+                    ctypes.sizeof(pressed), None, ctypes.byref(pressed))
+                if status == _NO_ERROR and pressed.id != self._id:
+                    return _EVENT_NOT_HANDLED
                 self._on_press()
             except Exception as exc:  # a hotkey must never raise into Carbon
-                print("  area hotkey failed: {0}".format(exc))
+                print("  {0} hotkey failed: {1}".format(self._label, exc))
             return _NO_ERROR
 
         self._handler = _HANDLER(handle)  # keep a reference: Carbon calls it later
@@ -78,19 +102,19 @@ class AreaCaptureHotKey:
         status = carbon.InstallEventHandler(
             target, self._handler, 1, ctypes.pointer(spec), None, ctypes.byref(handler_ref))
         if status != _NO_ERROR:
-            return False, "handler not installed (status {0})".format(status)
+            return False, "{0} handler not installed (status {1})".format(self._label, status)
         self._handler_ref = handler_ref.value
-        hotkey_id = _EventHotKeyID(_HOTKEY_SIGNATURE, 1)
+        hotkey_id = _EventHotKeyID(_HOTKEY_SIGNATURE, self._id)
         hotkey_ref = ctypes.c_void_p()
         status = carbon.RegisterEventHotKey(
-            AREA_CAPTURE_KEY_CODE, AREA_CAPTURE_MODIFIERS, hotkey_id, target, 0, ctypes.byref(hotkey_ref))
+            self._key_code, self._modifiers, hotkey_id, target, 0, ctypes.byref(hotkey_ref))
         if status != _NO_ERROR:
             # -9878 is eventHotKeyExistsErr: another app already holds the chord. Drop the handler we installed.
             carbon.RemoveEventHandler(ctypes.c_void_p(self._handler_ref))
             self._handler_ref = None
-            return False, "Control-Option-Command-W not registered (status {0})".format(status)
+            return False, "{0} not registered (status {1})".format(self._label, status)
         self._hotkey_ref = hotkey_ref.value
-        return True, "Control-Option-Command-W registered"
+        return True, "{0} registered".format(self._label)
 
     def unregister(self):
         carbon = self._carbon
@@ -102,3 +126,11 @@ class AreaCaptureHotKey:
         if self._handler_ref is not None:
             carbon.RemoveEventHandler(ctypes.c_void_p(self._handler_ref))
             self._handler_ref = None
+
+
+class AreaCaptureHotKey(CarbonHotKey):
+    """Control-Option-Command-W: area capture from any app."""
+
+    def __init__(self, on_press):
+        super().__init__(on_press, AREA_CAPTURE_KEY_CODE, AREA_CAPTURE_MODIFIERS,
+                         "Control-Option-Command-W", hotkey_id=1)

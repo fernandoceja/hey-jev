@@ -50,6 +50,16 @@ POPOVER_PANEL_RADIUS = 16.0
 GREETING_NAME = "Fernando"
 
 # Quick-action chips below the composer. Refresh rotates pages locally only.
+MAC_HEALTH_CHIP = "mac_health"
+
+
+def chip_title(chip_id, title, alert=False):
+    """A chip's title, with a dot in front when a Mac-health alert is on. Only the Mac health chip is marked (PR 7b)."""
+    if alert and chip_id == MAC_HEALTH_CHIP and title:
+        return "\u2022 " + title
+    return title
+
+
 POPOVER_CHIPS = {
     "eta_home": {"title": "ETA home", "subtitle": "", "phrase": "eta home"},
     "hazard_check": {"title": "Hazard Check", "subtitle": "", "phrase": "hazard check"},
@@ -1946,6 +1956,11 @@ class BarController:
         self.enabled = bool(enabled)
         if self.enabled:
             self.dismissed = False
+        return self.should_show()
+
+    def reveal(self):
+        """Control-Option-J shows a hidden orb again. Clears the hide. The main window still hides it while on screen."""
+        self.dismissed = False
         return self.should_show()
 
     def dismiss(self):

@@ -9,7 +9,8 @@ SPOTLIGHT_RADIUS = 26.0  # the rounded corner of the Apple glass panel
 SPOTLIGHT_FIELD_H = 52.0  # "Search or Ask Jev" with the mic at its right
 SPOTLIGHT_ROW_H = 36.0  # one line per item
 SPOTLIGHT_PAD = 10.0
-SPOTLIGHT_GAP = 10.0  # between the orb and the panel
+SPOTLIGHT_LEVEL = 101  # NSPopUpMenuWindowLevel: above the orb's floating level and other apps' normal windows (PR 7b)
+ORB_PANEL_LEVEL = 28  # mirrors assistant_ui.BAR_LEVEL, the floating orb's level; a test keeps the two equal
 SPOTLIGHT_FADE_SECONDS = 0.15
 SPOTLIGHT_START_SCALE = 0.96
 
@@ -49,18 +50,14 @@ def next_index(current, key, count):
     return -1 if unset else current
 
 
-def spotlight_frame(orb, visible, size=None):
-    """Panel frame (x, y, w, h) beside the orb: to its right if there is room, otherwise to its left.
-
-    Vertically centred on the orb, then clamped so the whole panel stays inside the visible frame.
+def spotlight_frame(visible, size=None):
+    """Panel frame (x, y, w, h), placed the way Spotlight is: centred horizontally on the visible frame, with its top
+    edge a quarter of the frame's height down from the top. Clamped so the whole panel stays inside the visible frame.
     """
-    ox, oy, ow, oh = (float(v) for v in orb)
     vx, vy, vw, vh = (float(v) for v in visible)
     w, h = (SPOTLIGHT_WIDTH, panel_height()) if size is None else (float(size[0]), float(size[1]))
-    x = ox + ow + SPOTLIGHT_GAP
-    if x + w > vx + vw:
-        x = ox - SPOTLIGHT_GAP - w
-    y = oy + oh / 2.0 - h / 2.0
+    x = vx + (vw - w) / 2.0
+    y = vy + vh * 0.75 - h
     x = min(max(x, vx), max(vx, vx + vw - w))
     y = min(max(y, vy), max(vy, vy + vh - h))
     return (x, y, w, h)

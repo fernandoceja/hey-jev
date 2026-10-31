@@ -4,8 +4,8 @@ import random
 import sys
 import time
 
-from orb_character import (CLIPS, STATE_CLIPS, clip_switch_delay, ease_look, look_intensity, next_accent_delay,
-                           next_clip, orb_state, pick_accent, resolve)
+from orb_character import (CLIPS, REACTIONS, STATE_CLIPS, ReactionQueue, clip_switch_delay, ease_look, look_intensity,
+                           next_accent_delay, next_clip, orb_state, pick_accent, resolve)
 from orb_motion import BODY_SIZE as ORB_SIZE
 from orb_motion import CURSOR_POLL_SECONDS, DESIGN_CENTER, EYE_CENTER_Y, EYE_SPACING
 from orb_motion import DESIGN_EXTENT as ORB_DESIGN_EXTENT
@@ -108,6 +108,10 @@ def make_orb_view(frame):
                     self.speechEntry = None  # the WAV path that was already there when speaking began
                     self.speechBuilt = False
                     self.speechDeadline = 0.0
+                    self.reactions = ReactionQueue(time.monotonic)  # PR 7b: one-shot reactions with cooldowns
+                    self.reactionTicker = OrbTicker()  # one single-shot timer: when the playing reaction ends
+                    self.reactionName = None
+                    self.reactionDelay = 0.0
                     self.lookFrom = 1.0
                     self.lookTo = 1.0
                     self.lookStart = 0.0
@@ -163,8 +167,8 @@ def make_orb_view(frame):
 
             def playAccent_(self, _timer):
                 self.accentTicker.fired()
-                if not self.alive or self.character != "idle" or self.cfg[3]:
-                    return
+                if not self.alive or self.character != "idle" or self.cfg[3] or self.reactions.current() is not None:
+                    return  # PR 7b: idle accents wait while a reaction plays
                 name = pick_accent(self.rng, self.previousAccent)
                 self.previousAccent = name
                 seconds = self.tree.play_accent(name)
@@ -224,6 +228,41 @@ def make_orb_view(frame):
                 return NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
                     SPEECH_WATCH_SECONDS, self, "watchSpeech:", None, False)
 
+            def reactionEnded_(self, _timer):
+                """The reaction's time is up: take its animations off and return to the current state's clip."""
+                self.reactionTicker.fired()
+                self.reactionName = None
+                self.tree.stop_reaction()
+                restore = self.clipName if (self.character != "idle" and self.clipName in CLIPS) else None
+                self.applyClip(restore)
+
+            @objc.python_method
+            def scheduleReaction(self):
+                return NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                    self.reactionDelay, self, "reactionEnded:", None, False)
+
+            @objc.python_method
+            def offerReaction(self, name):
+                """Play a one-shot reaction if the queue allows it. True if it started. The name is logged when it plays.
+
+                Nothing plays while the orb is hidden or the solid fill is in use. Reduce Motion changes the eye shape only.
+                """
+                if self.solid or self.halted or not self.cfg[0]:
+                    return False
+                if not self.reactions.offer(name):
+                    return False
+                reduce = bool(self.reduceMotion or self.asleep)
+                if name == "wave" and not reduce:
+                    self.tree.play_accent("wave")  # the wave is the idle accent's nub, for its full length
+                else:
+                    self.tree.play_reaction(name, reduce)
+                self.reactionName = name
+                self.reactionDelay = REACTIONS[name].seconds
+                self.reactionTicker.sync(False, None)
+                self.reactionTicker.sync(True, self.scheduleReaction)
+                print("orb reaction: %s" % name, flush=True)
+                return True
+
             @objc.python_method
             def scheduleCursor(self):
                 return NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
@@ -266,6 +305,8 @@ def make_orb_view(frame):
                     self.layer().setContents_(None)  # Clear any solid frame from a previous draw.
                 self.statusText = status or "Ready"
                 self.held = bool(held)
+                if visible:
+                    self.offerReaction("wave")  # PR 7b: the first show after launch; the queue makes it once per launch
                 self.tree.apply(self.state, solid, orb_pose(self.state, 0, self.level, self.reduceMotion)[3])
                 self.fitLayers()
                 self.refreshCharacter()  # PR 7: before syncMotion, which gates the idle motion on the character
@@ -309,6 +350,8 @@ def make_orb_view(frame):
                 self.applyClip(name)
                 if name is not None:
                     self.scheduleClipSwitch()
+                if character == "listening":
+                    self.offerReaction("get_ready")  # PR 7b: right Option down, or the wake word, bounces the orb
 
             @objc.python_method
             def applyClip(self, name):
@@ -424,6 +467,8 @@ def make_orb_view(frame):
             def stop(self):
                 self.halted = True
                 self.clipTicker.sync(False, None)  # PR 7: a hidden orb runs no clip or speech timers
+                self.reactionTicker.sync(False, None)  # PR 7b: and no reaction timer
+                self.reactions.cancel_all()
                 self.speechTicker.sync(False, None)
                 self.key = None  # the next configure enters the character state again, and restarts its timers
                 self.syncMotion()

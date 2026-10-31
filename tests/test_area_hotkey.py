@@ -97,7 +97,9 @@ def test_the_area_chord_left_the_nsevent_monitors_and_the_global_log_is_diagnost
     assert "control_option_command_held(flags)" in global_key
     assert "keyCode={0} flags=0x{1:x}" in global_key  # key code and flags only, no characters
     assert "characters" not in global_key
-    assert ui.count("addGlobalMonitorForEventsMatchingMask_handler_") == 2  # no new monitor, no new permission
+    # Two global monitors: the key monitor, and the Spotlight's mouse-down monitor, which exists only while the panel is
+    # open and watches mouse buttons only. Mouse events need no extra permission, unlike key events.
+    assert ui.count("addGlobalMonitorForEventsMatchingMask_handler_") == 3
 
 
 def test_the_orb_panel_level_and_floating_flags_are_untouched():

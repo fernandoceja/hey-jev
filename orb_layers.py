@@ -68,6 +68,7 @@ MOUTH_RGB = (0.04, 0.06, 0.22)
 POSE_SECONDS = 0.25  # eye shapes morph and the body eases over this long when the pose changes
 LEVEL_SECONDS = 0.12  # the listening body follows the mic level with a short implicit ease
 SPIN_KEY = "spin"
+REACTION_KEY = "reaction"  # PR 7b: one-shot reactions. Their keys are removed by stop_reaction
 SWEEP_KEY = "sweep"
 SPEECH_KEY = "speech"
 SPEECH_GLYPH_ANCHOR_Y = 20.5  # centre of the speaking glyph (18 to 23 pt), where its scale pivots
@@ -141,6 +142,19 @@ def _ellipse_path(x, y, w, h):
     from Quartz import CGPathAddEllipseInRect, CGPathCreateMutable, CGRectMake
     path = CGPathCreateMutable()
     CGPathAddEllipseInRect(path, None, CGRectMake(x, y, w, h))
+    return path
+
+
+def _sweat_path():
+    """An original sweat drop: a disc with a point at the top, in the body group's design points."""
+    from Quartz import CGPathAddEllipseInRect, CGPathCloseSubpath, CGPathCreateMutable, CGPathMoveToPoint, CGPathAddLineToPoint
+    from Quartz import CGRectMake
+    path = CGPathCreateMutable()
+    CGPathAddEllipseInRect(path, None, CGRectMake(50.0, 50.0, 6.0, 6.0))
+    CGPathMoveToPoint(path, None, 53.0, 60.0)
+    CGPathAddLineToPoint(path, None, 50.6, 53.0)
+    CGPathAddLineToPoint(path, None, 55.4, 53.0)
+    CGPathCloseSubpath(path)
     return path
 
 
@@ -414,8 +428,18 @@ class OrbLayers:
         # are siblings of that shell inside the body group, so they never move with the pointer.
         self.squash = place(CALayer.layer(), (0, 0, DESIGN_SIZE, DESIGN_SIZE))
         self.squash.setSublayers_([self.body, self.highlight])
+        # PR 7b: the wave accent's hand nub (original, a small disc at the body's upper right), and the low-disk sweat drop.
+        self.nub = place(CAShapeLayer.layer(), (0, 0, DESIGN_SIZE, DESIGN_SIZE))
+        self.nub.setFillColor_(_cg_color(EYE_EDGE_RGB))
+        self.nub.setPath_(_ellipse_path(60.0, 33.0, 6.0, 6.0))
+        self.nub.setOpacity_(0.0)
+        self.sweat = place(CAShapeLayer.layer(), (0, 0, DESIGN_SIZE, DESIGN_SIZE))
+        self.sweat.setFillColor_(_cg_color((0.55, 0.86, 1.0)))
+        self.sweat.setPath_(_sweat_path())
+        self.sweat.setOpacity_(0.0)
         self.body_group.setSublayers_([self.squash, self.ring, self.eyes["L"], self.eyes["R"],
-                                       self.mouth, self.glyph, self.glyph_stroke, self.spinner])
+                                       self.mouth, self.glyph, self.glyph_stroke, self.spinner,
+                                       self.nub, self.sweat])
         self.root.setSublayers_([self.shadow, self.body_group])
 
     def fit(self, width, height):
@@ -581,6 +605,42 @@ class OrbLayers:
             self.glyph.addAnimation_forKey_(_loop("transform.scale.y", pairs, period), SPEECH_KEY)
         self._set_glyph_pivot(True)
 
+    def play_reaction(self, name, reduce_motion):
+        """Start one reaction: the eye shape morphs, the body channel moves, and the sweat glyph shows for low disk.
+
+        With Reduce Motion only the eye shape changes, and the first shape is held. Nothing moves.
+        """
+        from orb_character import REACTIONS, reaction_body_tracks
+        reaction = REACTIONS[name]
+        self.stop_reaction()
+        if reduce_motion:
+            shape = reaction.eyes[0][1]
+            for side in ("L", "R"):
+                self.eye_masks[side].setPath_(self._eye_paths[shape])
+            return
+        for side in ("L", "R"):
+            morph = [(t, self._eye_paths[shape]) for t, shape in reaction.eyes]
+            self.eye_masks[side].addAnimation_forKey_(_track("path", morph, reaction.seconds), REACTION_KEY)
+        tracks = reaction_body_tracks(name)
+        keys = {"y": ("transform.translation.y", 1.0), "rot": ("transform.rotation.z", math.pi / 180.0),
+                "sy": ("transform.scale.y", 1.0), "scale": ("transform.scale", 1.0)}
+        for channel, samples in tracks.items():
+            keypath, factor = keys[channel]
+            pairs = [(t, value * factor) for t, value in samples]
+            self.body_group.addAnimation_forKey_(_track(keypath, pairs, reaction.seconds), REACTION_KEY + channel)
+        if reaction.glyph:
+            seconds = reaction.seconds
+            fade = _track("opacity", [(0.0, 0.0), (0.2, 1.0), (seconds - 0.3, 1.0), (seconds, 0.0)], seconds)
+            self.sweat.addAnimation_forKey_(fade, REACTION_KEY)
+
+    def stop_reaction(self):
+        """Remove every reaction animation. The eye poses come back from the state's clip, set by the view."""
+        for layer in list(self.eye_masks.values()):
+            layer.removeAnimationForKey_(REACTION_KEY)
+        for channel in ("y", "rot", "sy", "scale"):
+            self.body_group.removeAnimationForKey_(REACTION_KEY + channel)
+        self.sweat.removeAnimationForKey_(REACTION_KEY)
+
     def stop_speech(self):
         """Remove the speech loops and put the glyph's pivot back to the centre."""
         self.glyph.removeAnimationForKey_(SPEECH_KEY)
@@ -664,6 +724,14 @@ class OrbLayers:
             add("body", self.body_group, _track("transform.scale.y", timeline["body_sy"], duration))
         if "body_scale" in timeline:
             add("body", self.body_group, _track("transform.scale", timeline["body_scale"], duration))
+        if "body_rot" in timeline:  # PR 7b: balance_eyes tilts the body
+            add("body", self.body_group, _track("transform.rotation.z",
+                                                [(t, math.radians(v)) for t, v in timeline["body_rot"]], duration))
+        if "nub_rot" in timeline:  # PR 7b: the wave accent's nub sways
+            add("nub", self.nub, _track("transform.rotation.z",
+                                        [(t, math.radians(v)) for t, v in timeline["nub_rot"]], duration))
+        if "nub_opacity" in timeline:
+            add("nub", self.nub, _track("opacity", timeline["nub_opacity"], duration))
         if "mouth" in timeline:
             add("mouth", self.mouth, _track("transform.scale.y", timeline["mouth"], duration))
             add("mouth", self.mouth, _track("opacity", timeline["mouth"], duration))
