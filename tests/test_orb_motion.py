@@ -184,3 +184,131 @@ def test_motion_modules_import_with_no_appkit_or_quartz(monkeypatch, module_name
     module = importlib.import_module(module_name)
     assert module.__name__ == module_name
     assert orb_motion.DESIGN_SIZE == 72.0
+
+
+# PR 3a: press, drag and drop physics.
+
+import orb_motion as om
+
+
+@pytest.mark.parametrize('stiffness, damping', om.SPRINGS)
+def test_every_section_three_spring_is_within_a_quarter_point_by_point_six_seconds(stiffness, damping):
+    x, v = om.spring(0.6, 0.0, 40.0, stiffness, damping)
+    assert abs(x - 40.0) <= om.SETTLE_EPS
+    assert math.isfinite(v)
+
+
+def test_section_three_springs_are_the_plan_values():
+    assert om.SPRING_RELEASE == (500.0, 26.0)
+    assert om.SPRING_DROP_JIGGLE == (500.0, 18.0)
+    assert om.SPRING_SNAP == (300.0, 24.0)
+    assert om.SPRING_FOLLOW == (400.0, 36.0)
+    assert om.SPRING_PEEK_IN == (300.0, 22.0)
+    assert om.SPRING_PEEK_OUT == (200.0, 26.0)
+    assert om.SPRING_CAPTURE_ZONE == (500.0, 40.0)
+    assert om.SPRING_MENU_FAN == (500.0, 30.0)
+    assert om.SPRING_EXPAND == (400.0, 32.0)
+    assert om.PRESS_SCALE == (1.12, 0.88)
+    assert om.PRESS_SECONDS == 0.10
+
+
+@pytest.mark.parametrize('zeta', [0.2, 0.4, 0.64, 0.9])
+def test_underdamped_overshoot_matches_the_formula_within_three_percent(zeta):
+    stiffness = 100.0
+    damping = 2.0 * zeta * math.sqrt(stiffness)
+    peak = max(om.spring(i / 1000.0, 0.0, 1.0, stiffness, damping)[0] for i in range(6000))
+    expected = math.exp(-math.pi * zeta / math.sqrt(1.0 - zeta * zeta))
+    assert abs((peak - 1.0) - expected) <= 0.03
+
+
+@pytest.mark.parametrize('zeta', [1.0, 1.5, 3.0])
+def test_critically_and_over_damped_springs_never_overshoot(zeta):
+    stiffness = 100.0
+    damping = 2.0 * zeta * math.sqrt(stiffness)
+    peak = max(om.spring(i / 1000.0, 0.0, 1.0, stiffness, damping)[0] for i in range(6000))
+    assert peak <= 1.0 + 1e-9
+
+
+@pytest.mark.parametrize('zeta', [0.3, 1.0, 2.0])
+def test_spring_velocity_is_the_derivative_of_its_position_in_every_branch(zeta):
+    stiffness, h = 100.0, 1e-5
+    damping = 2.0 * zeta * math.sqrt(stiffness)
+    for t in (0.05, 0.2, 0.7):
+        numeric = (om.spring(t + h, 3.0, 1.0, stiffness, damping, v0=2.0)[0]
+                   - om.spring(t - h, 3.0, 1.0, stiffness, damping, v0=2.0)[0]) / (2.0 * h)
+        assert om.spring(t, 3.0, 1.0, stiffness, damping, v0=2.0)[1] == pytest.approx(numeric, rel=1e-3, abs=1e-3)
+
+
+def test_spring_starts_where_it_was_released_and_settles_on_the_target():
+    assert om.spring(0.0, 5.0, 9.0, 300.0, 24.0, v0=-3.0) == (5.0, -3.0)
+    x, v = om.spring(10.0, 5.0, 9.0, 300.0, 24.0)
+    assert x == pytest.approx(9.0, abs=1e-9)
+    assert abs(v) < 1e-9
+
+
+def test_spring_done_needs_both_position_and_speed():
+    assert om.spring_done(10.1, 0.5, 10.0)
+    assert not om.spring_done(10.4, 0.0, 10.0)
+    assert not om.spring_done(10.0, 20.0, 10.0)
+
+
+@pytest.mark.parametrize('dt', [1.0 / 30.0, 1.0 / 120.0])
+def test_follow_step_converges_and_stays_stable(dt):
+    pos, vel = (0.0, 0.0), (0.0, 0.0)
+    worst = 0.0
+    for _ in range(int(3.0 / dt)):
+        pos, vel = om.follow_step(pos, vel, (100.0, -40.0), dt)
+        worst = max(worst, abs(pos[0] - 100.0))
+    assert abs(pos[0] - 100.0) <= om.SETTLE_EPS
+    assert abs(pos[1] + 40.0) <= om.SETTLE_EPS
+    assert worst < 110.0  # no blow-up: overshoot stays small at both frame rates
+
+
+def test_follow_step_does_nothing_for_zero_time_and_bad_input_stays_finite():
+    assert om.follow_step((1.0, 2.0), (3.0, 4.0), (9.0, 9.0), 0.0) == ((1.0, 2.0), (3.0, 4.0))
+    pos, vel = om.follow_step((float('nan'), 0.0), (float('inf'), 0.0), (1.0, 1.0), float('inf'))
+    assert all(math.isfinite(v) for v in pos + vel)
+
+
+def test_drag_stretch_is_round_at_rest_and_capped():
+    assert om.drag_stretch(0, 0) == (1.0, 1.0, 0.0)
+    for vx, vy in ((1e6, 0.0), (0.0, -5000.0), (float('inf'), 2.0)):
+        sx, sy, _ = om.drag_stretch(vx, vy)
+        assert sx <= 1.22 + 1e-12
+        assert sx * sy == pytest.approx(1.0)
+
+
+def test_drag_stretch_points_along_the_direction_of_travel():
+    _, _, angle = om.drag_stretch(0.0, 1500.0)
+    assert angle == pytest.approx(math.pi / 2)
+    sx, _, _ = om.drag_stretch(300.0, 0.0)
+    assert sx == pytest.approx(1.1)  # 300 / 3000, under the cap
+    assert om.drag_stretch(1500.0, 0.0)[0] == pytest.approx(1.22)  # over the cap, so clamped
+
+
+def test_stretch_matrix_is_round_at_rest_and_keeps_area():
+    assert om.stretch_matrix(1.0, 1.0, 0.7) == pytest.approx((1.0, 0.0, 0.0, 1.0))
+    a, b, c, d = om.stretch_matrix(1.2, 1.0 / 1.2, 0.4)
+    assert a * d - b * c == pytest.approx(1.0)
+
+
+def test_drag_roughness_counts_sharp_reversals_and_time_above_3500():
+    slow_zigzag = [(0.0, 0.0, 0.0), (0.1, 20.0, 0.0), (0.2, 0.0, 0.0), (0.3, 20.0, 0.0), (0.4, 0.0, 0.0)]
+    assert om.drag_roughness(slow_zigzag) == (0, 0.0)  # 200 pt/s, under the 300 pt/s reversal floor
+    fast = [(0.0, 0.0, 0.0), (0.1, 500.0, 0.0), (0.2, 0.0, 0.0), (0.3, 500.0, 0.0)]
+    reversals, seconds = om.drag_roughness(fast)
+    assert reversals == 2
+    assert seconds == pytest.approx(0.3)  # every segment runs at 5000 pt/s
+
+
+@pytest.mark.parametrize('bad', [float('nan'), float('inf'), -float('inf')])
+def test_pure_drag_functions_stay_finite_for_nan_and_inf(bad):
+    assert all(math.isfinite(v) for v in om.spring(bad, bad, bad, bad, bad, bad, bad))
+    assert all(math.isfinite(v) for v in om.spring(1.0, bad, 1.0, 300.0, 24.0, v0=bad))
+    pos, vel = om.follow_step((bad, bad), (bad, bad), (bad, bad), bad)
+    assert all(math.isfinite(v) for v in pos + vel)
+    assert all(math.isfinite(v) for v in om.drag_stretch(bad, bad))
+    assert all(math.isfinite(v) for v in om.stretch_matrix(bad, bad, bad))
+    reversals, seconds = om.drag_roughness([(bad, bad, bad), (0.0, 1.0, bad), (0.1, 2.0, 2.0)])
+    assert math.isfinite(seconds) and reversals >= 0
+    assert isinstance(om.spring_done(bad, bad, bad), bool)

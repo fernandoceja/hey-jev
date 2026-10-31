@@ -231,7 +231,9 @@ class TestPillCollapseWiring(unittest.TestCase):
         self.assertIn("popover_subframes", background)
         self.assertIn("popover_controls", background)
         self.assertLess(background.index("resize_frame"), background.index("drag_origin"))
-        capsule_click = _func(ui, "_collapsed_click_or_drag")
+        # PR 3a moved the drag loops into helpers, so the click-or-drag rules span these three functions.
+        capsule_click = "".join(_func(ui, name) for name in
+                                ("_collapsed_click_or_drag", "_drag_exactly", "_drag_with_spring"))
         self.assertIn("expandMiniBar_", capsule_click)
         self.assertIn("capsule_click_moved", capsule_click)
         self.assertIn("_finalize_mini_bar_drag", capsule_click)

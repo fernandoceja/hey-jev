@@ -86,7 +86,7 @@ from AppKit import (
     NSWindowStyleMaskResizable,
     NSWindowStyleMaskTitled,
 )
-from Foundation import NSInsetRect, NSAttributedString, NSMutableAttributedString, NSString, NSMakeSize, NSObject, NSURL, NSTimer, NSUserDefaults
+from Foundation import NSInsetRect, NSAttributedString, NSMutableAttributedString, NSString, NSMakeSize, NSObject, NSURL, NSTimer, NSUserDefaults, NSDate, NSDefaultRunLoopMode
 from assistant_layout import (
     DEFAULT_H,
     DEFAULT_W,
@@ -171,6 +171,7 @@ from mini_bar import (
     undo_main_reveal,
     is_our_app,
 )
+from orb_motion import DRAG_TICK_SECONDS, SPRING_FOLLOW, SPRING_SNAP, drag_roughness, drag_stretch, follow_step, spring, spring_done
 from orb_view import make_orb_view, orb_frame
 import full_window as fw
 from ptt import PushToTalk
@@ -531,11 +532,37 @@ class MiniBarBackground(NSView):
 
     @objc.python_method
     def _collapsed_click_or_drag(self, window, delegate, _event):
-        """A still click opens the typing pill. A drag moves the capsule."""
+        """A still click opens the typing pill. A drag moves the capsule.
+
+        Press squashes the orb. A drag trails the cursor on a spring, stretches along its travel, then
+        jiggles and springs to the snap target on release. Reduce Motion keeps the exact-follow drag.
+        """
+        self._finish_drag_settle()
+        orb = getattr(delegate, "orb_view", None) if delegate is not None else None
+        animate = orb is not None and not orb.reduceMotion
+        if animate:
+            orb.pressSquash()
         down = NSEvent.mouseLocation()
         start = (float(down.x), float(down.y))
         frame = window.frame()
         origin = (float(frame.origin.x), float(frame.origin.y))
+        if animate:
+            moved = self._drag_with_spring(window, delegate, orb, start, origin)
+            if moved:
+                return  # the settle spring finalizes the drag when it lands
+        else:
+            moved = self._drag_exactly(window, start, origin)
+            if moved and delegate is not None and hasattr(delegate, "_finalize_mini_bar_drag"):
+                delegate._finalize_mini_bar_drag(window)
+                return
+        if animate:
+            orb.releaseSquash()
+        if not moved and delegate is not None and hasattr(delegate, "expandMiniBar_"):
+            delegate.expandMiniBar_(self)
+
+    @objc.python_method
+    def _drag_exactly(self, window, start, origin):
+        """Reduce Motion: the window follows the cursor exactly, as before PR 3a. Returns True once it moved."""
         mask = NSEventMaskLeftMouseDragged | NSEventMaskLeftMouseUp
         moved = False
         while True:
@@ -549,11 +576,96 @@ class MiniBarBackground(NSView):
             if moved:
                 x, y = drag_origin(origin, start, point)
                 window.setFrameOrigin_(NSMakePoint(x, y))
-        if moved and delegate is not None and hasattr(delegate, "_finalize_mini_bar_drag"):
-            delegate._finalize_mini_bar_drag(window)
+        return moved
+
+    @objc.python_method
+    def _drag_with_spring(self, window, delegate, orb, start, origin):
+        """Spring drag. Returns True once it moved past the click threshold, and then starts the release.
+
+        The window trails the cursor target with follow_step, and the orb stretches from the smoothed speed.
+        The loop wakes at DRAG_TICK_SECONDS even when the mouse is still, which is the 60 Hz tick. A nested
+        tracking loop blocks on events, so an NSTimer is not used here. The release uses an NSTimer.
+        """
+        mask = NSEventMaskLeftMouseDragged | NSEventMaskLeftMouseUp
+        pos, vel, smoothed = origin, (0.0, 0.0), (0.0, 0.0)
+        samples = []
+        moved = False
+        last = time.monotonic()
+        while True:
+            nxt = window.nextEventMatchingMask_untilDate_inMode_dequeue_(
+                mask, NSDate.dateWithTimeIntervalSinceNow_(DRAG_TICK_SECONDS), NSDefaultRunLoopMode, True)
+            if nxt is not None and nxt.type() == NSEventTypeLeftMouseUp:
+                break
+            now = NSEvent.mouseLocation()
+            point = (float(now.x), float(now.y))
+            stamp = time.monotonic()
+            dt = stamp - last
+            last = stamp
+            if not moved:
+                if not capsule_click_moved(start, point):
+                    continue
+                moved = True
+            pos, vel = follow_step(pos, vel, drag_origin(origin, start, point), dt, *SPRING_FOLLOW)
+            smoothed = (smooth(smoothed[0], vel[0]), smooth(smoothed[1], vel[1]))
+            window.setFrameOrigin_(NSMakePoint(pos[0], pos[1]))
+            orb.dragStretch(*drag_stretch(smoothed[0], smoothed[1]))
+            samples.append((stamp, pos[0], pos[1]))
+        if not moved:
+            return False
+        orb.dropJiggle()
+        if delegate is not None:
+            delegate.last_drag_roughness = drag_roughness(samples)
+            size = window.frame().size
+            target = finish_drag(pos, (float(size.width), float(size.height)), delegate._visible_screens())
+            self._start_drag_settle(window, delegate, pos, vel, target)
+        return True
+
+    @objc.python_method
+    def _start_drag_settle(self, window, delegate, origin, velocity, target):
+        """Spring the window from where the drag left it to the snap target, at 60 Hz."""
+        self._stop_drag_settle()
+        self._drag_settle = {"window": window, "delegate": delegate, "origin": origin,
+                             "velocity": velocity, "target": target, "started": time.monotonic()}
+        self._drag_settle_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            DRAG_TICK_SECONDS, self, "settleDragTick:", None, True)
+
+    def settleDragTick_(self, _timer):
+        state = getattr(self, "_drag_settle", None)
+        if state is None:
+            self._stop_drag_settle()
             return
-        if not moved and delegate is not None and hasattr(delegate, "expandMiniBar_"):
-            delegate.expandMiniBar_(self)
+        elapsed = time.monotonic() - state["started"]
+        axes = [spring(elapsed, state["origin"][i], state["target"][i], *SPRING_SNAP,
+                       v0=state["velocity"][i]) for i in (0, 1)]
+        done = all(spring_done(axes[i][0], axes[i][1], state["target"][i]) for i in (0, 1))
+        x, y = state["target"] if done else (axes[0][0], axes[1][0])
+        state["window"].setFrameOrigin_(NSMakePoint(x, y))
+        if done:
+            self._land_drag_settle(state)
+
+    @objc.python_method
+    def _land_drag_settle(self, state):
+        self._stop_drag_settle()
+        delegate = state["delegate"]
+        if delegate is not None and hasattr(delegate, "_finalize_mini_bar_drag"):
+            delegate._finalize_mini_bar_drag(state["window"])
+
+    @objc.python_method
+    def _finish_drag_settle(self):
+        """A new press during the settle lands the window at once, so the drag never stacks two springs."""
+        state = getattr(self, "_drag_settle", None)
+        if state is None:
+            return
+        state["window"].setFrameOrigin_(NSMakePoint(state["target"][0], state["target"][1]))
+        self._land_drag_settle(state)
+
+    @objc.python_method
+    def _stop_drag_settle(self):
+        timer = getattr(self, "_drag_settle_timer", None)
+        if timer is not None:
+            timer.invalidate()
+        self._drag_settle_timer = None
+        self._drag_settle = None
 
     def mouseDown_(self, event):
         window = self.window()

@@ -28,6 +28,8 @@ from orb_motion import (
     HIGHLIGHT_ALPHA,
     LISTEN_GLYPH_RGB,
     ORB_PALETTE,
+    PRESS_SCALE,
+    PRESS_SECONDS,
     RIM_ALPHA,
     RIM_RGB,
     RING_RGB,
@@ -35,9 +37,12 @@ from orb_motion import (
     SHADE_RGB,
     SHADOW_OPACITY,
     SHADOW_SIZE,
+    SPRING_DROP_JIGGLE,
+    SPRING_RELEASE,
     layer_geometry,
     shadow_for_bob,
     sine_samples,
+    stretch_matrix,
 )
 
 FLOAT_SECONDS = FLOAT_FRAMES / float(CLIP_FPS)
@@ -45,6 +50,7 @@ MOUTH_RECT = (33.0, 23.0, 6.0, 6.0)  # design space, centred under the eyes. yaw
 MOUTH_RGB = (0.04, 0.06, 0.22)
 
 _SHADOW_IMAGES = {}  # backing scale -> CGImage; the shadow does not depend on appearance
+SQUASH_KEY = "squash"  # press, release and jiggle share one key, so each replaces the last
 
 # Radial gradient ellipse radii come from the start and end points in unit space.
 # This reaches the body's edge at a circular radius of about 40 pt.
@@ -227,6 +233,19 @@ def _loop(keypath, pairs, duration):
     return anim
 
 
+def _spring_animation(constants):
+    """CASpringAnimation on the squash transform, from the current value to the model value. Duration is its settling time."""
+    from Quartz import CASpringAnimation
+    stiffness, damping = constants
+    anim = CASpringAnimation.animationWithKeyPath_("transform")
+    anim.setStiffness_(float(stiffness))
+    anim.setDamping_(float(damping))
+    anim.setMass_(1.0)
+    anim.setInitialVelocity_(0.0)
+    anim.setDuration_(anim.settlingDuration())
+    return anim
+
+
 def _accent_group(animations, duration):
     from Quartz import CAAnimationGroup
     group = CAAnimationGroup.animation()
@@ -321,7 +340,11 @@ class OrbLayers:
         self.body_group = place(CALayer.layer(), (0, 0, DESIGN_SIZE, DESIGN_SIZE))
         self.body_group.setSublayers_([self.body, self.ring, self.eyes["L"], self.eyes["R"],
                                        self.mouth, self.glyph, self.glyph_stroke])
-        self.root.setSublayers_([self.shadow, self.body_group, self.highlight])
+        # Press squash and drag stretch live on their own layer, so they never fight the bob, breath and accents
+        # on the body group. The highlight goes in too, so the shine squashes with the body.
+        self.squash = place(CALayer.layer(), (0, 0, DESIGN_SIZE, DESIGN_SIZE))
+        self.squash.setSublayers_([self.body_group, self.highlight])
+        self.root.setSublayers_([self.shadow, self.squash])
 
     def fit(self, width, height):
         """Centre the design space in the view and scale it like the old drawRect_ path."""
@@ -433,6 +456,42 @@ class OrbLayers:
             layer.addAnimation_forKey_(_accent_group(animations, duration), "accent")
         return duration
 
+    def press_squash(self):
+        """Mouse down on the orb: the body and eyes squash to PRESS_SCALE over PRESS_SECONDS, easeOut."""
+        from Quartz import CABasicAnimation, CAMediaTimingFunction, CATransform3DMakeScale
+        anim = CABasicAnimation.animationWithKeyPath_("transform")
+        anim.setDuration_(PRESS_SECONDS)
+        anim.setTimingFunction_(CAMediaTimingFunction.functionWithName_("easeOut"))
+        return self._squash_to(CATransform3DMakeScale(PRESS_SCALE[0], PRESS_SCALE[1], 1.0), anim)
+
+    def release_spring(self):
+        """A click lets go: the squash springs back to round. Returns the spring's settling time in seconds."""
+        from Quartz import CATransform3DIdentity
+        return self._squash_to(CATransform3DIdentity, _spring_animation(SPRING_RELEASE))
+
+    def drop_jiggle(self):
+        """A drag ends: the stretch springs back to round with two wobbles. Returns the settling time in seconds."""
+        from Quartz import CATransform3DIdentity
+        return self._squash_to(CATransform3DIdentity, _spring_animation(SPRING_DROP_JIGGLE))
+
+    def set_stretch(self, sx, sy, angle):
+        """Drag stretch: R(angle)·S·R(-angle). Set every frame with no implicit animation, so the drag stays exact."""
+        from Quartz import CATransform3DMakeAffineTransform, CGAffineTransformMake
+        a, b, c, d = stretch_matrix(sx, sy, angle)
+        transform = CATransform3DMakeAffineTransform(CGAffineTransformMake(a, b, c, d, 0.0, 0.0))
+        self.squash.removeAnimationForKey_(SQUASH_KEY)  # an unfinished press must not hold the layer
+        self._disable_actions(lambda: self.squash.setTransform_(transform))
+
+    def _squash_to(self, target, animation):
+        """Make target the resting value, then animate from wherever the layer is now.
+
+        Core Animation takes the start from the presentation value when the animation is added, and the
+        end from the model value set here. One key, so a new squash replaces the one in flight.
+        """
+        self._disable_actions(lambda: self.squash.setTransform_(target))
+        self.squash.addAnimation_forKey_(animation, SQUASH_KEY)
+        return float(animation.duration())
+
     def set_pupils(self, offsets):
         """offsets: {"L": (dx, dy), "R": (dx, dy)} in design points. Eases over 0.08 s, linear."""
         from Quartz import CAMediaTimingFunction, CATransaction, CGAffineTransformMakeTranslation
@@ -447,12 +506,15 @@ class OrbLayers:
 
     def reset_motion(self):
         """Stop every animation and centre the pupils. Used when motion stops or the orb hides."""
-        from Quartz import CGAffineTransformIdentity
+        from Quartz import CATransform3DIdentity, CGAffineTransformIdentity
         self.set_passives(False)
         for layer in [self.body_group, self.mouth] + list(self.eye_masks.values()) + list(self.pupils.values()):
             layer.removeAnimationForKey_("accent")
-        self._disable_actions(lambda: [pupil.setAffineTransform_(CGAffineTransformIdentity)
-                                       for pupil in self.pupils.values()])
+        self.squash.removeAnimationForKey_(SQUASH_KEY)
+        self._disable_actions(lambda: (
+            [pupil.setAffineTransform_(CGAffineTransformIdentity) for pupil in self.pupils.values()],
+            self.squash.setTransform_(CATransform3DIdentity),
+        ))
 
     @staticmethod
     def _disable_actions(work):

@@ -128,6 +128,16 @@ def test_finish_drag_snaps_near_edges_with_twelve_point_inset():
     assert placed[1] != sy + inset
 
 
+def test_finish_drag_is_idempotent_so_the_settle_can_finalize_where_it_lands():
+    # The settle springs the window to finish_drag's target, then _finalize_mini_bar_drag runs finish_drag again.
+    size = (ORB_PANEL, ORB_PANEL)
+    sx, sy, sw, sh = AIR
+    for origin in ((sx + ORB_EDGE_INSET + 3.0, sy + 200.0), (sx + sw / 2.0, sy + sh / 2.0),
+                   (sx + sw - ORB_PANEL, sy + sh - ORB_PANEL - 2.0)):
+        once = finish_drag(origin, size, [AIR])
+        assert finish_drag(once, size, [AIR]) == once
+
+
 def test_finish_drag_on_a_negative_coordinate_display():
     size = (ORB_PANEL, ORB_PANEL)
     sx, sy, sw, sh = LEFT
