@@ -2517,6 +2517,8 @@ class AppDelegate(NSObject):
         orb.configure(state, bool(getattr(self, "option_down", False)),
                       getattr(self, "_meter_unit", 0.0), visible,
                       flags.get("motion", True), flags.get("material") == "solid")
+        # The orb layer draws its own shadow. A window shadow on the orb-only panel would add a second one.
+        panel.setHasShadow_(not collapsed)
         backing = getattr(self, "pill_backing", None)
         if backing is not None:
             backing.setHidden_(collapsed)

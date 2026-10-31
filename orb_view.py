@@ -2,9 +2,9 @@
 import math
 import time
 
-ORB_SIZE = 56.0
-PANEL_SIZE = 72.0
-ORB_DESIGN_EXTENT = 70.0  # orb + listening ring, with a hair of margin
+from orb_motion import BODY_SIZE as ORB_SIZE
+from orb_motion import DESIGN_EXTENT as ORB_DESIGN_EXTENT
+from orb_motion import DESIGN_SIZE as PANEL_SIZE
 
 
 def orb_frame(expanded):
@@ -57,8 +57,10 @@ def make_orb_view(frame):
     global _ORB_CLASS
     if _ORB_CLASS is None:
         import objc
-        from AppKit import NSView, NSColor, NSBezierPath, NSGradient, NSMakeRect, NSMakePoint, NSAffineTransform, NSGraphicsContext
+        from AppKit import (NSView, NSColor, NSBezierPath, NSMakeRect, NSMakePoint, NSAffineTransform,
+                            NSViewLayerContentsRedrawNever, NSViewLayerContentsRedrawOnSetNeedsDisplay)
         from Foundation import NSTimer
+        import orb_layers
 
         class JevOrbView(NSView):
             def initWithFrame_(self, rect):
@@ -70,6 +72,10 @@ def make_orb_view(frame):
                     self.reduceMotion = False
                     self.solid = False
                     self.started = time.monotonic()
+                    # Layer-backed: Core Animation draws the orb, so drawRect_ runs only for the solid case.
+                    self.setWantsLayer_(True)
+                    self.setLayerContentsRedrawPolicy_(NSViewLayerContentsRedrawNever)
+                    self.tree = orb_layers.OrbLayers(self.layer())
                     self.setAccessibilityElement_(True)
                     self.setAccessibilityRole_("AXButton")
                     self.setAccessibilityLabel_("Jev — Ready. Click to type; hold right Option to speak.")
@@ -85,6 +91,36 @@ def make_orb_view(frame):
                 window.delegate().expandMiniBar_(self)
                 return True
 
+            def setFrameSize_(self, size):
+                objc.super(JevOrbView, self).setFrameSize_(size)
+                self.fitLayers()
+
+            def viewDidMoveToWindow(self):
+                self.refreshLook()
+
+            def viewDidChangeBackingProperties(self):
+                self.refreshLook()
+
+            def viewDidChangeEffectiveAppearance(self):
+                self.refreshLook()
+
+            @objc.python_method
+            def fitLayers(self):
+                tree = getattr(self, "tree", None)
+                if tree is not None:
+                    bounds = self.bounds()
+                    tree.fit(float(bounds.size.width), float(bounds.size.height))
+
+            @objc.python_method
+            def refreshLook(self):
+                tree = getattr(self, "tree", None)
+                if tree is None:
+                    return
+                window = self.window()
+                scale = float(window.backingScaleFactor()) if window is not None else 1.0
+                tree.rescale(scale, orb_layers.is_dark(self.effectiveAppearance()))
+                self.fitLayers()
+
             @objc.python_method
             def configure(self, status, held, level, visible, motion, solid):
                 self.state = orb_state(status, held)
@@ -95,8 +131,15 @@ def make_orb_view(frame):
                 self.setAccessibilityLabel_("Jev — " + label + ". Click to type; hold right Option to speak.")
                 self.setToolTip_("Jev — " + label)
                 self.setHidden_(not visible)
-                self.ticker.sync(visible and motion, lambda: NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-                    1 / 30, self, "animateOrb:", None, True))
+                self.setLayerContentsRedrawPolicy_(
+                    NSViewLayerContentsRedrawOnSetNeedsDisplay if solid else NSViewLayerContentsRedrawNever)
+                if not solid:
+                    self.layer().setContents_(None)  # Clear any solid frame from a previous draw.
+                self.tree.apply(self.state, solid, orb_pose(self.state, 0, self.level, self.reduceMotion)[3])
+                # The solid path keeps its old 30 fps pose. The layer path only refreshes the listening ring.
+                self.ticker.sync(visible and motion and (solid or self.state == "listening"),
+                                 lambda: NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                                     1 / 30, self, "animateOrb:", None, True))
                 self.setNeedsDisplay_(True)
 
             @objc.python_method
@@ -108,9 +151,14 @@ def make_orb_view(frame):
                     self.stop()
 
             def animateOrb_(self, _timer):
-                self.setNeedsDisplay_(True)
+                if self.solid:
+                    self.setNeedsDisplay_(True)
+                else:
+                    self.tree.set_ring_width(orb_pose(self.state, 0, self.level, self.reduceMotion)[3])
 
             def drawRect_(self, _rect):
+                if not self.solid:
+                    return  # Layers draw everything else.
                 bob, blink, sweep, ring_width = orb_pose(
                     self.state, time.monotonic() - self.started, self.level, self.reduceMotion)
                 def color(r, g, b, a=1):
@@ -129,29 +177,8 @@ def make_orb_view(frame):
                 xf.translateXBy_yBy_(-36.0, -36.0)
                 xf.concat()
                 body = oval(8, 8 + bob, ORB_SIZE, ORB_SIZE)
-                if self.solid:
-                    color(0.12, 0.27, 0.65).setFill()
-                    body.fill()
-                else:
-                    base = NSGradient.alloc().initWithColors_([
-                        color(0.36, 0.95, 0.92), color(0.16, 0.42, 0.95), color(0.08, 0.07, 0.36)])
-                    base.drawInBezierPath_relativeCenterPosition_(body, NSMakePoint(-0.35, 0.45))
-                    ctx = NSGraphicsContext.currentContext()
-                    ctx.saveGraphicsState()
-                    body.addClip()
-                    shade = NSGradient.alloc().initWithStartingColor_endingColor_(
-                        color(0.02, 0.02, 0.2, 0.0), color(0.02, 0.02, 0.2, 0.45))
-                    shade.drawInBezierPath_angle_(oval(4, 2 + bob, 64, 40), -90)
-                    gloss = NSGradient.alloc().initWithStartingColor_endingColor_(
-                        color(1, 1, 1, 0.85), color(1, 1, 1, 0.0))
-                    gloss.drawInBezierPath_angle_(oval(18 + sweep * 0.3, 40 + bob, 36, 21), -90)
-                    rim = NSGradient.alloc().initWithStartingColor_endingColor_(
-                        color(0.45, 0.85, 1, 0.0), color(0.45, 0.85, 1, 0.35))
-                    rim.drawInBezierPath_relativeCenterPosition_(body, NSMakePoint(0, 0))
-                    ctx.restoreGraphicsState()
-                    color(1, 1, 1, 0.18).setStroke()
-                    body.setLineWidth_(0.75)
-                    body.stroke()
+                color(0.12, 0.27, 0.65).setFill()
+                body.fill()
                 if self.state == "listening":
                     color(0.18, 0.65, 1).setStroke()
                     ring = oval(5, 5 + bob, 62, 62)
