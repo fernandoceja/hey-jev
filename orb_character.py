@@ -4,6 +4,7 @@ Every random choice takes an injected random.Random, so tests can seed it. No Ap
 orb_state lives here (orb_view re-exports it) so resolve() can build on it without an import cycle.
 """
 import math
+import re
 from collections import namedtuple
 
 from orb_motion import (
@@ -33,6 +34,11 @@ EYE_SHAPES = {
     "sceptic": ((0.6, 0.27), (0.68, 0.5), (0.4, 0.73), (0.32, 0.5)),
     # PR 8: a squinted pill, short and a little wide, for thinking.
     "squint": ((0.5, 0.22), (0.66, 0.5), (0.5, 0.78), (0.34, 0.5)),
+    # PR 7b: reaction emotions, all original pill-based loops with the same 4 anchors.
+    "happy": ((0.5, 0.44), (0.68, 0.6), (0.5, 0.68), (0.32, 0.6)),  # a short, low, smiling bar
+    "sad": ((0.66, 0.3), (0.7, 0.55), (0.5, 0.8), (0.3, 0.55)),  # drooping, leaning in
+    "heart": ((0.5, 0.92), (0.74, 0.5), (0.5, 0.1), (0.26, 0.5)),  # a rounded lozenge, read as a heart at speed
+    "spiral": ((0.62, 0.0), (0.7, 0.5), (0.38, 1.0), (0.3, 0.5)),  # a tilted full-height bar; the wobble makes it spin
 }
 
 # lookIntensity by character state. Only "idle" is driven by PR 2; the other rows are the plan's table for later PRs.
@@ -50,6 +56,8 @@ ACCENTS = (
     Accent("bounce", 36, 8, 0.5),
     Accent("jiggle", 30, 4, 1.0),
     Accent("happy", 60, 8, 0.0),
+    Accent("wave", 72, 5, 0.5),  # PR 7b: a small original hand nub sways at the body's upper right
+    Accent("balance_eyes", 84, 2, 0.2),  # PR 7b: the body tilts left, then right, +-4 degrees (pupils are gone)
 )
 _ACCENT_BY_NAME = {accent.name: accent for accent in ACCENTS}
 
@@ -144,6 +152,17 @@ def _tl_happy():
     return {"eyes_L": eyes, "eyes_R": list(eyes)}
 
 
+def _tl_wave():
+    """Nub sway: +-20 degrees on a 0.2 s period, shown for the whole accent."""
+    sway = sample_track(lambda t: 20.0 * math.sin(math.tau * t / 0.2), 1.2)
+    return {"nub_rot": sway, "nub_opacity": [(0.0, 0.0), (0.05, 1.0), (1.12, 1.0), (1.2, 0.0)]}
+
+
+def _tl_balance_eyes():
+    """One tilt cycle: left, then right, +-4 degrees about the body centre."""
+    return {"body_rot": sample_track(lambda t: 4.0 * math.sin(math.tau * t / 1.4), 1.4)}
+
+
 _TIMELINES = {
     "blink": _tl_blink,
     "blink_stagger": _tl_blink_stagger,
@@ -153,6 +172,8 @@ _TIMELINES = {
     "bounce": _tl_bounce,
     "jiggle": _tl_jiggle,
     "happy": _tl_happy,
+    "wave": _tl_wave,
+    "balance_eyes": _tl_balance_eyes,
 }
 
 
@@ -294,3 +315,161 @@ def ease_look(start, target, elapsed, duration=LOOK_EASE_SECONDS):
         return a
     u = t / duration
     return a + (b - a) * (u * u * (3.0 - 2.0 * u))
+
+
+# PR 7b: one-shot reactions. The table, the queue with cooldowns, and the trigger rules. Pure Python.
+
+Reaction = namedtuple("Reaction", "name seconds priority cooldown eyes body glyph")
+
+# name: (seconds, priority, cooldown seconds, eye keyframes [(t, shape)] for both eyes, body channel and amount, glyph).
+# Priorities and cooldowns are the plan's table. wave is once per launch: an infinite cooldown on this queue.
+REACTIONS = {
+    "get_ready": Reaction("get_ready", 0.35, 3, 0.0, ((0.0, "wide"),), ("hop", 4.0), False),
+    "success": Reaction("success", 0.8, 2, 20.0, ((0.0, "smileClosed"),), ("spin_hop", 6.0), False),
+    "failure": Reaction("failure", 1.0, 3, 5.0, ((0.0, "sad"), (0.5, "sceptic")), ("droop", 0.06), False),
+    "dizzy": Reaction("dizzy", 1.2, 2, 10.0, ((0.0, "spiral"),), ("wobble", 6.0), False),
+    "heart": Reaction("heart", 1.0, 1, 60.0, ((0.0, "heart"),), ("pulse", 0.08), False),
+    "low_disk": Reaction("low_disk", 1.5, 1, 3600.0, ((0.0, "sad"),), ("none", 0.0), True),
+    "wave": Reaction("wave", 1.2, 1, float("inf"), ((0.0, "open"),), ("none", 0.0), False),
+}
+
+LOW_DISK_BYTES = 10 * 1024 ** 3  # 10 GB
+LOW_DISK_FRACTION = 0.05
+ROUGH_REVERSALS = 6
+ROUGH_SECONDS = 0.5
+
+
+def reaction_body_tracks(name):
+    """Body channels for a reaction, sampled at CLIP_FPS: {"y": [(t, pt)], "rot": [(t, deg)], "sy": [(t, k)], "scale": [(t, k)]}.
+
+    Only the channels the reaction uses are present. Values are relative to rest, so 0 means no change.
+    """
+    reaction = REACTIONS[name]
+    channel, amount = reaction.body
+    seconds = reaction.seconds
+    tracks = {}
+    if channel == "hop":
+        tracks["y"] = sample_track(lambda t: amount * 4.0 * (t / seconds) * (1.0 - t / seconds), seconds)
+    elif channel == "spin_hop":
+        tracks["y"] = sample_track(lambda t: amount * 4.0 * (t / seconds) * (1.0 - t / seconds), seconds)
+        tracks["rot"] = sample_track(lambda t: 360.0 * (t / seconds), seconds)
+    elif channel == "droop":
+        tracks["sy"] = sample_track(lambda t: 1.0 - amount * math.sin(math.pi * t / seconds), seconds)
+    elif channel == "wobble":
+        tracks["rot"] = sample_track(
+            lambda t: amount * math.sin(math.tau * 2.0 * t / seconds) * (1.0 - t / seconds), seconds)
+    elif channel == "pulse":
+        tracks["scale"] = sample_track(lambda t: 1.0 + amount * math.sin(math.pi * t / seconds), seconds)
+    return tracks
+
+
+def is_thanks(text):
+    """True for a turn that thanks Jev: "thanks", "thank you", "love you Jev". False for "no thanks" and for empty text.
+
+    Matching is on whole words, so punctuation and case do not matter.
+    """
+    words = " ".join(re.sub(r"[^a-z]+", " ", str(text or "").lower()).split())
+    if not words:
+        return False
+    if re.search(r"\bno thanks\b", words):
+        return False
+    return bool(re.search(r"\bthanks\b|\bthank you\b|\blove you jev\b", words))
+
+
+def rough_drag(reversals, seconds_fast):
+    """A drop after a rough drag: at least 6 direction reversals, or at least 0.5 s above 3,500 pt/s."""
+    try:
+        return int(reversals) >= ROUGH_REVERSALS or float(seconds_fast) >= ROUGH_SECONDS
+    except (TypeError, ValueError):
+        return False
+
+
+def low_disk(free_bytes, total_bytes):
+    """True when free space is under 10 GB or under 5% of the disk. Bad input is not low."""
+    try:
+        free, total = float(free_bytes), float(total_bytes)
+    except (TypeError, ValueError):
+        return False
+    if not (math.isfinite(free) and math.isfinite(total)) or total <= 0.0:
+        return False
+    return free < LOW_DISK_BYTES or free / total < LOW_DISK_FRACTION
+
+
+def disk_check(usage=None, path="/"):
+    """True when the disk at path is low. usage defaults to shutil.disk_usage; tests pass a fake, so the real disk is never read."""
+    import shutil
+    usage = usage or shutil.disk_usage
+    try:
+        result = usage(path)
+        return low_disk(result.free, result.total)
+    except OSError:
+        return False
+
+
+_IDLE_LINES = ("Ready when you are", "Didn't catch", "Say “Hey Jev”")
+
+
+def is_real_reply(detail):
+    """A status detail that is an answer, not an idle or error line. Empty text and the idle lines are not replies."""
+    text = str(detail or "").strip()
+    if not text:
+        return False
+    return not any(text.startswith(line) for line in _IDLE_LINES)
+
+
+_BUSY = {"Doing it", "Thinking", "Transcribing", "Finishing", "Speaking"}
+
+
+def reaction_for_status(previous, state, detail):
+    """The reaction a status change calls for, or None.
+
+    success: a command ended on Ready with a real reply, after a busy state. failure: an error or Time's up.
+    """
+    if state in ("Something went wrong", "Time's up"):
+        return "failure"
+    if state == "Ready" and previous in _BUSY and is_real_reply(detail):
+        return "success"
+    return None
+
+
+class ReactionQueue:
+    """One reaction plays at a time. Cooldowns hold per reaction. Clock is injected, so tests use a fake clock."""
+
+    def __init__(self, clock):
+        self._clock = clock
+        self._current = None  # (name, start, end)
+        self._last = {}  # name -> when it last started
+
+    def offer(self, name, now=None):
+        """Start a reaction if its cooldown has passed and no higher-priority one is playing. True if it started.
+
+        An equal or higher priority replaces a reaction that is playing. A lower one waits for the next offer.
+        """
+        if name not in REACTIONS:
+            raise ValueError("unknown reaction: %r" % (name,))
+        now = float(self._clock() if now is None else now)
+        spec = REACTIONS[name]
+        last = self._last.get(name)
+        if last is not None and now - last < spec.cooldown:
+            return False
+        playing = self.current(now)
+        if playing is not None and REACTIONS[playing].priority > spec.priority:
+            return False
+        self._current = (name, now, now + spec.seconds)
+        self._last[name] = now
+        return True
+
+    def current(self, now=None):
+        """The reaction playing now, or None once its duration has passed."""
+        now = float(self._clock() if now is None else now)
+        if self._current is None:
+            return None
+        name, _start, end = self._current
+        if now >= end:
+            self._current = None
+            return None
+        return name
+
+    def cancel_all(self):
+        """Stop the reaction that is playing. Cooldowns are kept, so it cannot replay at once."""
+        self._current = None

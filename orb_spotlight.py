@@ -10,6 +10,8 @@ SPOTLIGHT_FIELD_H = 52.0  # "Search or Ask Jev" with the mic at its right
 SPOTLIGHT_ROW_H = 36.0  # one line per item
 SPOTLIGHT_PAD = 10.0
 SPOTLIGHT_GAP = 10.0  # between the orb and the panel
+SPOTLIGHT_LEVEL = 101  # NSPopUpMenuWindowLevel: above the orb's floating level and other apps' normal windows (PR 7b)
+ORB_PANEL_LEVEL = 28  # mirrors assistant_ui.BAR_LEVEL, the floating orb's level; a test keeps the two equal
 SPOTLIGHT_FADE_SECONDS = 0.15
 SPOTLIGHT_START_SCALE = 0.96
 

@@ -93,6 +93,7 @@ from AppKit import (
     NSWindowCollectionBehaviorCanJoinAllSpaces,
     NSWindowCollectionBehaviorFullScreenAuxiliary,
     NSWindowCollectionBehaviorStationary,
+    NSWindowCollectionBehaviorTransient,
     NSImageScaleProportionallyUpOrDown,
     NSViewHeightSizable,
     NSViewWidthSizable,
@@ -120,6 +121,7 @@ from mini_bar import (
     ORIGIN_KEY,
     PEEK_PREF_KEY,
     PLACEHOLDER,
+    chip_title,
     PREF_KEY,
     SIZE_KEY,
     peek_enabled_from_pref,
@@ -197,6 +199,7 @@ from orb_motion import (
     spring, spring_done,
 )
 from orb_motion import peek_edge_allowed  # PR 8: a tuck never sits on a shared display edge
+from orb_character import disk_check, is_thanks, reaction_for_status, rough_drag
 from orb_tuck import (TUCK_CLOSE_SIZE, TUCK_FADE_IN_SECONDS, TUCK_FADE_OUT_SECONDS, TUCK_KEY, TUCK_SECONDS,
                       decode_tuck, encode_tuck, tuck_close_centre, tuck_edge, tuck_eye_centres, tucked_frame,
                       untucked_frame)
@@ -1465,6 +1468,7 @@ class AppDelegate(NSObject):
 
     def applicationDidFinishLaunching_(self, _notification):
         self.controls = queue.Queue()
+        self._start_disk_watch()  # PR 7b: a background free-space read at launch, then hourly. It only reads.
         self.option_down = False
         self.ptt = PushToTalk()
         self.worker_started = False
@@ -2469,10 +2473,44 @@ class AppDelegate(NSObject):
         self.captureAreaWand_(None)
 
     @objc.python_method
+    def _note_turn_text(self, text):
+        """A turn whose text thanks Jev plays heart eyes (PR 7b). Matched on the text only; nothing is sent."""
+        if is_thanks(text) and getattr(self, "orb_view", None) is not None:
+            self.orb_view.offerReaction("heart")
+
+    @objc.python_method
+    def _start_disk_watch(self):
+        """Check the disk now, then at most hourly. The read happens on a background thread and only reads free space."""
+        self._disk_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            3600.0, self, "diskWatchTick:", None, True)
+        self._run_disk_check()
+
+    def diskWatchTick_(self, _timer):
+        self._run_disk_check()
+
+    @objc.python_method
+    def _run_disk_check(self):
+        threading.Thread(target=self._disk_check_worker, daemon=True).start()
+
+    @objc.python_method
+    def _disk_check_worker(self):
+        low = disk_check()  # shutil.disk_usage("/"): a read, nothing is cleaned or moved
+        self.performSelectorOnMainThread_withObject_waitUntilDone_("diskCheckDone:", bool(low), False)
+
+    def diskCheckDone_(self, result):
+        """Back on the main thread: low disk highlights the Mac health chip and plays the sweat-drop reaction."""
+        self.mac_health_alert = bool(result)
+        print("orb disk: low={0}".format(bool(result)), flush=True)
+        if self.mac_health_alert and getattr(self, "orb_view", None) is not None:
+            self.orb_view.offerReaction("low_disk")
+        self._apply_pill_presentation()  # redraws the chips, so the Mac health mark follows the alert
+
+    @objc.python_method
     def _open_orb_spotlight(self):
         """Right-click on the orb: a Spotlight-style Jev panel beside it (PR 8). Logs open, then close and pick."""
-        from orb_spotlight import (SPOTLIGHT_FADE_SECONDS, SPOTLIGHT_FIELD_H, SPOTLIGHT_PAD, SPOTLIGHT_RADIUS,
-                                   SPOTLIGHT_ROW_H, SPOTLIGHT_ROWS, SPOTLIGHT_START_SCALE, spotlight_frame)
+        from orb_spotlight import (SPOTLIGHT_FADE_SECONDS, SPOTLIGHT_FIELD_H, SPOTLIGHT_LEVEL, SPOTLIGHT_PAD,
+                                   SPOTLIGHT_RADIUS, SPOTLIGHT_ROW_H, SPOTLIGHT_ROWS, SPOTLIGHT_START_SCALE,
+                                   spotlight_frame)
         from Quartz import CABasicAnimation, CAMediaTimingFunction
         if getattr(self, "_spotlight", None) is not None:
             self._close_orb_spotlight("reopen")
@@ -2490,10 +2528,11 @@ class AppDelegate(NSObject):
         win.setOpaque_(False)
         win.setBackgroundColor_(NSColor.clearColor())
         win.setHasShadow_(True)  # the soft shadow follows the rounded glass
-        win.setLevel_(panel_frame.level())
+        win.setLevel_(SPOTLIGHT_LEVEL)  # PR 7b: above other apps' windows, not behind them
         win.setReleasedWhenClosed_(False)
         win.setCollectionBehavior_(NSWindowCollectionBehaviorCanJoinAllSpaces |
-                                   NSWindowCollectionBehaviorFullScreenAuxiliary)
+                                   NSWindowCollectionBehaviorFullScreenAuxiliary |
+                                   NSWindowCollectionBehaviorTransient)
 
         content = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, w, h))
         glass = NSVisualEffectView.alloc().initWithFrame_(NSMakeRect(0, 0, w, h))
@@ -2565,6 +2604,7 @@ class AppDelegate(NSObject):
         win.makeKeyAndOrderFront_(None)
         NSApp.activateIgnoringOtherApps_(True)
         win.makeFirstResponder_(field)
+        print("orb spotlight: level={0} key={1}".format(win.level(), bool(win.isKeyWindow())), flush=True)
         content.setWantsLayer_(True)
         scale = CABasicAnimation.animationWithKeyPath_("transform.scale")
         scale.setFromValue_(SPOTLIGHT_START_SCALE)
@@ -2642,6 +2682,7 @@ class AppDelegate(NSObject):
     def _send_orb_spotlight_text(self, text):
         """The same as the mini type box: submission() runs the line where it was typed."""
         plan = submission(text, self.bar.reply)
+        self._note_turn_text(text)
         if plan is None:
             print("orb spotlight: nothing to send", flush=True)
             return
@@ -3159,6 +3200,10 @@ class AppDelegate(NSObject):
     def _finalize_mini_bar_drag(self, window):
         """Clamp and snap when a drag ends. Dragging never opens the typing pill."""
         self._orb_dragging = False
+        reversals, seconds_fast = getattr(self, "last_drag_roughness", (0, 0.0)) or (0, 0.0)
+        self.last_drag_roughness = (0, 0.0)
+        if rough_drag(reversals, seconds_fast) and getattr(self, "orb_view", None) is not None:
+            self.orb_view.offerReaction("dizzy")  # PR 7b: a rough drop plays before the tuck or dock moves
         self._peek_disengage(move=False)
         frame = window.frame()
         origin = finish_drag(
@@ -4350,6 +4395,7 @@ class AppDelegate(NSObject):
     def miniSubmit_(self, _sender):
         # Runs the line where it was typed. Does not deminiaturize or order the main window front.
         plan = submission(self.mini_field.stringValue(), self.bar.reply)
+        self._note_turn_text(self.mini_field.stringValue())
         if plan is None:
             return
         self.bar.reply = ""
@@ -5476,6 +5522,7 @@ class AppDelegate(NSObject):
 
     def fullSubmit_(self, _sender):
         plan = submission(self.full_field.stringValue(), "")
+        self._note_turn_text(self.full_field.stringValue())
         if plan is None:
             return
         self.full_field.setStringValue_("")
@@ -5502,6 +5549,7 @@ class AppDelegate(NSObject):
             return
         if kind == "send":
             plan = submission(payload, "")
+            self._note_turn_text(payload)
             if plan is not None:
                 self._dispatch_text_plan(plan)
             self._refresh_full_window()
@@ -6284,6 +6332,7 @@ class AppDelegate(NSObject):
         if field is None:
             return
         plan = submission(field.stringValue(), "")
+        self._note_turn_text(field.stringValue())
         if plan is None:
             return
         field.setStringValue_("")
@@ -6429,7 +6478,8 @@ class AppDelegate(NSObject):
             spec = chips[index]
             chip_id = spec.get("id")
             info = POPOVER_CHIPS.get(chip_id, {})
-            chip_btn.configure(chip_id, info.get("title", ""), info.get("subtitle", ""))
+            chip_btn.configure(chip_id, chip_title(chip_id, info.get("title", ""), getattr(self, "mac_health_alert", False)),
+                               info.get("subtitle", ""))
             fx, fy, fw, fh = spec["frame"]
             chip_btn.setHidden_(False)
             _place(chip_btn, (content_x + fx, fy, fw, fh))
@@ -6627,7 +6677,11 @@ class AppDelegate(NSObject):
     def updateStatus_(self, payload):
         state = str(payload["state"])
         detail = str(payload.get("detail", ""))
+        previous = str(self.status.stringValue()) if getattr(self, "status", None) is not None else ""
         self.status.setStringValue_(state)
+        reaction = reaction_for_status(previous, state, detail)  # PR 7b: success or failure
+        if reaction is not None and getattr(self, "orb_view", None) is not None:
+            self.orb_view.offerReaction(reaction)
         self.detail.setStringValue_(_hold_option_detail(self, state, detail))
         self.dot.setTextColor_(STATUS_COLORS.get(state, NSColor.labelColor()))
         if state in ("Dictating", "Finishing"):
