@@ -668,7 +668,7 @@ def _hazard_alerts_item(enabled):
 def capture_saved(sentence):
     """True for a new screenshot or recording, not for a later Notes save."""
     text = " ".join(str(sentence or "").split())
-    return text.startswith("Saved a ") or text.startswith("Saved the recording")
+    return text.startswith(("Saved a ", "Saved an ")) or text.startswith("Saved the recording")
 
 
 def choice_due(shown_at, now, hovered):
@@ -785,6 +785,16 @@ def choice_panel_box(actions, width=300.0):
         "image": (12.0, 300.0 + extra, width - 24.0, 82.0),
         "name": (12.0, 388.0 + extra, width - 24.0, 20.0),
     }
+
+
+def control_option_command_held(flags):
+    """True when Control, Option and Command are all held. Used only to log the global key monitor."""
+    try:
+        bits = int(flags)
+    except (TypeError, ValueError):
+        return False
+    needed = TYPE_FLAG_CONTROL | TYPE_FLAG_OPTION | TYPE_FLAG_COMMAND
+    return bits & needed == needed
 
 
 def type_focus_hotkey(key_code, flags):

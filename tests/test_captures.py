@@ -746,6 +746,7 @@ class TestChoicesAndAskJev(unittest.TestCase):
         origin = choice_origin((100, 80, 420, 44), (0, 0, 1440, 900), (300, 420))
         self.assertGreater(origin[1], 80 + 44)
         self.assertTrue(capture_saved("Saved a full screen screenshot to /tmp."))
+        self.assertTrue(capture_saved("Saved an area screenshot to /tmp."))
         self.assertTrue(capture_saved("Saved the recording as an MP4 in /tmp."))
         self.assertFalse(capture_saved("Saved it to a new note in Notes."))
         hidden = capture_choice_actions(False)
@@ -778,3 +779,75 @@ class TestChoicesAndAskJev(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AreaSavedSentenceTests(unittest.TestCase):
+    """The saved line uses the right article for each kind, and the choice panel still opens for an area capture."""
+
+    def test_each_kind_has_its_own_article(self):
+        from commands.captures import _saved_sentence
+        self.assertEqual(_saved_sentence("area", "/tmp/a.png"), "Saved an area screenshot to /tmp.")
+        self.assertEqual(_saved_sentence("full", "/tmp/a.png"), "Saved a full screen screenshot to /tmp.")
+        self.assertEqual(_saved_sentence("window", "/tmp/a.png"), "Saved a window screenshot to /tmp.")
+        self.assertEqual(_saved_sentence("recording", "/tmp/a.mp4"), "Saved a recording to /tmp.")
+
+    def test_area_capture_reads_as_saved_an_area_and_shows_choices(self):
+        from mini_bar import capture_saved
+        from commands.captures import _saved_sentence
+        sentence = _saved_sentence("area", "/tmp/a.png")
+        self.assertNotIn("Saved a area", sentence)
+        self.assertTrue(capture_saved(sentence))
+
+
+class QuietAreaCancelTests(unittest.TestCase):
+    """A cancelled or zero-size area selection is quiet. Other failures are still logged."""
+
+    def test_zero_size_selection_is_cancelled_without_a_failure_log(self):
+        def zero_size(args, input=None, timeout=30):
+            raise RuntimeError("could not create image from rect")
+
+        logged = []
+        with tempfile.TemporaryDirectory() as folder, \
+                mock.patch("commands.captures._log_capture", side_effect=lambda *a: logged.append(a)):
+            self.assertEqual(take_screenshot("area", folder=folder, when=WHEN, run=zero_size), "Cancelled.")
+        self.assertEqual(logged, [])
+
+    def test_esc_cancel_with_no_stderr_is_quiet_for_an_area(self):
+        def esc(args, input=None, timeout=30):
+            raise RuntimeError("command failed")
+
+        logged = []
+        with tempfile.TemporaryDirectory() as folder, \
+                mock.patch("commands.captures._log_capture", side_effect=lambda *a: logged.append(a)):
+            self.assertEqual(take_screenshot("area", folder=folder, when=WHEN, run=esc), "Cancelled.")
+        self.assertEqual(logged, [])
+
+    def test_a_full_screen_failure_is_still_logged(self):
+        def boom(args, input=None, timeout=30):
+            raise RuntimeError("could not create image from rect")
+
+        logged = []
+        with tempfile.TemporaryDirectory() as folder, \
+                mock.patch("commands.captures._log_capture", side_effect=lambda *a: logged.append(a)):
+            self.assertEqual(take_screenshot("full", folder=folder, when=WHEN, run=boom), "Couldn't take a screenshot.")
+        self.assertEqual(len(logged), 1)
+
+    def test_an_unexpected_area_error_is_still_logged(self):
+        def other(args, input=None, timeout=30):
+            raise RuntimeError("screencapture crashed badly")
+
+        logged = []
+        with tempfile.TemporaryDirectory() as folder, \
+                mock.patch("commands.captures._log_capture", side_effect=lambda *a: logged.append(a)):
+            self.assertEqual(take_screenshot("area", folder=folder, when=WHEN, run=other), "Cancelled.")
+        self.assertEqual(len(logged), 1)
+
+    def test_a_failing_run_prints_no_stderr_line(self):
+        import io
+        from contextlib import redirect_stdout
+        failed = mock.Mock(returncode=1, stdout="", stderr="could not create image from rect")
+        out = io.StringIO()
+        with mock.patch("commands.captures.subprocess.run", return_value=failed), redirect_stdout(out):
+            with self.assertRaises(RuntimeError):
+                commands.captures._run_capture(["screencapture", "-i", "-x", "/tmp/x.png"])
+        self.assertNotIn("capture stderr", out.getvalue())

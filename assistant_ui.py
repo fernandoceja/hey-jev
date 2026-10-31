@@ -29,6 +29,7 @@ from AppKit import (
     NSEvent,
     NSEventMaskFlagsChanged,
     NSEventMaskKeyDown,
+    NSEventModifierFlagCommand,
     NSEventModifierFlagControl,
     NSEventModifierFlagOption,
     NSImageView,
@@ -166,7 +167,7 @@ from mini_bar import (
     smooth,
     submission,
     trailing_symbol,
-    type_focus_hotkey,
+    control_option_command_held, type_focus_hotkey,
     TypedHistory,
     PillKeyFocus,
     caret_range,
@@ -182,6 +183,7 @@ from orb_motion import (
     spring, spring_done,
 )
 from orb_view import make_orb_view, orb_frame, orb_state
+from area_hotkey import AreaCaptureHotKey
 import full_window as fw
 from ptt import PushToTalk
 from secrets_store import KEY_NAMES, OPTIONAL, get_secret, missing_secrets, save_secret
@@ -1126,6 +1128,10 @@ class AppDelegate(NSObject):
         self.type_monitor = NSEvent.addGlobalMonitorForEventsMatchingMask_handler_(
             NSEventMaskKeyDown, self._global_type_key
         )
+        # Control-Option-Command-W: Carbon hotkey, so it works from any app with no Accessibility or Input Monitoring grant.
+        self.area_hotkey = AreaCaptureHotKey(self._area_hotkey_pressed)
+        _ok, hotkey_detail = self.area_hotkey.register()
+        print("  area hotkey: {0}".format(hotkey_detail))
         self._sync_mini_bar()
         self._hold_option_blocked = self.global_monitor is None or not self._accessibility_trusted()
         if missing_secrets():
@@ -1882,6 +1888,7 @@ class AppDelegate(NSObject):
         if type_focus_hotkey(event.keyCode(), event.modifierFlags()):
             self.focusTypeField_(None)
             return None
+
         if event.keyCode() == 53:
             choices = getattr(self, "choice_panel", None)
             if choices is not None and choices.isVisible():
@@ -1897,6 +1904,11 @@ class AppDelegate(NSObject):
         return event
 
     def _global_type_key(self, event):
+        flags = event.modifierFlags()
+        if control_option_command_held(flags) and not event.isARepeat():
+            # Diagnostic: proves the global monitor receives chords from other apps. Key code and flags only.
+            print("  global key: keyCode={0} flags=0x{1:x} control+option+command".format(
+                event.keyCode(), int(flags)))
         if type_focus_hotkey(event.keyCode(), event.modifierFlags()):
             self.performSelectorOnMainThread_withObject_waitUntilDone_("focusTypeField:", None, False)
             return
@@ -2009,6 +2021,12 @@ class AppDelegate(NSObject):
         self.peek_item.setState_(1 if peek_enabled_from_pref(NSUserDefaults.standardUserDefaults().objectForKey_(PEEK_PREF_KEY)) else 0)
         menu.addItemWithTitle_action_keyEquivalent_("Reset Mini Bar Position", "resetMiniBarPosition:", "").setTarget_(self)
         menu.addItemWithTitle_action_keyEquivalent_("Reset Mini Bar Size", "resetMiniBarSize:", "").setTarget_(self)
+        # Magic wand (PR 4): Command-W while Jev is the active app. A menu key equivalent only fires there, so it
+        # never takes Command-W from other apps. It is not a global hotkey, because Command-W closes windows everywhere.
+        wand = menu.addItemWithTitle_action_keyEquivalent_("Capture Area", "captureAreaWand:", "w")
+        wand.setKeyEquivalentModifierMask_(NSEventModifierFlagCommand)
+        wand.setImage_(NSImage.imageWithSystemSymbolName_accessibilityDescription_("wand.and.stars", "Capture Area"))
+        wand.setTarget_(self)
         item.setSubmenu_(menu)
         NSApp.setWindowsMenu_(menu)
 
@@ -2022,6 +2040,15 @@ class AppDelegate(NSObject):
         found = submenu.itemWithTitle_("Check for Updates\u2026")
         if found is not None:
             found.setTarget_(self)
+
+    @objc.python_method
+    def _area_hotkey_pressed(self):
+        print("  area hotkey fired: control+option+command+W")
+        self.captureAreaWand_(None)
+
+    def captureAreaWand_(self, _sender):
+        """Command-W: the same area capture the orb menu runs today. The crosshair appears, and the usual choices follow."""
+        threading.Thread(target=self._capture_for_bar, args=("area",), daemon=True).start()
 
     def toggleOnTop_(self, _sender):
         self.on_top = not self.on_top
@@ -4520,6 +4547,8 @@ class AppDelegate(NSObject):
             NSEvent.removeMonitor_(self.key_monitor)
         if getattr(self, "type_monitor", None) is not None:
             NSEvent.removeMonitor_(self.type_monitor)
+        if getattr(self, "area_hotkey", None) is not None:
+            self.area_hotkey.unregister()
 
 
     def checkForUpdates_(self, _sender):
