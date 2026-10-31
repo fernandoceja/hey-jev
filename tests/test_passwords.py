@@ -112,8 +112,9 @@ class TestPasswordRouting(unittest.TestCase):
         self.assertIn("def miniSubmit_", ui)
         self.assertIn("def homeSubmit_", ui)
         self.assertIn("def fullSubmit_", ui)
-        # Four routes: typed popover, home, full window, and the full window's sidebar commands (PR 6b).
-        self.assertEqual(ui.count("plan = submission("), 4)
+        # Five routes: typed popover, home, full window, the full window's sidebar commands (PR 6b), and the orb's
+        # Spotlight-style panel (PR 8). Every route calls submission(), so the password rules apply to each.
+        self.assertEqual(ui.count("plan = submission("), 5)
         for raw in (
             "Password for Netflix",
             "  what's my password for Chase? ",

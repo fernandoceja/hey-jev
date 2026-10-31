@@ -5,7 +5,7 @@ orb_layers reads these constants to build the Core Animation tree.
 """
 import math
 
-from full_window import DOCK_ORB, SIDEBAR_W, TITLEBAR_H
+from full_window import DOCK_ORB
 
 DESIGN_SIZE = 72.0
 DESIGN_EXTENT = 70.0  # orb + listening ring, with a hair of margin; the fit scale divides by this
@@ -17,6 +17,9 @@ BODY_ORIGIN = (DESIGN_SIZE - BODY_SIZE) / 2.0
 EYE_SIZE = 11.0  # the eye's own frame; the cream bar inside it is EYE_BAR_W wide
 EYE_BAR_W = 4.0  # restored from 1c63b74: cream bars, 4 x 10 pt
 EYE_SPACING = 8.0  # each eye sits this far left or right of the body centre
+EYE_OFFSET_X = 4.5  # PR 8: both eyes sit this far right of centre, so the orb looks turned clearly to its right
+# PR 8: perspective. The left eye is a touch wider and taller than the right, as if it is nearer. (x, y) scale.
+EYE_PERSPECTIVE = {"L": (1.12, 1.08), "R": (1.0, 1.0)}
 EYE_CENTER_Y = 40.0  # restored from 1c63b74 (bars span y 35-45)
 PUPIL_SIZE = 2.2  # small, so eye tracking still shows on the bar
 
@@ -48,7 +51,7 @@ SHADE_ALPHA = {"light": 0.0, "dark": 0.0}  # restored from 1c63b74: no shade ove
 RIM_RGB = (0.45, 0.85, 1.0)
 RIM_ALPHA = 0.0  # restored from 1c63b74: no rim
 OUTLINE_ALPHA = 0.0  # restored from 1c63b74: no outline stroke
-EYE_EDGE_RGB = (1.0, 0.98, 0.88)  # restored from 1c63b74: cream eyes, solid
+EYE_EDGE_RGB = (1.0, 1.0, 1.0)  # PR 8: solid white pill eyes, no pupils (was cream, from 1c63b74)
 GLYPH_RGB = (1.0, 0.98, 0.88)  # the cream used for the thinking, speaking and error cues
 LISTEN_GLYPH_RGB = (0.55, 0.86, 1.0)
 RING_RGB = (0.18, 0.65, 1.0)
@@ -65,7 +68,7 @@ def layer_geometry(bob=0.0):
         "ring": (RING_INSET, RING_INSET + bob, RING_DIAMETER, RING_DIAMETER),
     }
     for side, sign in (("L", -1.0), ("R", 1.0)):
-        cx = DESIGN_CENTER + sign * EYE_SPACING
+        cx = DESIGN_CENTER + sign * EYE_SPACING + EYE_OFFSET_X
         cy = EYE_CENTER_Y + bob
         frames["eye" + side] = (cx - EYE_SIZE / 2.0, cy - EYE_SIZE / 2.0, EYE_SIZE, EYE_SIZE)
         frames["pupil" + side] = (cx - PUPIL_SIZE / 2.0, cy - PUPIL_SIZE / 2.0, PUPIL_SIZE, PUPIL_SIZE)
@@ -654,17 +657,22 @@ def expand_rects(orb_frame, target_frame, screen=None):
     return (x, y, sw, sh), (tx, ty, tw, th)
 
 
-def dock_point(window_frame, dock=DOCK_ORB):
-    """Orb frame (x, y, w, h) docked on the sidebar/chat divider of a full window.
+def dock_panel_level(window_level):
+    """Level for the orb panel while it is docked on a full window: one above that window, so the window never draws
+    over it. The floating orb keeps BAR_LEVEL; collapse restores that.
+    """
+    return int(window_level) + 1
 
-    The centre sits on the divider line (x = win.x + SIDEBAR_W), and DOCK_GAP below the titlebar,
-    so the orb never overlaps the titlebar.
+
+def dock_point(window_frame, dock=DOCK_ORB):
+    """Orb frame (x, y, w, h) docked on the left edge of a full window, at mid height.
+
+    The centre is on the window's left edge (x = win.x) and its vertical middle (y = win.midY), so half the orb
+    sits over the sidebar and half outside the window.
     """
     wx, wy, ww, wh = (float(v) for v in window_frame)
     half = float(dock) / 2.0
-    cx = wx + SIDEBAR_W
-    cy = wy + wh - TITLEBAR_H - half - DOCK_GAP
-    return (cx - half, cy - half, float(dock), float(dock))
+    return (wx - half, wy + wh / 2.0 - half, float(dock), float(dock))
 
 
 def collapse_target(saved_origin, screens, size=None):
@@ -686,3 +694,132 @@ def collapse_target(saved_origin, screens, size=None):
         return placed
     vx, vy, vw, _vh = frames[0]
     return (vx + (vw - orb_w) / 2.0, vy + BAR_DOCK_GAP)
+
+
+# PR 7: voice states. Pure math for the listening, thinking, searching and speaking poses.
+PUPIL_LISTEN_SIZE = PUPIL_SIZE * 1.35  # 2.97 pt. The plan's 5.2 pt pupil is wider than the 4 pt cream bar, so it is scaled down.
+THINK_PUPIL_BIAS = (1.8, 1.8)  # up and to the right, as in the plan
+SEARCH_SWEEP_SECONDS = 1.6  # one left-right scan
+SPINNER_RADIUS = 30.0  # around the body, just outside it (body radius 28)
+SPINNER_SECONDS = 1.2  # one full turn
+SPINNER_SWEEP_DEGREES = 270.0
+SPINNER_LINE_WIDTH = 1.5
+SPINNER_ALPHA = 0.7
+LISTEN_BODY_GAIN = 0.04  # body scale is 1 + 0.04 * level while listening
+MOUTH_MIN_HEIGHT = 2.0  # pt, closed to open. The speaking glyph is 5 pt tall at full open.
+MOUTH_MAX_HEIGHT = 5.0
+MOUTH_GLYPH_HEIGHT = 5.0
+MOUTH_PULSE_HZ = 3.5  # the fallback when the reply WAV can't be read
+ENVELOPE_HZ = 30
+SQUINT_DEPTH = 0.3  # eyes drop to 70% height on the loudest peaks
+SQUINT_KNEE = 0.8  # envelope level where the squint starts
+
+
+def _unit(value):
+    """A finite float clamped to 0..1, or 0 for bad input."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(number):
+        return 0.0
+    return min(1.0, max(0.0, number))
+
+
+def mouth_height(level):
+    """Mouth height in points for a 0..1 level, from MOUTH_MIN_HEIGHT to MOUTH_MAX_HEIGHT."""
+    return MOUTH_MIN_HEIGHT + (MOUTH_MAX_HEIGHT - MOUTH_MIN_HEIGHT) * _unit(level)
+
+
+def pulse_mouth(t):
+    """The fallback mouth: a 3.5 Hz pulse between 2 and 5 pt, used when the reply's audio can't be read."""
+    try:
+        seconds = float(t)
+    except (TypeError, ValueError):
+        seconds = 0.0
+    if not math.isfinite(seconds):
+        seconds = 0.0
+    mid = (MOUTH_MIN_HEIGHT + MOUTH_MAX_HEIGHT) / 2.0
+    amp = (MOUTH_MAX_HEIGHT - MOUTH_MIN_HEIGHT) / 2.0
+    return mid + amp * math.sin(math.tau * MOUTH_PULSE_HZ * seconds)
+
+
+def squint_scale(level):
+    """Eye height multiplier on a speech peak: 1.0 below the knee, down to 1 - SQUINT_DEPTH at full level."""
+    over = (_unit(level) - SQUINT_KNEE) / (1.0 - SQUINT_KNEE)
+    return 1.0 - SQUINT_DEPTH * min(1.0, max(0.0, over))
+
+
+def voice_pose(state, t, level):
+    """The base pose for a character state at time t. Clips add eye shapes, lean and sweep on top of this.
+
+    Keys: eye_shape, eye_scale_y, pupil_size, pupil_bias, body_scale, spinner_on, mouth_h.
+    Speaking uses the pulse fallback here. The real mouth follows wav_envelope, which orb_layers builds once per reply.
+    """
+    pose = {
+        "eye_shape": "open",
+        "eye_scale_y": 1.0,
+        "pupil_size": PUPIL_SIZE,
+        "pupil_bias": (0.0, 0.0),
+        "body_scale": 1.0,
+        "spinner_on": False,
+        "mouth_h": 0.0,
+    }
+    if state == "listening":
+        pose.update(eye_shape="wide", eye_scale_y=1.15, pupil_size=PUPIL_LISTEN_SIZE,
+                    body_scale=1.0 + LISTEN_BODY_GAIN * _unit(level))
+    elif state == "thinking":
+        pose.update(pupil_bias=THINK_PUPIL_BIAS, spinner_on=True)
+    elif state == "searching":
+        pose.update(spinner_on=True)
+    elif state == "speaking":
+        pose.update(mouth_h=pulse_mouth(t))
+    return pose
+
+
+def wav_envelope(path, hz=ENVELOPE_HZ):
+    """Loudness of a WAV file, hz values per second, each 0..1 (RMS over the window, normalised to the peak).
+
+    Plain Python on the stdlib wave module, 8- or 16-bit PCM, mono or stereo. Any problem gives [].
+    """
+    try:
+        import array
+        import operator
+        import sys
+        import wave
+
+        with wave.open(path, "rb") as wav:
+            channels = wav.getnchannels()
+            width = wav.getsampwidth()
+            rate = wav.getframerate()
+            raw = wav.readframes(wav.getnframes())
+        if channels not in (1, 2) or width not in (1, 2) or rate <= 0 or hz <= 0:
+            return []
+        frame_bytes = width * channels
+        frames = len(raw) // frame_bytes
+        if frames <= 0:
+            return []
+        if width == 1:
+            samples = array.array("h", [byte - 128 for byte in raw])  # 8-bit WAV is unsigned, centred on 128
+        else:
+            samples = array.array("h")
+            samples.frombytes(raw[:frames * frame_bytes])
+            if sys.byteorder == "big":
+                samples.byteswap()
+        count = max(1, int(math.ceil(frames * hz / float(rate))))
+        per_step = rate / float(hz)
+        levels = []
+        for i in range(count):
+            start = min(frames, int(i * per_step)) * channels
+            end = min(frames, int((i + 1) * per_step)) * channels
+            if end <= start:
+                levels.append(0.0)
+                continue
+            window = samples[start:end]
+            levels.append(math.sqrt(sum(map(operator.mul, window, window)) / float(len(window))))
+        peak = max(levels)
+        if not math.isfinite(peak) or peak <= 0.0:
+            return [0.0] * count
+        return [level / peak for level in levels]
+    except Exception:
+        return []

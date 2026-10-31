@@ -106,20 +106,25 @@ class DockClearanceTests(unittest.TestCase):
                 lay = fw.full_layout(size[0], size[1], has_conversation=has_conv)
                 dock = fw.dock_rect(lay)
                 for key, rect in _controls(lay).items():
+                    if key == "sidebar_list":
+                        continue  # the list is a container; its rows are checked against the dock below
                     self.assertFalse(_overlap(dock, rect), (size, has_conv, key, dock, rect))
 
-    def test_sidebar_rows_stay_left_of_the_dock(self):
+    def test_sidebar_rows_stay_right_of_the_dock(self):
         dock = fw.dock_rect(fw.full_layout(*fw.FULL_DEFAULT))
         items, _height = fw.sidebar_items(("one", "two"))
+        list_x = fw.full_layout(*fw.FULL_DEFAULT)["sidebar_list"][0]
         for item in items:
-            x, _y, w, _h = item["frame"]
-            self.assertLessEqual(x + w, dock[0] - 7.9, item["label"])
+            x, _y, _w, _h = item["frame"]
+            self.assertGreaterEqual(x + list_x, dock[0] + dock[2] + 7.9, item["label"])
 
-    def test_dock_is_on_the_divider_below_the_titlebar(self):
+    def test_dock_is_centred_on_the_left_edge_at_mid_height(self):
         lay = fw.full_layout(*fw.FULL_DEFAULT)
-        x, y, w, h = fw.dock_rect(lay)
-        self.assertAlmostEqual(x + w / 2.0, fw.SIDEBAR_W)
-        self.assertLess(y + h, lay["size"][1] - fw.TITLEBAR_H)
+        w_, h = lay["size"]
+        x, y, dw, dh = fw.dock_rect(lay)
+        self.assertAlmostEqual(x + dw / 2.0, 0.0)
+        self.assertAlmostEqual(y + dh / 2.0, h / 2.0)
+        self.assertEqual((dw, dh), (fw.DOCK_ORB, fw.DOCK_ORB))
 
 
 class SidebarTests(unittest.TestCase):

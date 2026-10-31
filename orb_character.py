@@ -1,7 +1,9 @@
-"""Idle character rules for the orb: eye shapes, random accents and breath timing. Pure Python.
+"""Character rules for the orb: eye shapes, idle accents, breath timing, and the voice state machine. Pure Python.
 
 Every random choice takes an injected random.Random, so tests can seed it. No AppKit, Quartz or Cocoa.
+orb_state lives here (orb_view re-exports it) so resolve() can build on it without an import cycle.
 """
+import math
 from collections import namedtuple
 
 from orb_motion import (
@@ -25,7 +27,12 @@ EYE_SHAPES = {
     "closedDown": ((0.5, 0.5), (0.682, 0.56), (0.5, 0.62), (0.318, 0.56)),
     "closedUp": ((0.5, 0.36), (0.682, 0.44), (0.5, 0.5), (0.318, 0.44)),
     "smileClosed": ((0.5, 0.28), (0.682, 0.62), (0.5, 0.5), (0.318, 0.62)),
-    "wide": ((0.5, 0.0), (0.75, 0.5), (0.5, 1.0), (0.25, 0.5)),
+    # PR 7: wide is the same 4 pt bar, run the full 11 pt height, so listening reads as taller eyes, not a diamond.
+    "wide": ((0.5, 0.0), (0.73, 0.5), (0.5, 1.0), (0.27, 0.5)),
+    # PR 7: a sceptic eye is one shorter bar, tilted, so it reads as a raised eyebrow. Same four anchors.
+    "sceptic": ((0.6, 0.27), (0.68, 0.5), (0.4, 0.73), (0.32, 0.5)),
+    # PR 8: a squinted pill, short and a little wide, for thinking.
+    "squint": ((0.5, 0.22), (0.66, 0.5), (0.5, 0.78), (0.34, 0.5)),
 }
 
 # lookIntensity by character state. Only "idle" is driven by PR 2; the other rows are the plan's table for later PRs.
@@ -190,3 +197,100 @@ def look_intensity(state, clip=None):
     if clip is not None and clip in _ACCENT_BY_NAME:
         return _ACCENT_BY_NAME[clip].look
     return STATE_LOOK.get(state, 1.0)
+
+
+# PR 7: voice states. orb_state maps Jev's status text to a coarse state; resolve() turns that into the character state.
+
+def orb_state(status, held=False):
+    if held or status in ("Listening", "Dictating"):
+        return "listening"
+    if status in ("Transcribing", "Thinking", "Doing it", "Finishing"):
+        return "thinking"
+    if status == "Speaking":
+        return "speaking"
+    if status in ("Something went wrong", "Time's up"):
+        return "error"
+    return "idle"
+
+
+def resolve(status, held, reduce_motion, menu_open):
+    """The character state for the orb. One of idle, listening, thinking, searching, speaking or still.
+
+    Reduce Motion (and screens asleep, which the caller folds into reduce_motion) gives still. Errors also hold
+    still, as they did before PR 7, because the failure reaction is PR 7b. "Doing it" is searching. menu_open does
+    not change the state: it only suspends idle accents, which orb_view already gates on the popover flag.
+    """
+    if reduce_motion:
+        return "still"
+    base = orb_state(status, held)
+    if base == "error":
+        return "still"
+    if base == "thinking" and status == "Doing it" and not held:
+        return "searching"
+    if base in ("listening", "thinking", "speaking"):
+        return base
+    return "idle"
+
+
+# A clip sets the eye shapes (left, right), the eye height, pupil bias, body lean, the spinner, the scan
+# amplitude in points (searching only) and whether the eyes squint on speech peaks.
+Clip = namedtuple("Clip", "eyes scale_y bias lean spinner sweep squint")
+
+CLIPS = {
+    "listen_1": Clip(("wide", "wide"), 1.15, (0.0, 0.0), 0.0, False, 0.0, False),
+    "listen_2": Clip(("wide", "wide"), 1.10, (0.4, 0.0), -2.0, False, 0.0, False),
+    "listen_3": Clip(("wide", "wide"), 1.20, (-0.4, 0.0), 2.0, False, 0.0, False),
+    "think_1": Clip(("squint", "squint"), 1.0, (1.8, 1.8), 0.0, True, 0.0, False),
+    "think_2": Clip(("sceptic", "open"), 1.0, (0.8, 1.0), 0.0, True, 0.0, False),
+    "think_3": Clip(("open", "open"), 1.0, (0.0, 2.2), 0.0, True, 0.0, False),
+    "search_1": Clip(("open", "open"), 1.0, (0.0, 0.0), 0.0, True, 2.0, False),
+    "search_2": Clip(("open", "open"), 1.0, (0.0, 0.0), 0.0, True, 1.2, False),
+    "talk_1": Clip(("open", "open"), 1.0, (0.0, 0.0), 0.0, False, 0.0, True),
+    "talk_2": Clip(("open", "open"), 1.0, (0.0, 0.0), 1.0, False, 0.0, True),
+    "talk_3": Clip(("open", "open"), 0.97, (0.0, 0.0), -1.0, False, 0.0, True),
+    "talk_4": Clip(("open", "open"), 1.0, (0.0, 0.0), 0.5, False, 0.0, True),
+}
+
+STATE_CLIPS = {
+    "idle": (),  # idle uses the PR 2 accents, not clips
+    "listening": ("listen_1", "listen_2", "listen_3"),
+    "thinking": ("think_1", "think_2", "think_3"),
+    "searching": ("search_1", "search_2"),
+    "speaking": ("talk_1", "talk_2", "talk_3", "talk_4"),
+    "still": (),
+}
+
+LOOK_EASE_SECONDS = 0.25  # lookIntensity eases between states over this long
+SWITCH_SECONDS = {"thinking": 7.0, "searching": 4.0, "listening": 3.0}
+
+
+def next_clip(state, rng, previous=None):
+    """A clip for the state that is never the previous one. None for states without clips."""
+    names = STATE_CLIPS.get(state, ())
+    if not names:
+        return None
+    choices = [name for name in names if name != previous] or list(names)
+    return rng.choice(choices)
+
+
+def clip_switch_delay(state, rng):
+    """Seconds until the state's next clip. None when the state has no clip cycle."""
+    if state == "speaking":
+        return rng.uniform(2.0, 4.0)
+    return SWITCH_SECONDS.get(state)
+
+
+def ease_look(start, target, elapsed, duration=LOOK_EASE_SECONDS):
+    """lookIntensity on its way from start to target: smoothstep over duration seconds, and finite for bad input."""
+    try:
+        a, b, t = float(start), float(target), float(elapsed)
+    except (TypeError, ValueError):
+        return 0.0
+    if not all(math.isfinite(v) for v in (a, b, t)):
+        return b if math.isfinite(b) else 0.0
+    if duration <= 0.0 or t >= duration:
+        return b
+    if t <= 0.0:
+        return a
+    u = t / duration
+    return a + (b - a) * (u * u * (3.0 - 2.0 * u))

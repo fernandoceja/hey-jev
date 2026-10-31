@@ -960,6 +960,7 @@ def split_actions(text, ans):
 
 # --------------------------------------------------------------------------- Fish TTS
 CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cache", "tts")
+LAST_REPLY_WAV = None  # PR 7: path of the Fish WAV most recently handed to afplay. The orb reads it for the mouth.
 
 
 def fetch_tts(text):
@@ -992,8 +993,13 @@ def speak(text):
         path, ms, _cached = fetch_tts(line)
         return path, ms
 
+    def play(path):
+        global LAST_REPLY_WAV
+        LAST_REPLY_WAV = path  # PR 7: recorded right before the same afplay call as before
+        subprocess.run(["afplay", path])
+
     try:
-        return commands.play_fish_reply(text, fetch, lambda path: subprocess.run(["afplay", path]))
+        return commands.play_fish_reply(text, fetch, play)
     except Exception as exc:
         print("  fish failed: {0}".format(type(exc).__name__))
         return 0

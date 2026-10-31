@@ -100,6 +100,7 @@ from AppKit import (
     NSWindowStyleMaskResizable,
     NSWindowStyleMaskTitled,
 )
+from Foundation import NSSelectorFromString, NSStringFromSelector
 from Foundation import NSInsetRect, NSAttributedString, NSMutableAttributedString, NSString, NSMakeSize, NSObject, NSURL, NSTimer, NSUserDefaults, NSDate, NSDefaultRunLoopMode
 from assistant_layout import (
     DEFAULT_H,
@@ -195,10 +196,14 @@ from orb_motion import (
     drag_roughness, drag_stretch, follow_step, in_hot_zone, peek_frame, should_retract,
     spring, spring_done,
 )
+from orb_motion import peek_edge_allowed  # PR 8: a tuck never sits on a shared display edge
+from orb_tuck import (TUCK_CLOSE_SIZE, TUCK_FADE_IN_SECONDS, TUCK_FADE_OUT_SECONDS, TUCK_KEY, TUCK_SECONDS,
+                      decode_tuck, encode_tuck, tuck_close_centre, tuck_edge, tuck_eye_centres, tucked_frame,
+                      untucked_frame)
 from orb_view import make_orb_view, orb_frame, orb_state
 from orb_motion import (  # PR 6a: expand from the orb, dock on the divider, collapse back
     EXPAND_START_SCALE, ORB_STATE_COLLAPSING, ORB_STATE_EXPANDING, ORB_STATE_IDLE, ORB_STATE_OPEN,
-    SPRING_EXPAND, collapse_target, dock_point, expand_rects, orb_window_next,
+    SPRING_EXPAND, collapse_target, dock_panel_level, dock_point, expand_rects, orb_window_next,
 )
 from area_hotkey import AreaCaptureHotKey
 from orb_motion import (
@@ -624,6 +629,19 @@ class PillChromeOverlay(NSView):
             print(f"  mini bar draw failed: {exc}")
 
 
+PILL_SLIDE_PT = 24.0  # PR 8: the input pill slides this far from the orb's side when it comes back
+PILL_SLIDE_SECONDS = 0.18  # easeOut
+
+
+def _notify_pill_drag(delegate, began):
+    """Tell the app delegate that an orb drag started (hide the input pill) or ended (slide it back out)."""
+    if delegate is None:
+        return
+    hook = getattr(delegate, "_pill_drag_began" if began else "_pill_drag_ended", None)
+    if hook is not None:
+        hook()
+
+
 class MiniBarBackground(NSView):
     """Capsule behind the controls. The background moves it. The outer edge resizes it.
 
@@ -653,6 +671,27 @@ class MiniBarBackground(NSView):
             delegate.refreshPillChrome_(self)
 
     @objc.python_method
+    def _tuck_press(self, window, delegate, orb):
+        """A press on a tucked orb. A drag past the threshold untucks at once and carries on as a drag. A still click
+        slides the orb back out fully, then behaves like a normal orb click (the full window).
+        """
+        down = NSEvent.mouseLocation()
+        start = (float(down.x), float(down.y))
+        mask = NSEventMaskLeftMouseDragged | NSEventMaskLeftMouseUp
+        while True:
+            nxt = window.nextEventMatchingMask_(mask)
+            if nxt is None or nxt.type() == NSEventTypeLeftMouseUp:
+                break
+            now = NSEvent.mouseLocation()
+            point = (float(now.x), float(now.y))
+            if capsule_click_moved(start, point):
+                delegate._tuck_untuck("drag", instant=True)
+                frame = window.frame()
+                origin = (float(frame.origin.x), float(frame.origin.y))
+                self._drag_with_spring(window, delegate, orb, point, origin)
+                return
+        delegate._tuck_untuck("click", instant=False, then=lambda: delegate.expandOrbToFull_(orb))
+
     def _collapsed_click_or_drag(self, window, delegate, _event):
         """A still click opens the typing pill. A drag moves the capsule.
 
@@ -661,6 +700,9 @@ class MiniBarBackground(NSView):
         """
         if delegate is not None and getattr(delegate, "_orb_docked_now", lambda: False)():
             self._docked_click(window, delegate)  # PR 6a: a docked orb never drags off the divider
+            return
+        if delegate is not None and getattr(delegate, "_tuck_active", lambda: False)():
+            self._tuck_press(window, delegate, getattr(delegate, "orb_view", None))  # PR 8: a tucked orb
             return
         self._finish_drag_settle()
         if delegate is not None and hasattr(delegate, "_peek_before_drag"):
@@ -699,12 +741,15 @@ class MiniBarBackground(NSView):
         delegate.collapseOrbFromFull_(self)
 
     def rightMouseDown_(self, event):
-        """Right-click on the idle orb opens the quick popover (PR 6a). A docked orb ignores it."""
+        """Right-click on the orb opens the Spotlight-style Jev panel (PR 8). The popover stays on Control-Option-J.
+
+        A docked orb ignores it, as before.
+        """
         window = self.window()
         delegate = window.delegate() if window is not None else None
         docked = getattr(delegate, "_orb_docked_now", lambda: False)()
-        if delegate is not None and getattr(delegate, "pillCollapsed", False) and not docked:
-            delegate.expandMiniBar_(self)
+        if delegate is not None and hasattr(delegate, "_open_orb_spotlight") and not docked:
+            delegate._open_orb_spotlight()  # PR 8: the Spotlight-style Jev panel beside the orb
             return
         objc.super(MiniBarBackground, self).rightMouseDown_(event)
 
@@ -720,10 +765,14 @@ class MiniBarBackground(NSView):
             now = NSEvent.mouseLocation()
             point = (float(now.x), float(now.y))
             if capsule_click_moved(start, point):
+                if not moved:
+                    _notify_pill_drag(window.delegate(), began=True)  # PR 8: the input pill hides at once
                 moved = True
             if moved:
                 x, y = drag_origin(origin, start, point)
                 window.setFrameOrigin_(NSMakePoint(x, y))
+        if moved:
+            _notify_pill_drag(window.delegate(), began=False)  # PR 8: the pill slides back out from the orb's side
         return moved
 
     @objc.python_method
@@ -753,6 +802,7 @@ class MiniBarBackground(NSView):
                 if not capsule_click_moved(start, point):
                     continue
                 moved = True
+                _notify_pill_drag(delegate, began=True)  # PR 8: the input pill hides at once
             pos, vel = follow_step(pos, vel, drag_origin(origin, start, point), dt, *SPRING_FOLLOW)
             smoothed = (smooth(smoothed[0], vel[0]), smooth(smoothed[1], vel[1]))
             window.setFrameOrigin_(NSMakePoint(pos[0], pos[1]))
@@ -760,6 +810,7 @@ class MiniBarBackground(NSView):
             samples.append((stamp, pos[0], pos[1]))
         if not moved:
             return False
+        _notify_pill_drag(delegate, began=False)  # PR 8: the pill slides back out from the orb's side
         orb.dropJiggle()
         if delegate is not None:
             delegate.last_drag_roughness = drag_roughness(samples)
@@ -888,14 +939,20 @@ class MiniBarBackground(NSView):
         frame = window.frame()
         start = (float(down.x), float(down.y))
         origin = (float(frame.origin.x), float(frame.origin.y))
+        began = False
         mask = NSEventMaskLeftMouseDragged | NSEventMaskLeftMouseUp
         while True:
             nxt = window.nextEventMatchingMask_(mask)
             if nxt is None or nxt.type() == NSEventTypeLeftMouseUp:
                 break
             now = NSEvent.mouseLocation()
+            if not began:
+                began = True
+                _notify_pill_drag(window.delegate(), began=True)  # PR 8: the input pill hides at once
             x, y = drag_origin(origin, start, (float(now.x), float(now.y)))
             window.setFrameOrigin_(NSMakePoint(x, y))
+        if began:
+            _notify_pill_drag(window.delegate(), began=False)  # PR 8: the pill slides back out from the orb's side
         delegate = window.delegate()
         if delegate is not None and hasattr(delegate, "_finalize_mini_bar_drag"):
             delegate._finalize_mini_bar_drag(window)
@@ -1375,6 +1432,7 @@ class MarkupView(NSView):
 
 class AppDelegate(NSObject):
     # PR 3b peek-dock state. _peek_edge is None when the orb is not tucked.
+    _tuck = None  # PR 8: the edge tuck. A dict while the orb is tucked, else None
     _peek_edge = None  # "left" or "right"
     _peek_screen = None  # visible frame the orb is tucked against
     _peek_inset = None  # window origin (x, y) at the 12 pt inset: the position that is saved
@@ -2410,6 +2468,349 @@ class AppDelegate(NSObject):
         print("  area hotkey fired: control+option+command+W")
         self.captureAreaWand_(None)
 
+    @objc.python_method
+    def _open_orb_spotlight(self):
+        """Right-click on the orb: a Spotlight-style Jev panel beside it (PR 8). Logs open, then close and pick."""
+        from orb_spotlight import (SPOTLIGHT_FADE_SECONDS, SPOTLIGHT_FIELD_H, SPOTLIGHT_PAD, SPOTLIGHT_RADIUS,
+                                   SPOTLIGHT_ROW_H, SPOTLIGHT_ROWS, SPOTLIGHT_START_SCALE, spotlight_frame)
+        from Quartz import CABasicAnimation, CAMediaTimingFunction
+        if getattr(self, "_spotlight", None) is not None:
+            self._close_orb_spotlight("reopen")
+        panel_frame = getattr(self, "mini_panel", None)
+        if panel_frame is None:
+            return
+        orb_rect = self._frame_tuple(panel_frame.frame())
+        screens = self._visible_screens()
+        screen = screen_for_frame(orb_rect, screens) if screens else None
+        visible = screen or (0.0, 0.0, 1440.0, 900.0)
+        x, y, w, h = spotlight_frame(orb_rect, visible)
+
+        win = OrbSpotlightPanel.alloc().initWithContentRect_styleMask_backing_defer_(
+            NSMakeRect(x, y, w, h), NSWindowStyleMaskBorderless, NSBackingStoreBuffered, False)
+        win.setOpaque_(False)
+        win.setBackgroundColor_(NSColor.clearColor())
+        win.setHasShadow_(True)  # the soft shadow follows the rounded glass
+        win.setLevel_(panel_frame.level())
+        win.setReleasedWhenClosed_(False)
+        win.setCollectionBehavior_(NSWindowCollectionBehaviorCanJoinAllSpaces |
+                                   NSWindowCollectionBehaviorFullScreenAuxiliary)
+
+        content = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, w, h))
+        glass = NSVisualEffectView.alloc().initWithFrame_(NSMakeRect(0, 0, w, h))
+        glass.setMaterial_(NSVisualEffectMaterialHUDWindow)
+        glass.setBlendingMode_(NSVisualEffectBlendingModeBehindWindow)
+        glass.setState_(NSVisualEffectStateActive)
+        glass.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable)
+        glass.setWantsLayer_(True)
+        glass.layer().setCornerRadius_(SPOTLIGHT_RADIUS)
+        glass.layer().setMasksToBounds_(True)
+        glass.layer().setBorderWidth_(0.5)
+        glass.layer().setBorderColor_(NSColor.whiteColor().colorWithAlphaComponent_(0.28).CGColor())
+        content.addSubview_(glass)
+        win.setContentView_(content)
+
+        state = {"index": -1, "mode": "row", "rows": [], "closing": False}
+        delegate = OrbSpotlightDelegate.alloc().initWithHandler_(lambda kind, sel: self._spotlight_event(kind, sel))
+        win.setDelegate_(delegate)
+        state["delegate"] = delegate
+
+        field_w = w - 2 * SPOTLIGHT_PAD - 36
+        field_y = h - SPOTLIGHT_PAD - SPOTLIGHT_FIELD_H
+        field = NSTextField.alloc().initWithFrame_(NSMakeRect(SPOTLIGHT_PAD + 6, field_y + 12, field_w, 28))
+        field.setBezeled_(False)
+        field.setDrawsBackground_(False)
+        field.setFocusRingType_(1)  # NSFocusRingTypeNone
+        field.setFont_(NSFont.systemFontOfSize_(20))
+        field.setPlaceholderString_("Search or Ask Jev")
+        field.setDelegate_(delegate)
+        glass.addSubview_(field)
+        state["field"] = field
+
+        mic = OrbSpotlightMic.alloc().initWithFrame_(NSMakeRect(w - SPOTLIGHT_PAD - 30, field_y + 14, 24, 24))
+        mic.setBordered_(False)
+        mic.setImage_(NSImage.imageWithSystemSymbolName_accessibilityDescription_("mic.fill", "Talk to Jev"))
+        mic.micDown = lambda: self._spotlight_mic(True)
+        mic.micUp = lambda: self._spotlight_mic(False)
+        glass.addSubview_(mic)
+
+        for index, (title, selector, symbol, hint) in enumerate(SPOTLIGHT_ROWS):
+            row_y = h - SPOTLIGHT_PAD - SPOTLIGHT_FIELD_H - SPOTLIGHT_PAD - (index + 1) * SPOTLIGHT_ROW_H
+            row = OrbSpotlightRow.alloc().initWithFrame_(
+                NSMakeRect(SPOTLIGHT_PAD, row_y, w - 2 * SPOTLIGHT_PAD, SPOTLIGHT_ROW_H))
+            row.setWantsLayer_(True)
+            row.layer().setCornerRadius_(10)
+            icon = NSImageView.alloc().initWithFrame_(NSMakeRect(10, 9, 18, 18))
+            icon.setImage_(NSImage.imageWithSystemSymbolName_accessibilityDescription_(symbol, title))
+            row.addSubview_(icon)
+            label = NSTextField.labelWithString_(title)
+            label.setFont_(NSFont.systemFontOfSize_(14))
+            label.setFrame_(NSMakeRect(38, 8, w - 2 * SPOTLIGHT_PAD - 120, 20))
+            row.addSubview_(label)
+            if hint:
+                shortcut = NSTextField.labelWithString_(hint)
+                shortcut.setFont_(NSFont.systemFontOfSize_(13))
+                shortcut.setTextColor_(NSColor.secondaryLabelColor())
+                shortcut.setAlignment_(2)  # NSTextAlignmentRight
+                shortcut.setFrame_(NSMakeRect(w - 2 * SPOTLIGHT_PAD - 92, 8, 72, 20))
+                row.addSubview_(shortcut)
+            row.onPick = lambda i=index: self._pick_orb_spotlight_row(i)
+            glass.addSubview_(row)
+            state["rows"].append(row)
+
+        win.keyHandler = lambda code: self._spotlight_key(code)
+        self._spotlight = state
+        state["panel"] = win
+
+        win.setAlphaValue_(0.0)
+        win.makeKeyAndOrderFront_(None)
+        NSApp.activateIgnoringOtherApps_(True)
+        win.makeFirstResponder_(field)
+        content.setWantsLayer_(True)
+        scale = CABasicAnimation.animationWithKeyPath_("transform.scale")
+        scale.setFromValue_(SPOTLIGHT_START_SCALE)
+        scale.setToValue_(1.0)
+        scale.setDuration_(SPOTLIGHT_FADE_SECONDS)
+        scale.setTimingFunction_(CAMediaTimingFunction.functionWithName_("easeOut"))
+        content.layer().addAnimation_forKey_(scale, "spotlightScale")
+        NSAnimationContext.beginGrouping()
+        context = NSAnimationContext.currentContext()
+        context.setDuration_(SPOTLIGHT_FADE_SECONDS)
+        context.setTimingFunction_(CAMediaTimingFunction.functionWithName_("easeOut"))
+        win.animator().setAlphaValue_(1.0)
+        NSAnimationContext.endGrouping()
+        print("orb spotlight: open at {0}".format(tuple(round(v, 1) for v in (x, y, w, h))), flush=True)
+
+    @objc.python_method
+    def _close_orb_spotlight(self, reason):
+        """Close the panel and log why. Idempotent, so the resign-key from closing does nothing more."""
+        state = getattr(self, "_spotlight", None)
+        if state is None or state.get("closing"):
+            return
+        state["closing"] = True
+        self._spotlight = None
+        panel = state.get("panel")
+        if panel is not None:
+            panel.setDelegate_(None)
+            panel.orderOut_(None)
+        print("orb spotlight: close ({0})".format(reason), flush=True)
+
+    @objc.python_method
+    def _set_orb_spotlight_highlight(self, state, index):
+        for position, row in enumerate(state["rows"]):
+            color = NSColor.whiteColor().colorWithAlphaComponent_(0.14).CGColor() if position == index else None
+            row.layer().setBackgroundColor_(color)
+
+    @objc.python_method
+    def _spotlight_key(self, code):
+        """Keys from the panel itself (when the field is not editing). True if handled."""
+        from orb_spotlight import KEY_DOWN, KEY_ESCAPE, KEY_RETURN, KEY_UP
+        if code == KEY_ESCAPE:
+            self._close_orb_spotlight("escape")
+            return True
+        if code in (KEY_DOWN, KEY_UP):
+            self._spotlight_move(code)
+            return True
+        if code == KEY_RETURN:
+            self._spotlight_return()
+            return True
+        return False
+
+    @objc.python_method
+    def _spotlight_move(self, key):
+        from orb_spotlight import next_index
+        state = getattr(self, "_spotlight", None)
+        if state is None:
+            return
+        state["index"] = next_index(state["index"], key, len(state["rows"]))
+        state["mode"] = "row"  # arrows pick a row, so Return runs it rather than sending the typed text
+        self._set_orb_spotlight_highlight(state, state["index"])
+
+    @objc.python_method
+    def _spotlight_return(self):
+        state = getattr(self, "_spotlight", None)
+        if state is None:
+            return
+        text = str(state["field"].stringValue() or "")
+        if state["mode"] == "text" and text.strip():
+            self._send_orb_spotlight_text(text)
+        elif state["index"] >= 0:
+            self._pick_orb_spotlight_row(state["index"])
+        elif text.strip():
+            self._send_orb_spotlight_text(text)
+
+    @objc.python_method
+    def _send_orb_spotlight_text(self, text):
+        """The same as the mini type box: submission() runs the line where it was typed."""
+        plan = submission(text, self.bar.reply)
+        if plan is None:
+            print("orb spotlight: nothing to send", flush=True)
+            return
+        self.bar.reply = ""
+        self._close_orb_spotlight("sent")
+        print("orb spotlight: sent text ({0} characters)".format(len(text)), flush=True)
+        self._dispatch_text_plan(plan)
+
+    @objc.python_method
+    def _pick_orb_spotlight_row(self, index):
+        from orb_spotlight import SPOTLIGHT_ROWS
+        title, selector, _symbol, _hint = SPOTLIGHT_ROWS[index]
+        print("orb spotlight: pick {0}".format(title), flush=True)
+        self._close_orb_spotlight("pick")
+        target = NSApp if selector == "terminate:" else self
+        NSApp.sendAction_to_from_(NSSelectorFromString(selector), target, self)
+
+    @objc.python_method
+    def _spotlight_mic(self, down):
+        if down:
+            self.miniMicDown_(None)
+        else:
+            self.miniMicUp_(None)
+
+    @objc.python_method
+    def _spotlight_event(self, kind, selector):
+        """Field commands, typing and resign-key from the panel's delegate."""
+        from orb_spotlight import KEY_DOWN, KEY_UP
+        state = getattr(self, "_spotlight", None)
+        if state is None:
+            return False
+        if kind == "resign":
+            self._close_orb_spotlight("click away")
+            return True
+        if kind == "typed":
+            state["mode"] = "text"
+            state["index"] = -1
+            self._set_orb_spotlight_highlight(state, -1)
+            return False
+        if selector == "moveDown:":
+            self._spotlight_move(KEY_DOWN)
+            return True
+        if selector == "moveUp:":
+            self._spotlight_move(KEY_UP)
+            return True
+        if selector == "insertNewline:":
+            self._spotlight_return()
+            return True
+        if selector == "cancelOperation:":
+            self._close_orb_spotlight("escape")
+            return True
+        return False
+
+    def orbMenuOpen_(self, _sender):
+        print("  orb menu: Open Jev", flush=True)
+        self.expandOrbToFull_(self)
+
+    def orbMenuNewChat_(self, _sender):
+        print("  orb menu: New Chat", flush=True)
+        if not self._orb_docked_now():
+            self._expand_orb_to_full("")
+        self.fullNewChat_(None)
+
+    def orbMenuMarkup_(self, _sender):
+        print("  orb menu: Mark Up", flush=True)
+        self._open_markup()
+
+    @objc.python_method
+    def _pill_drag_views(self):
+        """Every visible view in the orb panel's tree, except the orb, its ancestors and the recording stop button.
+
+        Walks the whole tree, so a pill nested in a container is found. Returns the outermost visible views, so
+        hiding one hides what is inside it.
+        """
+        panel = getattr(self, "mini_panel", None)
+        orb = getattr(self, "orb_view", None)
+        if panel is None or orb is None:
+            return []
+        rec = getattr(self, "rec_stop", None)
+        chain = []
+        view = orb
+        while view is not None:
+            chain.append(view)
+            view = view.superview()
+        found = []
+
+        def walk(parent):
+            for sub in parent.subviews() or []:
+                if sub.isEqual_(orb) or (rec is not None and sub.isEqual_(rec)):
+                    continue
+                if any(sub.isEqual_(c) for c in chain):
+                    walk(sub)  # an ancestor of the orb: keep it, and look inside
+                    continue
+                if not sub.isHidden():
+                    found.append(sub)
+
+        walk(panel.contentView())
+        return found
+
+    @objc.python_method
+    def _docked_frame_held(self):
+        """Once the full window is open and the orb is docked, the panel stays on dock_point. Returns True if it did.
+
+        Mid-transition states are left alone, so the expand and collapse springs are not fought.
+        """
+        full = getattr(self, "full_window", None)
+        panel = getattr(self, "mini_panel", None)
+        if full is None or panel is None or not full.isVisible():
+            return False
+        if self._orb_window_state_now() != ORB_STATE_OPEN:
+            return False
+        frame = dock_point(self._frame_tuple(full.frame()))
+        self._place_orb_rect(frame)
+        print("  orb dock: held at dock_point={0} panel={1}".format(
+            tuple(round(v, 1) for v in frame), tuple(round(v, 1) for v in self._frame_tuple(panel.frame()))),
+            flush=True)
+        return True
+
+    @objc.python_method
+    def _pill_drag_began(self):
+        """An orb drag started: hide the typing pill at once. Logs what it hid, or that nothing was visible."""
+        if getattr(self, "_pill_drag_hidden", None):
+            return
+        views = self._pill_drag_views()
+        for v in views:
+            v.setHidden_(True)
+        self._pill_drag_hidden = views
+        described = ", ".join("{0} {1}".format(str(v.className()),
+                                               tuple(round(float(c), 1) for c in (
+                                                   v.frame().origin.x, v.frame().origin.y,
+                                                   v.frame().size.width, v.frame().size.height)))
+                              for v in views) or "none visible"
+        print("  orb drag: input pill hidden ({0} views: {1})".format(len(views), described), flush=True)
+
+    @objc.python_method
+    def _pill_drag_ended(self):
+        """The drag released: the pill slides back out from the orb's side, easeOut over PILL_SLIDE_SECONDS."""
+        from Quartz import CAMediaTimingFunction
+        views = getattr(self, "_pill_drag_hidden", None)
+        self._pill_drag_hidden = None
+        if not views:
+            return
+        orb = getattr(self, "orb_view", None)
+        reduce = orb is None or bool(orb.reduceMotion)
+        orb_box = orb.frame() if orb is not None else None
+        orb_mid = float(orb_box.origin.x) + float(orb_box.size.width) / 2.0 if orb_box is not None else 0.0
+        timing = CAMediaTimingFunction.functionWithName_("easeOut")
+        side = "-"
+        for v in views:
+            f = v.frame()
+            pill_mid = float(f.origin.x) + float(f.size.width) / 2.0
+            direction = -1.0 if orb_mid < pill_mid else 1.0  # the orb is on the left: the pill comes from the left
+            side = "left" if direction < 0 else "right"
+            final = f.origin
+            v.setHidden_(False)
+            v.setAlphaValue_(0.0)
+            if not reduce:
+                v.setFrameOrigin_(NSMakePoint(float(final.x) + direction * PILL_SLIDE_PT, float(final.y)))
+            NSAnimationContext.beginGrouping()
+            context = NSAnimationContext.currentContext()
+            context.setDuration_(PILL_SLIDE_SECONDS)
+            context.setTimingFunction_(timing)
+            if not reduce:
+                v.animator().setFrameOrigin_(final)
+            v.animator().setAlphaValue_(1.0)
+            NSAnimationContext.endGrouping()
+        print("  orb drag: input pill slides back out from the {0} ({1:.2f}s{2})".format(
+            side, PILL_SLIDE_SECONDS, ", reduce motion, fade only" if reduce else ""), flush=True)
+
     def captureAreaWand_(self, _sender):
         """Command-W: the same area capture the orb menu runs today. The crosshair appears, and the usual choices follow."""
         threading.Thread(target=self._capture_for_bar, args=("area",), daemon=True).start()
@@ -2771,10 +3172,12 @@ class AppDelegate(NSObject):
         if saved is not None:
             NSUserDefaults.standardUserDefaults().setObject_forKey_(
                 format_origin(saved[0], saved[1]), ORIGIN_KEY)
-        self._peek_consider()
+        tucked = self._tuck_consider()  # PR 8: a drop near a free edge tucks the orb (replaces peek for that drop)
+        if not tucked:
+            self._peek_consider()
         # PR 5a (R3): this runs only after a real drag has landed on its snap target. A drop that tucked the orb
         # into the edge does not open the menu.
-        if self._peek_edge is None and menu_on_drop(True):
+        if not tucked and self._peek_edge is None and menu_on_drop(True):
             self._open_action_menu()
 
     # PR 5a: action menu. A panel beside the orb, fanned out after a drop. Its buttons reuse the post-capture ids.
@@ -3505,6 +3908,180 @@ class AppDelegate(NSObject):
     # in when the cursor comes near. Reduce Motion fades in place instead of sliding. A tucked orb is never busy.
 
     @objc.python_method
+    def _tuck_active(self):
+        return getattr(self, "_tuck", None) is not None
+
+    @objc.python_method
+    def _tuck_motion_on(self):
+        return bool(self._pill_flags().get("motion", True))
+
+    @objc.python_method
+    def _tuck_eye_centres(self, edge):
+        from orb_motion import layer_geometry
+        geo = layer_geometry()
+        horizontal = {side: (f[0] + f[2] / 2.0, f[1] + f[3] / 2.0)
+                      for side, f in (("L", geo["eyeL"]), ("R", geo["eyeR"]))}
+        return tuck_eye_centres(edge, horizontal)
+
+    @objc.python_method
+    def _tuck_consider(self):
+        """A drop near a free edge of a collapsed, idle orb tucks it. True if it did."""
+        if self._tuck_active() or self._orb_docked_now():
+            return False
+        panel = getattr(self, "mini_panel", None)
+        if panel is None or not panel.isVisible() or not getattr(self, "pillCollapsed", False):
+            return False
+        if not self.bar.should_show() or self._peek_is_busy():
+            return False
+        frame = panel.frame()
+        rect = self._frame_tuple(frame)
+        screens = self._visible_screens()
+        screen = screen_for_frame(rect, screens) if screens else None
+        if screen is None:
+            return False
+        edge = tuck_edge(rect, screen, screens)
+        if edge is None:
+            return False
+        self._tuck_engage(edge, screen, (rect[2], rect[3]), rect[1])
+        return True
+
+    @objc.python_method
+    def _tuck_engage(self, edge, screen, size, y):
+        """Slide the orb to its tucked frame, rotate the eyes, and fade in the "x" once it lands."""
+        inset = untucked_frame(size, screen, edge, y)
+        target = tucked_frame(size, screen, edge, y)
+        self._tuck = {"edge": edge, "inset": inset, "target": target, "size": size}
+        defaults = NSUserDefaults.standardUserDefaults()
+        defaults.setObject_forKey_(format_origin(inset[0], inset[1]), ORIGIN_KEY)  # an untuck lands here
+        defaults.setObject_forKey_(encode_tuck(edge, target[1]), TUCK_KEY)
+        print("orb tuck: edge={0} y={1:.1f}".format(edge, target[1]), flush=True)
+        animated = self._tuck_motion_on()
+        self._tuck_close_fade(False)
+        self._tuck_set_eyes(edge, animated)
+        self._tuck_move(target, animated, TUCK_SECONDS, lambda: self._tuck_close_fade(True))
+
+    @objc.python_method
+    def _tuck_untuck(self, reason, instant=False, then=None):
+        """Take the orb out of its tuck: slide back to the inset (or jump), then run then()."""
+        state = getattr(self, "_tuck", None)
+        if state is None:
+            if then is not None:
+                then()
+            return
+        self._tuck = None
+        print("orb untuck: reason={0}".format(reason), flush=True)
+        NSUserDefaults.standardUserDefaults().removeObjectForKey_(TUCK_KEY)
+        self._tuck_close_fade(False)
+        animated = (not instant) and self._tuck_motion_on()
+        self._tuck_set_eyes(None, animated)
+        self._tuck_move(state["inset"], animated, TUCK_SECONDS, then)
+
+    @objc.python_method
+    def _tuck_move(self, frame, animated, seconds, then=None):
+        panel = getattr(self, "mini_panel", None)
+        orb = getattr(self, "orb_view", None)
+        if panel is None or orb is None:
+            return
+        from Quartz import CAMediaTimingFunction
+        rect = NSMakeRect(*(float(v) for v in frame))
+        if not animated or seconds <= 0.0:
+            self._place_orb_rect(frame)
+            if then is not None:
+                then()
+            return
+        NSAnimationContext.beginGrouping()
+        context = NSAnimationContext.currentContext()
+        context.setDuration_(float(seconds))
+        context.setTimingFunction_(CAMediaTimingFunction.functionWithName_("easeOut"))
+        if then is not None:
+            context.setCompletionHandler_(then)
+        panel.animator().setFrame_display_(rect, True)
+        NSAnimationContext.endGrouping()
+
+    @objc.python_method
+    def _tuck_set_eyes(self, edge, animated):
+        orb = getattr(self, "orb_view", None)
+        if orb is None:
+            return
+        orb.tree.set_tuck_eyes(self._tuck_eye_centres(edge), animated, TUCK_SECONDS)
+
+    @objc.python_method
+    def _tuck_button(self):
+        """The round translucent "x". Built once, on the orb's superview so it sits above the orb."""
+        button = getattr(self, "_tuck_close", None)
+        if button is not None:
+            return button
+        button = NSButton.alloc().initWithFrame_(NSMakeRect(0, 0, TUCK_CLOSE_SIZE, TUCK_CLOSE_SIZE))
+        button.setBordered_(False)
+        button.setImage_(NSImage.imageWithSystemSymbolName_accessibilityDescription_("xmark", "Hide Jev"))
+        button.setContentTintColor_(NSColor.whiteColor())
+        button.setTarget_(self)
+        button.setAction_("tuckCloseClicked:")
+        button.setWantsLayer_(True)
+        layer = button.layer()
+        layer.setCornerRadius_(TUCK_CLOSE_SIZE / 2.0)
+        layer.setBackgroundColor_(NSColor.systemGrayColor().colorWithAlphaComponent_(0.55).CGColor())
+        layer.setContentsScale_(float(self.mini_panel.backingScaleFactor()))  # native layer, scale set explicitly
+        button.setAlphaValue_(0.0)
+        button.setHidden_(True)
+        self.orb_view.superview().addSubview_(button)
+        self._tuck_close = button
+        return button
+
+    @objc.python_method
+    def _tuck_close_fade(self, show):
+        """Fade the "x" in once a tuck has landed, and out on untuck or drag."""
+        if show and not self._tuck_active():
+            return
+        button = self._tuck_button()
+        if show:
+            edge = self._tuck["edge"]
+            cx, cy = tuck_close_centre(edge)
+            button.setFrame_(NSMakeRect(cx - TUCK_CLOSE_SIZE / 2.0, cy - TUCK_CLOSE_SIZE / 2.0,
+                                        TUCK_CLOSE_SIZE, TUCK_CLOSE_SIZE))
+            button.setHidden_(False)
+        seconds = TUCK_FADE_IN_SECONDS if show else TUCK_FADE_OUT_SECONDS
+        NSAnimationContext.beginGrouping()
+        context = NSAnimationContext.currentContext()
+        context.setDuration_(seconds)
+        if not show:
+            context.setCompletionHandler_(lambda: button.setHidden_(True))
+        button.animator().setAlphaValue_(1.0 if show else 0.0)
+        NSAnimationContext.endGrouping()
+
+    def tuckCloseClicked_(self, sender):
+        """The tuck's "x": hides the orb, the same as Hide Mini Bar."""
+        print("orb tuck: hide button", flush=True)
+        self._tuck_untuck("hide", instant=True)
+        NSUserDefaults.standardUserDefaults().removeObjectForKey_(TUCK_KEY)
+        self.hideMiniBar_(sender)
+
+    @objc.python_method
+    def _tuck_restore(self):
+        """Relaunch: a tucked orb comes back tucked on the same edge and height, if that edge is still free."""
+        if self._tuck_active():
+            return
+        decoded = decode_tuck(NSUserDefaults.standardUserDefaults().stringForKey_(TUCK_KEY))
+        if decoded is None:
+            return
+        edge, y = decoded
+        panel = getattr(self, "mini_panel", None)
+        if panel is None or not getattr(self, "pillCollapsed", False):
+            return
+        rect = self._frame_tuple(panel.frame())
+        screens = self._visible_screens()
+        screen = screen_for_frame(rect, screens) if screens else None
+        if screen is None or not peek_edge_allowed(edge, screen, screens):
+            return  # the edge is gone or shared with another display: stay where the origin put it
+        size = (rect[2], rect[3])
+        inset = untucked_frame(size, screen, edge, y)
+        self._tuck = {"edge": edge, "inset": inset, "target": tucked_frame(size, screen, edge, y), "size": size}
+        self._place_orb_rect(self._tuck["target"])
+        self._tuck_set_eyes(edge, False)
+        self._tuck_close_fade(True)
+        print("orb tuck: edge={0} y={1:.1f} (restored)".format(edge, y), flush=True)
+
+    @objc.python_method
     def _peek_enabled(self):
         return peek_enabled_from_pref(NSUserDefaults.standardUserDefaults().objectForKey_(PEEK_PREF_KEY))
 
@@ -3548,7 +4125,7 @@ class AppDelegate(NSObject):
     @objc.python_method
     def _peek_consider(self):
         """Tuck the orb when it sits on an allowed edge, the pref is on, and nothing is busy."""
-        if self._peek_edge is not None or self._orb_docked_now():
+        if self._peek_edge is not None or self._orb_docked_now() or self._tuck_active():
             return
         panel = getattr(self, "mini_panel", None)
         if panel is None or not panel.isVisible() or not self.bar.should_show():
@@ -3752,6 +4329,7 @@ class AppDelegate(NSObject):
         if hasattr(self, "pill") and not self.pill.busy:
             self.pill.expanded = False
         self._apply_pill_presentation()
+        self._tuck_restore()  # PR 8: a tucked orb comes back tucked
         defaults.setObject_forKey_(format_size(size[0], size[1]), SIZE_KEY)
         motion = self._pill_flags().get("motion", True)
         if motion:
@@ -3862,14 +4440,40 @@ class AppDelegate(NSObject):
         if notification is not None and notification.object() == getattr(self, "model_field", None):
             self._save_model()
 
+    def windowWillMiniaturize_(self, notification):
+        """Yellow minimize on the full window (PR 8): a docked orb is handed back by running the normal collapse."""
+        if notification.object() != getattr(self, "full_window", None):
+            return
+        if self._orb_window_state_now() != ORB_STATE_OPEN:
+            return  # not docked, so the floating orb is already there
+        print("orb window: miniaturize -> collapse", flush=True)
+        self._collapse_orb_from_full()
+
     def windowDidMiniaturize_(self, notification):
         if notification.object() == self.panel:
             self._sync_mini_bar()
+            return
+        full = getattr(self, "full_window", None)
+        if full is not None and notification.object() == full and self._orb_window_state_now() == ORB_STATE_IDLE:
+            # The collapse already put the orb back, so the window must not sit in the Dock as a miniature.
+            self._orb_suppress_redock = True
+            if full.isMiniaturized():
+                full.deminiaturize_(None)
+            full.orderOut_(None)
+            self._orb_suppress_redock = False
 
     def windowDidDeminiaturize_(self, notification):
         if notification.object() == self.panel:
             self._main_closing = False
             self._sync_mini_bar()
+            return
+        full = getattr(self, "full_window", None)
+        if full is not None and notification.object() == full:
+            if getattr(self, "_orb_suppress_redock", False):
+                return
+            if self._orb_window_state_now() == ORB_STATE_IDLE:
+                print("orb window: deminiaturize -> dock", flush=True)
+                self._expand_orb_to_full("")  # PR 8: a restored full window re-docks the orb
 
     def windowWillClose_(self, notification):
         if notification.object() == getattr(self, "full_window", None):
@@ -4150,6 +4754,11 @@ class AppDelegate(NSObject):
         panel = getattr(self, "mini_panel", None)
         if panel is None or not hasattr(self, "pill"):
             return
+        if self._docked_frame_held():
+            return  # PR 8: docked on the window's left edge; a presentation pass must not move it back
+        if self._tuck_active():
+            self._place_orb_rect(self._tuck["target"])  # PR 8: a tucked orb stays tucked through presentation passes
+            return
         self.pillCollapsed = bool(self.pill.collapsed)
         target = self._target_pill_frame()
         if self.pillCollapsed:
@@ -4212,6 +4821,8 @@ class AppDelegate(NSObject):
         """A click on the idle capsule opens the typing pill and shows the caret."""
         if not hasattr(self, "pill"):
             return
+        if self._tuck_active():
+            self._tuck_untuck("typing", instant=True)  # PR 8: the typing pill is never shown while tucked
         if self._orb_docked_now():
             # PR 6a: while the window is docked, the typing field is the window's own. A popover would resize the orb.
             self._focus_docked_window()
@@ -4519,13 +5130,19 @@ class AppDelegate(NSObject):
         target = getattr(self, "_orb_window_target", None)
         if target is not None:
             full.setFrame_display_(NSMakeRect(*target), False)  # land exactly where the ghost ended
-        self._place_orb_rect(dock_point(self._frame_tuple(full.frame())))
+        landed = dock_point(self._frame_tuple(full.frame()))
+        self._place_orb_rect(landed)
+        print("  orb dock: landed, dock_point={0} window={1}".format(
+            tuple(round(v, 1) for v in landed), tuple(round(v, 1) for v in self._frame_tuple(full.frame()))),
+            flush=True)
         NSApp.activateIgnoringOtherApps_(True)
         full.makeKeyAndOrderFront_(None)
         print("  orb expand: window frame={0} visible={1}".format(
             tuple(round(v, 1) for v in self._frame_tuple(full.frame())), bool(full.isVisible())))
         full.addChildWindow_ordered_(panel, NSWindowAbove)  # the orb follows the window from here on
+        panel.setLevel_(dock_panel_level(full.level()))  # PR 8: docked, the orb sits above its window (collapse restores BAR_LEVEL)
         panel.orderFront_(None)  # docked orb stays on screen while the window is open
+        print("  orb dock level: panel={0} window={1}".format(panel.level(), full.level()), flush=True)
         print("  orb expand: docked orb visible={0} child={1}".format(
             bool(panel.isVisible()), panel.parentWindow() is full))
         draft = getattr(self, "_orb_expand_draft", "")
@@ -6224,3 +6841,65 @@ def run_app():
     delegate = AppDelegate.alloc().init()
     app.setDelegate_(delegate)
     app.run()
+
+
+# PR 8: the orb's Spotlight-style panel classes. Kept at the end so earlier helpers keep the first match.
+class OrbSpotlightPanel(NSPanel):
+    """The orb's Spotlight-style panel. Borderless, and key, so it takes the keyboard. Keys go to keyHandler first."""
+
+    def canBecomeKeyWindow(self):
+        return True
+
+    def canBecomeMainWindow(self):
+        return False
+
+    def keyDown_(self, event):
+        handler = getattr(self, "keyHandler", None)
+        if handler is not None and handler(int(event.keyCode())):
+            return
+        objc.super(OrbSpotlightPanel, self).keyDown_(event)
+
+
+class OrbSpotlightRow(NSView):
+    """One line of the panel. A click calls onPick. The highlight is drawn by the controller."""
+
+    def acceptsFirstMouse_(self, _event):
+        return True
+
+    def mouseDown_(self, _event):
+        handler = getattr(self, "onPick", None)
+        if handler is not None:
+            handler()
+
+
+class OrbSpotlightMic(NSButton):
+    """The mic in the field: hold to talk, like the mini bar's mic. Press calls micDown, release calls micUp."""
+
+    def mouseDown_(self, _event):
+        handler = getattr(self, "micDown", None)
+        if handler is not None:
+            handler()
+
+    def mouseUp_(self, _event):
+        handler = getattr(self, "micUp", None)
+        if handler is not None:
+            handler()
+
+
+class OrbSpotlightDelegate(NSObject):
+    """Field and panel delegate. Field commands (arrows, Return, Escape) and resign-key go to one Python handler."""
+
+    def initWithHandler_(self, handler):
+        self = objc.super(OrbSpotlightDelegate, self).init()
+        if self is not None:
+            self.handler = handler
+        return self
+
+    def control_textView_doCommandBySelector_(self, _control, _text_view, selector):
+        return bool(self.handler("command", str(NSStringFromSelector(selector))))
+
+    def controlTextDidChange_(self, _notification):
+        self.handler("typed", "")
+
+    def windowDidResignKey_(self, _notification):
+        self.handler("resign", "")
