@@ -155,3 +155,195 @@ def sample_track(fn, duration, fps=CLIP_FPS):
     pairs = [(i / float(fps), fn(i / float(fps))) for i in range(count)]
     pairs.append((float(duration), fn(float(duration))))
     return pairs
+
+
+# Press, drag and drop physics (PR 3a). Springs are (stiffness k, damping c) with mass 1, as in section 3 of the plan.
+SPRING_PEEK_IN = (300.0, 22.0)
+SPRING_PEEK_OUT = (200.0, 26.0)
+SPRING_RELEASE = (500.0, 26.0)  # press released with a click
+SPRING_FOLLOW = (400.0, 36.0)  # drag: the window trails the cursor
+SPRING_DROP_JIGGLE = (500.0, 18.0)  # drop: stretch returns to round with two wobbles
+SPRING_SNAP = (300.0, 24.0)  # drop: window to the finish_drag target. Capture drop uses it too.
+SPRING_CAPTURE_ZONE = (500.0, 40.0)
+SPRING_MENU_FAN = (500.0, 30.0)
+SPRING_EXPAND = (400.0, 32.0)  # expand and collapse share this one
+SPRINGS = (SPRING_PEEK_IN, SPRING_PEEK_OUT, SPRING_RELEASE, SPRING_FOLLOW, SPRING_DROP_JIGGLE,
+           SPRING_SNAP, SPRING_CAPTURE_ZONE, SPRING_MENU_FAN, SPRING_EXPAND)
+
+PRESS_SCALE = (1.12, 0.88)  # x, y of the body group while the mouse is down
+PRESS_SECONDS = 0.10
+STRETCH_MAX = 0.22  # sx is at most 1.22
+STRETCH_SPEED = 3000.0  # pt/s for the full stretch
+ROUGH_SPEED = 3500.0  # pt/s above which a drag counts as rough (PR 7b dizzy)
+REVERSAL_MIN_SPEED = 300.0  # pt/s a segment must reach before a direction flip counts as a reversal
+DRAG_TICK_SECONDS = 1.0 / 60.0
+SETTLE_EPS = 0.25  # pt
+SETTLE_SPEED_PER_EPS = 8.0  # a settled spring is also slower than eps × this, in pt/s
+FOLLOW_MAX_STEP = 1.0 / 120.0  # the follow integrator sub-steps at this size, so it stays stable
+FOLLOW_MAX_FRAME = 0.05  # a stalled frame never moves the window more than this much time
+
+
+def _num(value):
+    """A finite float, or None for anything that is not a finite number."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def spring(t, x0, x1, stiffness, damping, mass=1.0, v0=0.0):
+    """(x, v) at time t for a spring from x0 with speed v0 toward x1. Closed form, so any t gives the exact answer.
+
+    Underdamped, critically damped and overdamped each have their own formula, so the critically and
+    overdamped cases never overshoot. Bad input goes straight to x1 at rest.
+    """
+    target = _num(x1)
+    k, c, m = _num(stiffness), _num(damping), _num(mass)
+    if target is None:
+        target = 0.0
+    if k is None or c is None or m is None or k <= 0.0 or c < 0.0 or m <= 0.0:
+        return (target, 0.0)
+    try:
+        t = float(t)
+    except (TypeError, ValueError, OverflowError):
+        t = 0.0
+    if math.isnan(t) or t < 0.0:
+        t = 0.0
+    if math.isinf(t):
+        return (target, 0.0)
+    start = _num(x0)
+    start = target if start is None else start
+    speed = _num(v0) or 0.0
+    if t == 0.0:
+        return (start, speed)
+    omega0 = math.sqrt(k / m)
+    zeta = c / (2.0 * math.sqrt(k * m))
+    decay = zeta * omega0
+    if decay * t > 700.0:  # e^-700 is zero for these purposes; skip the trig on huge arguments
+        return (target, 0.0)
+    d0 = start - target
+    if zeta < 1.0 - 1e-9:
+        wd = omega0 * math.sqrt(1.0 - zeta * zeta)
+        env = math.exp(-decay * t)
+        cos_t, sin_t = math.cos(wd * t), math.sin(wd * t)
+        b = (speed + decay * d0) / wd
+        d = env * (d0 * cos_t + b * sin_t)
+        v = env * ((-decay * d0 + wd * b) * cos_t + (-decay * b - wd * d0) * sin_t)
+    elif zeta <= 1.0 + 1e-9:
+        env = math.exp(-omega0 * t)
+        b = speed + omega0 * d0
+        d = env * (d0 + b * t)
+        v = env * (b - omega0 * (d0 + b * t))
+    else:
+        s = omega0 * math.sqrt(zeta * zeta - 1.0)
+        r1, r2 = -decay + s, -decay - s
+        c1 = (speed - r2 * d0) / (r1 - r2)
+        c2 = d0 - c1
+        e1, e2 = math.exp(r1 * t), math.exp(r2 * t)
+        d = c1 * e1 + c2 * e2
+        v = c1 * r1 * e1 + c2 * r2 * e2
+    x = target + d
+    if not (math.isfinite(x) and math.isfinite(v)):
+        return (target, 0.0)
+    return (x, v)
+
+
+def spring_done(x, v, x1, eps=SETTLE_EPS):
+    """True when a spring sits within eps of x1 and is nearly still. Bad input counts as done, so timers stop."""
+    position, speed, target = _num(x), _num(v), _num(x1)
+    if position is None or speed is None or target is None:
+        return True
+    return abs(position - target) <= eps and abs(speed) <= eps * SETTLE_SPEED_PER_EPS
+
+
+def follow_step(pos, vel, target, dt, stiffness=SPRING_FOLLOW[0], damping=SPRING_FOLLOW[1]):
+    """One semi-implicit Euler step of a spring that pulls pos toward target. Works in 2D tuples.
+
+    dt is split into sub-steps of at most FOLLOW_MAX_STEP, so 1/30 s and 1/120 s frames behave the same.
+    """
+    px, py = _num(pos[0]) or 0.0, _num(pos[1]) or 0.0
+    vx, vy = _num(vel[0]) or 0.0, _num(vel[1]) or 0.0
+    tx, ty = _num(target[0]), _num(target[1])
+    if tx is None or ty is None:
+        return (px, py), (vx, vy)
+    k, c = _num(stiffness) or 0.0, _num(damping) or 0.0
+    step = _num(dt) or 0.0
+    step = min(max(step, 0.0), FOLLOW_MAX_FRAME)
+    if step <= 0.0 or k <= 0.0:
+        return (px, py), (vx, vy)
+    count = int(math.ceil(step / FOLLOW_MAX_STEP))
+    h = step / count
+    for _ in range(count):
+        vx += (k * (tx - px) - c * vx) * h
+        vy += (k * (ty - py) - c * vy) * h
+        px += vx * h
+        py += vy * h
+    if not all(math.isfinite(v) for v in (px, py, vx, vy)):
+        return (0.0, 0.0), (0.0, 0.0)
+    return (px, py), (vx, vy)
+
+
+def _velocity_part(value):
+    """A velocity component as a float. NaN and non-numbers count as zero; inf stays inf and clamps."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+    return 0.0 if math.isnan(number) else number
+
+
+def drag_stretch(vx, vy):
+    """(sx, sy, angle) for the drag squash. sx = 1 + min(0.22, speed / 3000), sy = 1 / sx, angle = direction of travel."""
+    x, y = _velocity_part(vx), _velocity_part(vy)
+    speed = math.hypot(x, y)
+    sx = 1.0 + min(STRETCH_MAX, speed / STRETCH_SPEED)  # inf speed clamps to the maximum
+    return (sx, 1.0 / sx, math.atan2(y, x))
+
+
+def stretch_matrix(sx, sy, angle):
+    """(a, b, c, d) of R(θ)·S·R(−θ) for a CGAffineTransform. Symmetric, so the row or column order does not matter."""
+    s_x = _num(sx) or 1.0
+    s_y = _num(sy) or 1.0
+    theta = _num(angle) or 0.0
+    cos_t, sin_t = math.cos(theta), math.sin(theta)
+    a = cos_t * cos_t * s_x + sin_t * sin_t * s_y
+    d = sin_t * sin_t * s_x + cos_t * cos_t * s_y
+    b = cos_t * sin_t * (s_x - s_y)
+    return (a, b, b, d)
+
+
+def drag_roughness(samples):
+    """(direction_reversals, seconds_above_3500pt_s) for a drag. samples are (t, x, y) in order, in seconds and points.
+
+    A reversal is a segment whose direction flips against the one before, with both moving at REVERSAL_MIN_SPEED or
+    faster. Non-finite samples and segments with no time between them are skipped.
+    """
+    points = []
+    for sample in samples or ():
+        try:
+            t, x, y = float(sample[0]), float(sample[1]), float(sample[2])
+        except (TypeError, ValueError, IndexError):
+            continue
+        if math.isfinite(t) and math.isfinite(x) and math.isfinite(y):
+            points.append((t, x, y))
+    reversals = 0
+    seconds_fast = 0.0
+    previous = None  # (vx, vy, speed) of the last segment that had time in it
+    for (t0, x0, y0), (t1, x1, y1) in zip(points, points[1:]):
+        dt = t1 - t0
+        if dt <= 0.0:
+            continue
+        vx, vy = (x1 - x0) / dt, (y1 - y0) / dt
+        speed = math.hypot(vx, vy)
+        if speed > ROUGH_SPEED:
+            seconds_fast += dt
+        if previous is not None:
+            pvx, pvy, pspeed = previous
+            if (speed >= REVERSAL_MIN_SPEED and pspeed >= REVERSAL_MIN_SPEED
+                    and vx * pvx + vy * pvy < 0.0):
+                reversals += 1
+        previous = (vx, vy, speed)
+    if not math.isfinite(seconds_fast):
+        seconds_fast = 0.0
+    return (reversals, seconds_fast)

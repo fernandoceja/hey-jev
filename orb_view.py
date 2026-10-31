@@ -261,6 +261,34 @@ def make_orb_view(frame):
                 self.tree.set_ring_width(orb_pose(self.state, 0, self.level, self.reduceMotion)[3])
 
             @objc.python_method
+            def pressSquash(self):
+                """Mouse down on the orb. Skipped with Reduce Motion or the solid fill, where the layers are hidden."""
+                if self.solid or self.reduceMotion:
+                    return 0.0
+                return self.tree.press_squash()
+
+            @objc.python_method
+            def releaseSquash(self):
+                """A click lets go without moving. Returns the spring's settling time, or 0 when it did nothing."""
+                if self.solid or self.reduceMotion:
+                    return 0.0
+                return self.tree.release_spring()
+
+            @objc.python_method
+            def dragStretch(self, sx, sy, angle):
+                """Stretch the orb along its direction of travel while dragging."""
+                if self.solid or self.reduceMotion:
+                    return
+                self.tree.set_stretch(sx, sy, angle)
+
+            @objc.python_method
+            def dropJiggle(self):
+                """A drag ends. Returns the jiggle's settling time, or 0 when it did nothing."""
+                if self.solid or self.reduceMotion:
+                    return 0.0
+                return self.tree.drop_jiggle()
+
+            @objc.python_method
             def stop(self):
                 self.halted = True
                 self.syncMotion()
