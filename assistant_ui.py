@@ -5,6 +5,7 @@ reflows instead of clipping. The frame is saved under HeyJevMainWindow, and a
 missing or offscreen frame is centered.
 """
 import json
+import math
 import os
 import re
 import queue
@@ -102,9 +103,12 @@ from bubble import Bubble
 from dictation import HISTORY, read_vocab, save_vocab
 from mini_bar import (
     ORIGIN_KEY,
+    PEEK_PREF_KEY,
     PLACEHOLDER,
     PREF_KEY,
     SIZE_KEY,
+    peek_enabled_from_pref,
+    peek_plan,
     BarController,
     BAR_COLLECTION,
     PillPresentation,
@@ -171,8 +175,13 @@ from mini_bar import (
     undo_main_reveal,
     is_our_app,
 )
-from orb_motion import DRAG_TICK_SECONDS, SPRING_FOLLOW, SPRING_SNAP, drag_roughness, drag_stretch, follow_step, spring, spring_done
-from orb_view import make_orb_view, orb_frame
+from orb_motion import (
+    CURSOR_POLL_SECONDS, DRAG_TICK_SECONDS, PEEK_FADE_SECONDS, PEEK_RETRACT_DISTANCE, SPRING_FOLLOW,
+    SPRING_PEEK_IN, SPRING_PEEK_OUT, SPRING_SNAP,
+    drag_roughness, drag_stretch, follow_step, in_hot_zone, peek_frame, should_retract,
+    spring, spring_done,
+)
+from orb_view import make_orb_view, orb_frame, orb_state
 import full_window as fw
 from ptt import PushToTalk
 from secrets_store import KEY_NAMES, OPTIONAL, get_secret, missing_secrets, save_secret
@@ -538,6 +547,8 @@ class MiniBarBackground(NSView):
         jiggles and springs to the snap target on release. Reduce Motion keeps the exact-follow drag.
         """
         self._finish_drag_settle()
+        if delegate is not None and hasattr(delegate, "_peek_before_drag"):
+            delegate._peek_before_drag()  # a tucked orb comes out to its inset before the drag starts
         orb = getattr(delegate, "orb_view", None) if delegate is not None else None
         animate = orb is not None and not orb.reduceMotion
         if animate:
@@ -555,6 +566,8 @@ class MiniBarBackground(NSView):
             if moved and delegate is not None and hasattr(delegate, "_finalize_mini_bar_drag"):
                 delegate._finalize_mini_bar_drag(window)
                 return
+        if delegate is not None:
+            delegate._orb_dragging = False  # only a press that never moved gets here; a real drag clears it on finalize
         if animate:
             orb.releaseSquash()
         if not moved and delegate is not None and hasattr(delegate, "expandMiniBar_"):
@@ -1024,6 +1037,21 @@ class ClickAwayView(NSView):
 
 
 class AppDelegate(NSObject):
+    # PR 3b peek-dock state. _peek_edge is None when the orb is not tucked.
+    _peek_edge = None  # "left" or "right"
+    _peek_screen = None  # visible frame the orb is tucked against
+    _peek_inset = None  # window origin (x, y) at the 12 pt inset: the position that is saved
+    _peek_showing = True  # target state: True = inset, False = tucked at the rest
+    _peek_anim = None  # {from, to, k, c, t0} while sliding
+    _peek_fading = False  # Reduce Motion fade in progress
+    _peek_fade_token = None
+    _peek_timer = None
+    _peek_interval = None
+    _peek_outside = 0.0  # seconds the cursor has been far from the orb
+    _peek_last = None  # monotonic time of the last tick, or None after a pause
+    _peek_latched = False  # tucked while the cursor was already at the edge: wait for it to leave first
+    _orb_dragging = False
+
     def applicationDidFinishLaunching_(self, _notification):
         self.controls = queue.Queue()
         self.option_down = False
@@ -1976,6 +2004,9 @@ class AppDelegate(NSObject):
         menu.addItemWithTitle_action_keyEquivalent_("Hide Mini Bar", "hideMiniBar:", "").setTarget_(self)
         self.zoe_item = menu.addItemWithTitle_action_keyEquivalent_("Zoe Mode", "zoeModeMenu:", "")
         self.zoe_item.setTarget_(self)
+        self.peek_item = menu.addItemWithTitle_action_keyEquivalent_("Tuck Jev into the edge", "peekDockMenu:", "")
+        self.peek_item.setTarget_(self)
+        self.peek_item.setState_(1 if peek_enabled_from_pref(NSUserDefaults.standardUserDefaults().objectForKey_(PEEK_PREF_KEY)) else 0)
         menu.addItemWithTitle_action_keyEquivalent_("Reset Mini Bar Position", "resetMiniBarPosition:", "").setTarget_(self)
         menu.addItemWithTitle_action_keyEquivalent_("Reset Mini Bar Size", "resetMiniBarSize:", "").setTarget_(self)
         item.setSubmenu_(menu)
@@ -2245,6 +2276,7 @@ class AppDelegate(NSObject):
 
     @objc.python_method
     def _hide_bar(self):
+        self._peek_disengage(move=False)
         panel = self.mini_panel
         orb = getattr(self, "orb_view", None)
         if orb is not None:
@@ -2334,6 +2366,8 @@ class AppDelegate(NSObject):
     @objc.python_method
     def _finalize_mini_bar_drag(self, window):
         """Clamp and snap when a drag ends. Dragging never opens the typing pill."""
+        self._orb_dragging = False
+        self._peek_disengage(move=False)
         frame = window.frame()
         origin = finish_drag(
             (float(frame.origin.x), float(frame.origin.y)),
@@ -2346,6 +2380,244 @@ class AppDelegate(NSObject):
         if saved is not None:
             NSUserDefaults.standardUserDefaults().setObject_forKey_(
                 format_origin(saved[0], saved[1]), ORIGIN_KEY)
+        self._peek_consider()
+
+    # PR 3b: peek-dock. A snapped orb on a free screen edge tucks most of itself off-screen, and slides back
+    # in when the cursor comes near. Reduce Motion fades in place instead of sliding. A tucked orb is never busy.
+
+    @objc.python_method
+    def _peek_enabled(self):
+        return peek_enabled_from_pref(NSUserDefaults.standardUserDefaults().objectForKey_(PEEK_PREF_KEY))
+
+    @objc.python_method
+    def _peek_is_busy(self):
+        """Popover, menu, drag, listening, thinking or speaking. Busy keeps the orb out."""
+        if not getattr(self, "pillCollapsed", False) or self._orb_dragging:
+            return True
+        if getattr(self, "_pill_menu_open", False):
+            return True
+        pill = getattr(self, "pill", None)
+        if pill is not None and pill.busy:
+            return True
+        status = getattr(self, "status", None)
+        text = str(status.stringValue()) if status is not None else "Ready"
+        return orb_state(text, bool(getattr(self, "option_down", False))) in ("listening", "thinking", "speaking")
+
+    @objc.python_method
+    def _peek_frame_is_not_inset(self):
+        """True while a peek is engaged and the window is tucked or moving, so it is not at the saved inset."""
+        if self._peek_edge is None:
+            return False
+        return bool(self._peek_anim is not None or self._peek_fading or not self._peek_showing)
+
+    @objc.python_method
+    def _peek_position(self, showing):
+        """Window x at the inset (showing) or at the tucked rest, for the current window size."""
+        size = self.mini_panel.frame().size
+        rest = peek_frame(self._peek_inset, (float(size.width), float(size.height)), self._peek_screen, self._peek_edge)
+        return float(self._peek_inset[0]) if showing else float(rest[0])
+
+    @objc.python_method
+    def _peek_frame_x(self, default_x):
+        """The x the presentation should use: the inset or rest, or wherever a move has got to."""
+        if self._peek_edge is None:
+            return default_x
+        if self._peek_anim is not None or self._peek_fading:
+            return float(self.mini_panel.frame().origin.x)
+        return self._peek_position(self._peek_showing)
+
+    @objc.python_method
+    def _peek_consider(self):
+        """Tuck the orb when it sits on an allowed edge, the pref is on, and nothing is busy."""
+        if self._peek_edge is not None:
+            return
+        panel = getattr(self, "mini_panel", None)
+        if panel is None or not panel.isVisible() or not self.bar.should_show():
+            return
+        if not self._peek_enabled() or self._peek_is_busy():
+            return
+        frame = panel.frame()
+        origin = (float(frame.origin.x), float(frame.origin.y))
+        size = (float(frame.size.width), float(frame.size.height))
+        screens = self._visible_screens()
+        screen = screen_for_frame((origin[0], origin[1], size[0], size[1]), screens)
+        plan = peek_plan(origin, size, screen, screens)
+        if plan is None:
+            return
+        self._peek_edge = plan[0]
+        self._peek_screen = screen
+        self._peek_inset = origin  # the snapped inset; never overwritten while tucked
+        self._peek_outside = 0.0
+        self._peek_latched = True  # the drop may leave the cursor in the hot zone; it must leave before the orb comes back
+        self._peek_move(False)
+
+    @objc.python_method
+    def _peek_move(self, showing):
+        """Slide to the inset (showing) or the rest. Reduce Motion fades in place instead."""
+        panel = self.mini_panel
+        self._peek_showing = bool(showing)
+        self._peek_outside = 0.0
+        target_x = self._peek_position(self._peek_showing)
+        if not self._pill_flags().get("motion", True):
+            self._peek_fade_to(target_x)
+            self._peek_ensure_timer(CURSOR_POLL_SECONDS)
+            return
+        start_x = float(panel.frame().origin.x)
+        if abs(start_x - target_x) < 0.01:
+            self._peek_anim = None
+        else:
+            k, c = SPRING_PEEK_IN if showing else SPRING_PEEK_OUT
+            self._peek_anim = {"from": start_x, "to": target_x, "k": k, "c": c, "t0": time.monotonic()}
+        self._peek_ensure_timer(DRAG_TICK_SECONDS if self._peek_anim is not None else CURSOR_POLL_SECONDS)
+
+    @objc.python_method
+    def _peek_fade_to(self, target_x):
+        """Reduce Motion: fade out, move, fade back in. Two halves of PEEK_FADE_SECONDS, no sliding."""
+        panel = self.mini_panel
+        token = object()
+        self._peek_fade_token = token
+        self._peek_fading = True
+        self._peek_anim = None
+        half = PEEK_FADE_SECONDS / 2.0
+        y = float(self._peek_inset[1])
+
+        def fade(alpha, completion):
+            NSAnimationContext.beginGrouping()
+            ctx = NSAnimationContext.currentContext()
+            ctx.setDuration_(half)
+            ctx.setCompletionHandler_(completion)
+            panel.animator().setAlphaValue_(alpha)
+            NSAnimationContext.endGrouping()
+
+        def moved():
+            if self._peek_fade_token is not token:
+                return
+            panel.setFrameOrigin_(NSMakePoint(target_x, y))
+            fade(1.0, finished)
+
+        def finished():
+            if self._peek_fade_token is token:
+                self._peek_fade_token = None
+                self._peek_fading = False
+
+        fade(0.0, moved)
+
+    @objc.python_method
+    def _peek_show_now(self):
+        """Put a tucked orb at its inset at once, with no motion. A press on the orb does this first."""
+        if self._peek_edge is None:
+            return
+        self._peek_fade_token = None
+        self._peek_fading = False
+        self._peek_anim = None
+        self._peek_showing = True
+        self._peek_outside = 0.0
+        panel = self.mini_panel
+        panel.setAlphaValue_(1.0)
+        panel.setFrameOrigin_(NSMakePoint(self._peek_inset[0], self._peek_inset[1]))
+
+    @objc.python_method
+    def _peek_before_drag(self):
+        self._orb_dragging = True
+        self._peek_show_now()
+
+    @objc.python_method
+    def _peek_disengage(self, move):
+        """Stop peeking. With move, a tucked orb goes straight back to its inset (no motion)."""
+        was_edge = self._peek_edge
+        inset = self._peek_inset
+        was_fading = self._peek_fading
+        self._peek_stop_timer()
+        self._peek_edge = None
+        self._peek_screen = None
+        self._peek_inset = None
+        self._peek_showing = True
+        self._peek_anim = None
+        self._peek_fade_token = None
+        self._peek_fading = False
+        self._peek_outside = 0.0
+        self._peek_latched = False
+        panel = getattr(self, "mini_panel", None)
+        if was_edge is not None and move and inset is not None and panel is not None:
+            if was_fading:
+                panel.setAlphaValue_(1.0)
+            if getattr(self, "pillCollapsed", False):
+                panel.setFrameOrigin_(NSMakePoint(inset[0], inset[1]))
+
+    @objc.python_method
+    def _peek_cursor_and_center(self, panel):
+        loc = NSEvent.mouseLocation()
+        frame = panel.frame()
+        width, height = float(frame.size.width), float(frame.size.height)
+        center = (float(frame.origin.x) + width / 2.0, float(frame.origin.y) + height / 2.0)
+        return (float(loc.x), float(loc.y)), center
+
+    @objc.python_method
+    def _peek_ensure_timer(self, seconds):
+        if self._peek_timer is None or self._peek_interval != seconds:
+            self._peek_stop_timer()
+            self._peek_interval = seconds
+            self._peek_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                seconds, self, "peekTick:", None, True)
+
+    @objc.python_method
+    def _peek_stop_timer(self):
+        timer = self._peek_timer
+        self._peek_timer = None
+        self._peek_interval = None
+        if timer is not None:
+            timer.invalidate()
+
+    def peekTick_(self, _timer):
+        self._peek_tick()
+
+    @objc.python_method
+    def _peek_tick(self):
+        """Runs at the cursor rate while tucked and at the drag rate while sliding. Decides where the orb should be."""
+        if self._peek_edge is None:
+            self._peek_stop_timer()
+            return
+        panel = getattr(self, "mini_panel", None)
+        if panel is None or not panel.isVisible() or not getattr(self, "pillCollapsed", False) or self._peek_fading:
+            self._peek_last = None  # a pause must not count toward the retract timer
+            return
+        now = time.monotonic()
+        dt = 0.0 if self._peek_last is None else now - self._peek_last
+        self._peek_last = now
+        point, center = self._peek_cursor_and_center(panel)
+        if self._peek_is_busy():
+            want = True
+            self._peek_outside = 0.0
+        else:
+            hot = in_hot_zone(point, self._peek_edge, self._peek_screen, center[1])
+            far = not hot and math.hypot(point[0] - center[0], point[1] - center[1]) > PEEK_RETRACT_DISTANCE
+            self._peek_outside = self._peek_outside + dt if far else 0.0
+            if self._peek_showing:
+                want = not should_retract(point, center, self._peek_outside, False)
+            else:
+                if not hot:
+                    self._peek_latched = False
+                want = hot and not self._peek_latched
+        if want != self._peek_showing:
+            self._peek_move(want)
+        anim = self._peek_anim
+        if anim is not None:
+            x, v = spring(now - anim["t0"], anim["from"], anim["to"], anim["k"], anim["c"])
+            if spring_done(x, v, anim["to"]):
+                x = anim["to"]
+                self._peek_anim = None
+            panel.setFrameOrigin_(NSMakePoint(x, self._peek_inset[1]))
+        self._peek_ensure_timer(DRAG_TICK_SECONDS if self._peek_anim is not None else CURSOR_POLL_SECONDS)
+
+    def peekDockMenu_(self, sender):
+        """Window menu: Tuck Jev into the edge. On by default, remembered across launches."""
+        enabled = not self._peek_enabled()
+        NSUserDefaults.standardUserDefaults().setBool_forKey_(enabled, PEEK_PREF_KEY)
+        sender.setState_(1 if enabled else 0)
+        if enabled:
+            self._peek_consider()
+        else:
+            self._peek_disengage(move=True)
 
     @objc.python_method
     def _order_bar_front(self):
@@ -2370,6 +2642,7 @@ class AppDelegate(NSObject):
         self.mini_panel.orderFrontRegardless()
         if motion:
             self._fade_bar(1.0, None)
+        self._peek_consider()
 
     @objc.python_method
     def _show_bar_reply(self, text):
@@ -2704,6 +2977,8 @@ class AppDelegate(NSObject):
         panel = getattr(self, "mini_panel", None)
         if panel is None:
             return
+        if self._peek_frame_is_not_inset():
+            return  # a tucked or sliding orb is not at the saved inset, so it must not overwrite it
         frame = panel.frame()
         box = (
             float(frame.origin.x),
@@ -2752,6 +3027,10 @@ class AppDelegate(NSObject):
             return
         self.pillCollapsed = bool(self.pill.collapsed)
         target = self._target_pill_frame()
+        if self.pillCollapsed:
+            target = (self._peek_frame_x(target[0]), target[1], target[2], target[3])
+        else:
+            self._peek_disengage(move=False)  # the popover opens at the inset, so the peek ends here
         self._suppress_size_save = True
         self._pill_frame_collapsed = self.pillCollapsed
         flags = self._pill_flags()
@@ -2774,6 +3053,8 @@ class AppDelegate(NSObject):
             panel.setAlphaValue_(1.0)
         self._apply_mic_tint()
         self._sync_orb()
+        if self.pillCollapsed:
+            self._peek_consider()
 
     @objc.python_method
     def _place_expanded_on_main_screen(self):

@@ -347,3 +347,110 @@ def drag_roughness(samples):
     if not math.isfinite(seconds_fast):
         seconds_fast = 0.0
     return (reversals, seconds_fast)
+
+
+# Peek-dock (PR 3b). A snapped orb on a free screen edge tucks most of itself off-screen.
+PEEK_VISIBLE_FRACTION = 0.75  # share of the orb window still on screen at rest (33 pt of a 44 pt window)
+PEEK_MIN_VISIBLE = 32.0  # pt still on screen at rest, whatever the window size
+PEEK_HOT_DISTANCE = 24.0  # cursor this close to the edge slides the orb in
+PEEK_HOT_Y = 100.0  # ... and within this many points of the orb's centre height
+PEEK_RETRACT_DISTANCE = 120.0  # cursor this far from the orb starts the retract timer
+PEEK_RETRACT_SECONDS = 1.5
+PEEK_FADE_SECONDS = 0.15  # Reduce Motion: fade instead of sliding
+PEEK_EDGE_TOLERANCE = 1.0  # pt, for "touches" and "is at the edge"
+
+
+def _span_overlap(a0, a1, b0, b1):
+    return min(a1, b1) - max(a0, b0)
+
+
+def peek_edge_allowed(edge, screen, screens):
+    """False when another display's visible frame touches this edge of `screen` with vertical overlap.
+
+    Peeking on a shared edge would hide the orb on the other display, so that edge is never allowed.
+    """
+    if edge not in ("left", "right") or not screen:
+        return False
+    try:
+        sx, sy, sw, sh = (float(v) for v in screen)
+    except (TypeError, ValueError):
+        return False
+    for other in screens or ():
+        try:
+            ox, oy, ow, oh = (float(v) for v in other)
+        except (TypeError, ValueError):
+            continue
+        if (ox, oy, ow, oh) == (sx, sy, sw, sh):
+            continue
+        if _span_overlap(sy, sy + sh, oy, oy + oh) <= 0.0:
+            continue
+        if edge == "left" and abs((ox + ow) - sx) <= PEEK_EDGE_TOLERANCE:
+            return False
+        if edge == "right" and abs(ox - (sx + sw)) <= PEEK_EDGE_TOLERANCE:
+            return False
+    return True
+
+
+def peek_visible_width(width):
+    """Points of a tucked orb window that stay on screen: PEEK_VISIBLE_FRACTION of it, at least PEEK_MIN_VISIBLE, never more than it."""
+    w = max(0.0, float(width))
+    return min(w, max(PEEK_MIN_VISIBLE, PEEK_VISIBLE_FRACTION * w))
+
+
+def peek_frame(origin, size, screen, edge):
+    """Rest frame (x, y, w, h) for a tucked orb: all but peek_visible_width(w) of the width is past the edge.
+
+    The height is kept and kept on screen.
+    """
+    sx, sy, sw, sh = (float(v) for v in screen)
+    w, h = float(size[0]), float(size[1])
+    past = w - peek_visible_width(w)
+    y = float(origin[1])
+    if sh >= h:
+        y = min(max(y, sy), sy + sh - h)
+    if edge == "left":
+        x = sx - past
+    elif edge == "right":
+        x = sx + sw - (w - past)
+    else:
+        raise ValueError("peek_frame needs 'left' or 'right'")
+    return (x, y, w, h)
+
+
+def in_hot_zone(cursor, edge, screen, orb_center_y):
+    """True when the cursor is within PEEK_HOT_DISTANCE of the edge and PEEK_HOT_Y of the orb's centre height."""
+    try:
+        cx, cy = float(cursor[0]), float(cursor[1])
+        sx, sy, sw, sh = (float(v) for v in screen)
+        oy = float(orb_center_y)
+    except (TypeError, ValueError, IndexError):
+        return False
+    if edge == "left":
+        edge_x = sx
+    elif edge == "right":
+        edge_x = sx + sw
+    else:
+        return False
+    if not all(math.isfinite(v) for v in (cx, cy, oy, edge_x)):
+        return False
+    return abs(cx - edge_x) <= PEEK_HOT_DISTANCE and abs(cy - oy) <= PEEK_HOT_Y
+
+
+def should_retract(cursor, orb_center, seconds_outside, busy):
+    """True when the cursor has been more than PEEK_RETRACT_DISTANCE from the orb for PEEK_RETRACT_SECONDS, and nothing is busy.
+
+    The caller measures seconds_outside and resets it whenever the cursor comes back. Bad input never retracts.
+    """
+    if busy:
+        return False
+    try:
+        cx, cy = float(cursor[0]), float(cursor[1])
+        ox, oy = float(orb_center[0]), float(orb_center[1])
+        seconds = float(seconds_outside)
+    except (TypeError, ValueError, IndexError):
+        return False
+    if not all(math.isfinite(v) for v in (cx, cy, ox, oy, seconds)):
+        return False
+    if seconds < PEEK_RETRACT_SECONDS:
+        return False
+    return math.hypot(cx - ox, cy - oy) > PEEK_RETRACT_DISTANCE
