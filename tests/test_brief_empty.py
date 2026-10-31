@@ -5,6 +5,8 @@ every section with empty, partial and all-day data, and check that the failed-ac
 """
 import ast
 import os
+import sys
+import types
 import unittest
 from datetime import datetime, timedelta
 
@@ -72,7 +74,8 @@ class EmptySourcesTests(unittest.TestCase):
         nd._read_due_lines = lambda: []
         brief.gmail_brief_line = lambda: None
         brief.sweep_reminder_line = lambda today=None: None
-        self._requests_get = None
+        self._saved_requests = sys.modules.get("requests")
+        self._requests_stubbed = False
 
     def tearDown(self):
         cs._calendar_problem = self._saved["problem"]
@@ -82,13 +85,16 @@ class EmptySourcesTests(unittest.TestCase):
         nd._read_due_lines = self._saved["due"]
         brief.gmail_brief_line = self._saved["mail"]
         brief.sweep_reminder_line = self._saved["sweep"]
-        if self._requests_get is not None:
-            import requests
-            requests.get = self._requests_get
+        if self._requests_stubbed:
+            # Put back whatever was there. CI has no requests package, so the stub is the only one in that case.
+            if self._saved_requests is None:
+                sys.modules.pop("requests", None)
+            else:
+                sys.modules["requests"] = self._saved_requests
 
     def _stub_weather(self, payload):
-        import requests
-        self._requests_get = requests.get
+        """speak_weather does `import requests` inside the call. A stand-in module is put in sys.modules, so the test
+        does not need the real package (CI installs pytest only)."""
 
         class Response:
             status_code = 200
@@ -99,7 +105,10 @@ class EmptySourcesTests(unittest.TestCase):
             def json(self):
                 return payload
 
-        requests.get = lambda *a, **k: Response()
+        fake = types.ModuleType("requests")
+        fake.get = lambda *a, **k: Response()
+        sys.modules["requests"] = fake
+        self._requests_stubbed = True
 
     def test_every_source_empty_still_speaks_a_brief(self):
         self._stub_weather({"current": {}, "daily": {}})
