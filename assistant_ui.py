@@ -2493,12 +2493,11 @@ class AppDelegate(NSObject):
         self.focusTypeField_(None)
 
     @objc.python_method
-    def _brief_offer_buttons(self):
-        """The two small buttons for the brief's offer. Built once, on the orb panel's content view, hidden until an offer."""
-        existing = getattr(self, "_brief_buttons", None)
+    def _offer_button_pair(self, root, attr):
+        """The two small buttons for the brief's offer, on one root view. Built once, hidden until an offer."""
+        existing = getattr(self, attr, None)
         if existing is not None:
             return existing
-        root = self.mini_panel.contentView()
         audio = NSButton.alloc().initWithFrame_(NSMakeRect(0, 0, 96, 24))
         audio.setTitle_("Play audio")
         audio.setTarget_(self)
@@ -2510,24 +2509,55 @@ class AppDelegate(NSObject):
         for button in (audio, no_thanks):
             button.setHidden_(True)
             root.addSubview_(button)
-        self._brief_buttons = (audio, no_thanks)
-        return self._brief_buttons
+        setattr(self, attr, (audio, no_thanks))
+        return audio, no_thanks
 
     @objc.python_method
     def _show_brief_offer_buttons(self, show):
-        """Show the offer's buttons along the top right of the popover. They hide again when the window runs out."""
-        if not show and getattr(self, "_brief_buttons", None) is None:
-            return
-        audio, no_thanks = self._brief_offer_buttons()
+        """The offer's buttons, on the popover (and pill) and on the full window. They hide again when the window runs out."""
+        self._brief_offer_showing = bool(show)
+        if show or getattr(self, "_brief_buttons", None) is not None:
+            root = self.mini_panel.contentView()
+            audio, no_thanks = self._offer_button_pair(root, "_brief_buttons")
+            if show:
+                bounds = root.bounds()
+                top = float(bounds.size.height) - 34.0
+                right = float(bounds.size.width) - 12.0
+                no_thanks.setFrameOrigin_(NSMakePoint(right - 96.0, top))
+                audio.setFrameOrigin_(NSMakePoint(right - 96.0 - 8.0 - 96.0, top))
+            audio.setHidden_(not show)
+            no_thanks.setHidden_(not show)
+        if show or getattr(self, "_full_brief_buttons", None) is not None:
+            full_audio, full_no = self._offer_full_pair()
+            if full_audio is not None:
+                if show:
+                    self._place_full_offer_buttons()
+                full_audio.setHidden_(not show)
+                full_no.setHidden_(not show)
         if show:
-            bounds = self.mini_panel.contentView().bounds()
-            top = float(bounds.size.height) - 34.0
-            right = float(bounds.size.width) - 12.0
-            no_thanks.setFrameOrigin_(NSMakePoint(right - 96.0, top))
-            audio.setFrameOrigin_(NSMakePoint(right - 96.0 - 8.0 - 96.0, top))
             self.performSelector_withObject_afterDelay_("hideBriefOfferButtons:", None, OFFER_WINDOW_SECONDS)
-        audio.setHidden_(not show)
-        no_thanks.setHidden_(not show)
+
+    @objc.python_method
+    def _offer_full_pair(self):
+        """The full window's pair sits above the input field, so it reads as the end of the conversation."""
+        full = getattr(self, "full_window", None)
+        field_bg = getattr(self, "full_input_bg", None)
+        if full is None or field_bg is None:
+            return None, None
+        return self._offer_button_pair(field_bg.superview(), "_full_brief_buttons")
+
+    @objc.python_method
+    def _place_full_offer_buttons(self):
+        field_bg = getattr(self, "full_input_bg", None)
+        pair = getattr(self, "_full_brief_buttons", None)
+        if field_bg is None or pair is None:
+            return
+        frame = field_bg.frame()
+        audio, no_thanks = pair
+        y = float(frame.origin.y) + float(frame.size.height) + 6.0
+        x = float(frame.origin.x) + 8.0
+        audio.setFrameOrigin_(NSMakePoint(x, y))
+        no_thanks.setFrameOrigin_(NSMakePoint(x + 96.0 + 8.0, y))
 
     def hideBriefOfferButtons_(self, _sender):
         self._show_brief_offer_buttons(False)
@@ -2543,6 +2573,7 @@ class AppDelegate(NSObject):
         """A button answers the offer the same way typing or saying the phrase would."""
         self._show_brief_offer_buttons(False)
         self._dispatch_text_plan({"kind": "run", "control": ("text", phrase), "reveal_main": False})
+        self._refresh_full_window()
 
     @objc.python_method
     def _note_turn_text(self, text):
@@ -5632,6 +5663,8 @@ class AppDelegate(NSObject):
         self.full_convo.textStorage().setAttributedString_(text)
         self.full_convo.scrollToEndOfDocument_(None)
         self._layout_full_window()
+        if getattr(self, "_brief_offer_showing", False):
+            self._place_full_offer_buttons()  # PR 8c: keep the offer's buttons above the input after a re-layout
 
     @objc.python_method
     def _show_full_window(self, draft=""):

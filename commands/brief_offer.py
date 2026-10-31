@@ -59,6 +59,25 @@ def split_sentences(text):
     return [piece.strip() for piece in pieces if piece.strip()]
 
 
+SPEECH_CHUNK_CHARS = 150
+
+
+def speech_chunks(text, limit=SPEECH_CHUNK_CHARS):
+    """The pieces the audio is made from, in order. Each is a sentence from split_sentences, and any sentence longer than
+    limit is cut at the last space before limit, so the first piece is always quick to make. No words are lost."""
+    chunks = []
+    for piece in split_sentences(text):
+        while len(piece) > limit:
+            cut = piece.rfind(" ", 0, limit + 1)
+            if cut <= 0:
+                cut = limit
+            chunks.append(piece[:cut].strip())
+            piece = piece[cut:].strip()
+        if piece:
+            chunks.append(piece)
+    return [chunk for chunk in chunks if chunk]
+
+
 class BriefOffer:
     """One open offer at a time. Clock is injected, so tests use a fake one."""
 

@@ -4,7 +4,8 @@ import ast
 import os
 import unittest
 
-from commands.brief_offer import (BRIEF_OFFER_LINE, OFFER_WINDOW_SECONDS, BriefOffer, answer_kind, split_sentences)
+from commands.brief_offer import (BRIEF_OFFER_LINE, OFFER_WINDOW_SECONDS, BriefOffer, answer_kind, speech_chunks,
+                                  split_sentences)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -124,6 +125,20 @@ class SentenceSplitterTests(unittest.TestCase):
         brief = "G 05.72 hrs. 11 AM — shift. [chuckling] Done at 9 a.m. Bye."
         self.assertEqual(" ".join(split_sentences(brief)), brief)
 
+    def test_chunks_are_the_sentences_when_they_are_short(self):
+        brief = "Today is Saturday. It's 61 degrees. Next up at 11 AM."
+        self.assertEqual(speech_chunks(brief), split_sentences(brief))
+
+    def test_a_long_sentence_is_cut_near_150_characters_without_losing_words(self):
+        long_one = "word " * 80 + "end."
+        chunks = speech_chunks(long_one)
+        self.assertGreater(len(chunks), 1)
+        self.assertTrue(all(len(chunk) <= 150 for chunk in chunks))
+        self.assertEqual(" ".join(chunks), long_one.strip())
+
+    def test_the_first_chunk_is_the_first_sentence_when_it_is_short_enough(self):
+        self.assertEqual(speech_chunks("Hello there. Then a long rest of the brief " + "more " * 60)[0], "Hello there.")
+
     def test_empty_input_gives_no_pieces(self):
         for value in ("", "   ", None):
             self.assertEqual(split_sentences(value), [])
@@ -150,7 +165,7 @@ class SiriWiringTests(unittest.TestCase):
         self.assertNotIn("say(", deliver)
         self.assertIn('emit(notify, "Ready", text + " " + BRIEF_OFFER_LINE)', deliver)
         self.assertIn('print("brief: text shown", flush=True)', deliver)
-        self.assertIn("BRIEF_AUDIO.prefetch(split_sentences(text))", deliver)
+        self.assertIn("BRIEF_AUDIO.prefetch(speech_chunks(text))", deliver)
 
     def test_the_local_runner_sends_info_brief_to_text_first(self):
         run_local = _func(self.siri, "_run_local")
@@ -169,15 +184,36 @@ class SiriWiringTests(unittest.TestCase):
         self.assertIn("BRIEF_AUDIO.discard()", expire)
         self.assertIn("threading.Timer(OFFER_WINDOW_SECONDS + 0.5", _func(self.siri, "_deliver_brief"))
 
-    def test_the_audio_logs_its_prefetch_and_first_sound_and_is_not_played_unasked(self):
+    def test_only_the_first_chunk_is_made_when_the_text_is_shown(self):
         audio = _func(self.siri, "BriefAudio")
-        self.assertIn('"brief: audio prefetch ready in', audio)
+        prefetch = _func(audio, "prefetch")
+        self.assertIn("fetch_tts(first_chunk)", prefetch)
+        self.assertNotIn("range(1", prefetch)
+        self.assertIn('"brief: first sentence ready in', prefetch)
+
+    def test_the_rest_is_made_only_when_playback_starts_and_logs_separately(self):
+        audio = _func(self.siri, "BriefAudio")
+        play = _func(audio, "play")
+        self.assertIn("rest()", play)
+        rest = _func(audio, "rest")
+        self.assertIn("range(1, len(chunks))", rest)
+        self.assertIn("fetch_tts(chunks[index])", rest)
+        self.assertIn('"brief: rest of the brief ready in', rest)
+
+    def test_the_audio_logs_its_first_sound_and_is_not_played_unasked(self):
+        audio = _func(self.siri, "BriefAudio")
         self.assertIn('"tts: first audio in', audio)
         self.assertIn('subprocess.run(["afplay", path])', audio)
         self.assertNotIn("afplay", _func(self.siri, "_deliver_brief"))
 
     def test_fish_calls_still_go_through_the_cached_fetch(self):
-        self.assertIn("fetch_tts(sentence)", _func(self.siri, "BriefAudio"))
+        audio = _func(self.siri, "BriefAudio")
+        self.assertIn("fetch_tts(", audio)
+        self.assertNotIn("commands.synthesize_speech", audio)
+
+    def test_a_declined_offer_clears_its_buttons(self):
+        handle = _func(self.siri, "handle")
+        self.assertIn('emit(notify, "Ready", "")  # clears the offer', handle)
 
     def test_zoe_and_the_bridge_do_not_get_the_brief_offer(self):
         self.assertNotIn("_deliver_brief", _func(self.siri, "_run_zoe_allowed"))
@@ -198,6 +234,13 @@ class PopoverWiringTests(unittest.TestCase):
         self.assertIn("detail.rstrip().endswith(BRIEF_OFFER_LINE)", update)
         self.assertIn("self._show_brief_offer_buttons(True)", update)
         self.assertIn("self._show_brief_offer_buttons(False)", update)
+
+    def test_the_buttons_are_on_the_full_window_too(self):
+        ui = _source("assistant_ui.py")
+        show = _func(ui, "_show_brief_offer_buttons")
+        self.assertIn("self._offer_full_pair()", show)
+        self.assertIn("self._place_full_offer_buttons()", show)
+        self.assertIn("full_input_bg", _func(ui, "_offer_full_pair"))
 
     def test_the_buttons_hide_when_the_window_runs_out(self):
         show = _func(_source("assistant_ui.py"), "_show_brief_offer_buttons")

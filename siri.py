@@ -9,7 +9,7 @@ import numpy as np, requests, sounddevice as sd, soundfile as sf
 from dotenv import load_dotenv
 from pynput import keyboard
 import commands
-from commands.brief_offer import BRIEF_OFFER_LINE, OFFER_WINDOW_SECONDS, BriefOffer, split_sentences
+from commands.brief_offer import BRIEF_OFFER_LINE, OFFER_WINDOW_SECONDS, BriefOffer, speech_chunks
 from commands.model import (
     MAX_TOKENS_ANSWER,
     MAX_TOKENS_REMINDER,
@@ -1174,6 +1174,8 @@ def handle(text, stt_ms=None, notify=None, reply_sink=None, quiet=False):
             BRIEF_AUDIO.discard()
         if consumed:
             misses = 0
+            if outcome != "accepted":
+                emit(notify, "Ready", "")  # clears the offer's buttons; nothing to say
             return
     # Local phrases, including message reads, are chosen before TypeSafe or Haiku.
     early = decide(None, text)
@@ -1363,50 +1365,81 @@ class BriefAudio:
     def __init__(self):
         self.lock = threading.Lock()
         self.generation = 0
+        self.chunks = []
         self.paths = []
         self.events = []
+        self.playing = False
 
-    def prefetch(self, sentences):
-        if not sentences:
+    def prefetch(self, chunks):
+        """Make only the first chunk now, when the text is shown, so a yes can start at once. The rest is made in
+        play(), one ahead of the player. Nothing is made at all for a brief that is declined or expires unplayed."""
+        if not chunks:
             return
         with self.lock:
             self.generation += 1
             generation = self.generation
-            paths = [None] * len(sentences)
-            events = [threading.Event() for _ in sentences]
-            self.paths, self.events = paths, events
+            self.chunks = list(chunks)
+            self.paths = [None] * len(chunks)
+            self.events = [threading.Event() for _ in chunks]
+            self.playing = False
+            first_chunk = self.chunks[0]
 
-        def work():
+        def first():
             begun = time.monotonic()
-            for index, sentence in enumerate(sentences):
-                path = None
-                if generation == self.generation:
-                    try:
-                        path, _ms, _cached = fetch_tts(sentence)  # the same cached Fish call as any reply
-                    except Exception:
-                        path = None
-                paths[index] = path if generation == self.generation else None
-                events[index].set()
+            path = None
             if generation == self.generation:
-                print(f"brief: audio prefetch ready in {int((time.monotonic() - begun) * 1000)}ms", flush=True)
+                try:
+                    path, _ms, _cached = fetch_tts(first_chunk)  # the same cached Fish call as any reply
+                except Exception:
+                    path = None
+            if generation == self.generation:
+                print(f"brief: first sentence ready in {int((time.monotonic() - begun) * 1000)}ms", flush=True)
+            self._store(generation, 0, path)
 
-        threading.Thread(target=work, name="brief-audio", daemon=True).start()
+        threading.Thread(target=first, name="brief-audio", daemon=True).start()
+
+    def _store(self, generation, index, path):
+        with self.lock:
+            if generation != self.generation:
+                return
+            self.paths[index] = path
+            event = self.events[index]
+        event.set()
 
     def discard(self):
         with self.lock:
             self.generation += 1
             events = self.events
-            self.paths, self.events = [], []
+            self.chunks, self.paths, self.events = [], [], []
+            self.playing = False
         for event in events:
             event.set()  # release a player that is waiting; it sees the new generation and stops
 
     def play(self, notify=None):
         with self.lock:
-            paths, events, generation = self.paths, self.events, self.generation
-        if not events:
-            print("brief: audio unavailable", flush=True)
-            return
+            if not self.events:
+                print("brief: audio unavailable", flush=True)
+                return
+            if self.playing:
+                return  # a second yes for the same offer does not start a second reading
+            self.playing = True
+            generation, chunks, paths, events = self.generation, self.chunks, self.paths, self.events
         started = time.monotonic()
+
+        def rest():
+            # Chunks 2 onward are made in order while the player runs, so the next one is usually ready in time.
+            begun = time.monotonic()
+            for index in range(1, len(chunks)):
+                if generation != self.generation:
+                    return
+                path = None
+                try:
+                    path, _ms, _cached = fetch_tts(chunks[index])
+                except Exception:
+                    path = None
+                self._store(generation, index, path)
+            if generation == self.generation:
+                print(f"brief: rest of the brief ready in {int((time.monotonic() - begun) * 1000)}ms", flush=True)
 
         def player():
             first = True
@@ -1426,6 +1459,7 @@ class BriefAudio:
             emit(notify, "Ready", "")
 
         emit(notify, "Speaking", "Reading the brief")
+        threading.Thread(target=rest, name="brief-rest", daemon=True).start()
         threading.Thread(target=player, name="brief-play", daemon=True).start()
 
 
@@ -1444,7 +1478,7 @@ def _deliver_brief(text, notify, reply_sink):
         reply_sink.append(text)
     emit(notify, "Ready", text + " " + BRIEF_OFFER_LINE)
     print("brief: text shown", flush=True)
-    BRIEF_AUDIO.prefetch(split_sentences(text))
+    BRIEF_AUDIO.prefetch(speech_chunks(text))
     brief_offer.offer()
     timer = threading.Timer(OFFER_WINDOW_SECONDS + 0.5, _expire_brief_offer)
     timer.daemon = True
