@@ -653,12 +653,12 @@ def expand_rects(orb_frame, target_frame, screen=None):
 def dock_point(window_frame, dock=DOCK_ORB):
     """Orb frame (x, y, w, h) docked on the sidebar/chat divider of a full window.
 
-    The centre sits DOCK_ORB / 2 left of the divider, and DOCK_GAP below the titlebar, so the
-    orb never overlaps the titlebar.
+    The centre sits on the divider line (x = win.x + SIDEBAR_W), and DOCK_GAP below the titlebar,
+    so the orb never overlaps the titlebar.
     """
     wx, wy, ww, wh = (float(v) for v in window_frame)
     half = float(dock) / 2.0
-    cx = wx + SIDEBAR_W - half
+    cx = wx + SIDEBAR_W
     cy = wy + wh - TITLEBAR_H - half - DOCK_GAP
     return (cx - half, cy - half, float(dock), float(dock))
 

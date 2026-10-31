@@ -86,11 +86,11 @@ def full_layout(width, height, show_result=True):
 def dock_rect(layout, dock=DOCK_ORB):
     """The docked orb's frame (x, y, w, h) in window coordinates, for a full_layout result.
 
-    Its centre is dock/2 left of the divider and dock/2 + 12 pt below the titlebar.
+    Its centre sits on the divider line, and dock/2 + 12 pt below the titlebar.
     """
     _w, h = layout["size"]
     half = dock / 2.0
-    return (SIDEBAR_W - half - half, h - TITLEBAR_H - half - 12.0 - half, dock, dock)
+    return (SIDEBAR_W - half, h - TITLEBAR_H - half - 12.0 - half, dock, dock)
 
 
 def history_items(rows):

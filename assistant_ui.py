@@ -4168,14 +4168,27 @@ class AppDelegate(NSObject):
 
     @objc.python_method
     def _snapshot_full_window(self):
-        """A bitmap of the full window's content, and the backing scale it was made at."""
-        view = self.full_window.contentView()
+        """A bitmap of the full window's content, and the backing scale it was made at.
+
+        A window that was never ordered in has not rendered its layers yet, so it is ordered in at alpha 0
+        for the snapshot and taken back out. Nothing is visible while that happens.
+        """
+        win = self.full_window
+        was_visible = bool(win.isVisible())
+        if not was_visible:
+            win.setAlphaValue_(0.0)
+            win.orderFront_(None)
+            win.contentView().displayIfNeeded()
+        view = win.contentView()
         bounds = view.bounds()
         rep = view.bitmapImageRepForCachingDisplayInRect_(bounds)
-        if rep is None:
-            return None, 1.0
-        view.cacheDisplayInRect_toBitmapImageRep_(bounds, rep)
-        return rep.CGImage(), float(self.full_window.backingScaleFactor())
+        if rep is not None:
+            view.cacheDisplayInRect_toBitmapImageRep_(bounds, rep)
+        if not was_visible:
+            win.orderOut_(None)
+            win.setAlphaValue_(1.0)
+        image = rep.CGImage() if rep is not None else None
+        return image, float(win.backingScaleFactor())
 
     @objc.python_method
     def _make_orb_ghost(self, frame, image, scale):
@@ -4238,6 +4251,7 @@ class AppDelegate(NSObject):
         self._stop_orb_spring()
         self._orb_spring = {"from": self._frame_tuple(self.mini_panel.frame()), "to": tuple(target),
                             "started": time.monotonic()}
+        self._orb_ticks = 0
         self._orb_spring_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             DRAG_TICK_SECONDS, self, "orbSpringTick:", None, True)
 
@@ -4247,6 +4261,7 @@ class AppDelegate(NSObject):
             self._stop_orb_spring()
             return
         elapsed = time.monotonic() - state["started"]
+        self._orb_ticks = getattr(self, "_orb_ticks", 0) + 1
         axes = [spring(elapsed, state["from"][i], state["to"][i], *SPRING_EXPAND) for i in range(4)]
         done = all(spring_done(axes[i][0], axes[i][1], state["to"][i]) for i in range(4))
         rect = state["to"] if done else tuple(axes[i][0] for i in range(4))
@@ -4322,6 +4337,11 @@ class AppDelegate(NSObject):
             end_center=(ew / 2.0, eh / 2.0),
             start_scale=start[2] / ew, end_scale=1.0,
             fade_from=0.0, fade_to=1.0, reduce_motion=reduce)
+        print("  orb expand: path={0} image={1} ghost={2} visible={3} duration={4:.3f}s orb={5}".format(
+            "reduce-motion" if reduce else "spring", "yes" if image is not None else "NO",
+            tuple(round(v, 1) for v in end), bool(ghost.isVisible()), duration,
+            tuple(round(v, 1) for v in orb_rect)))
+        self._orb_started = time.monotonic()
         self._sync_orb()  # docked now, so the bob stops before the orb moves
         if reduce:
             self._place_orb_rect(dock_point(window_frame))
@@ -4345,17 +4365,18 @@ class AppDelegate(NSObject):
         self._remove_orb_ghost()
         self._set_orb_window_state("landed")
         self._sync_orb()
-        print("  orb expand: done")
+        print("  orb expand: done after {0:.3f}s ticks={1}".format(
+            time.monotonic() - getattr(self, "_orb_started", time.monotonic()), getattr(self, "_orb_ticks", 0)))
 
     @objc.python_method
     def _collapse_orb_from_full(self):
         """The exact reverse of the expand: snapshot, hide the window, shrink the ghost into the orb's origin."""
         if not self._set_orb_window_state("collapse"):
             return
-        print("  orb collapse: start")
         full = self.full_window
         panel = self.mini_panel
         orb = self.orb_view
+        print("  orb collapse: start path={0}".format("reduce-motion" if bool(getattr(orb, "reduceMotion", False)) else "spring"))
         window_frame = self._frame_tuple(full.frame())
         saved = getattr(self, "_orb_undocked_frame", None) or self._frame_tuple(panel.frame())
         origin = collapse_target((saved[0], saved[1]), self._visible_screens(), size=(saved[2], saved[3]))
@@ -4379,6 +4400,10 @@ class AppDelegate(NSObject):
             end_center=(tx + tw / 2.0 - wx, ty + th / 2.0 - wy),
             start_scale=1.0, end_scale=EXPAND_START_SCALE,
             fade_from=1.0, fade_to=0.0, reduce_motion=reduce)
+        print("  orb collapse: ghost={0} visible={1} duration={2:.3f}s image={3}".format(
+            tuple(round(v, 1) for v in window_frame), bool(ghost.isVisible()), duration,
+            "yes" if image is not None else "NO"))
+        self._orb_started = time.monotonic()
         if reduce:
             self._place_orb_rect(target)
         else:
@@ -4394,7 +4419,8 @@ class AppDelegate(NSObject):
         self._set_orb_window_state("landed")
         self._sync_orb()  # not docked any more, so the bob resumes
         self._peek_consider()
-        print("  orb collapse: done")
+        print("  orb collapse: done after {0:.3f}s ticks={1}".format(
+            time.monotonic() - getattr(self, "_orb_started", time.monotonic()), getattr(self, "_orb_ticks", 0)))
 
     def miniExpandHome_(self, _sender):
         """Expand the popover into the full Jev window, keeping the draft."""

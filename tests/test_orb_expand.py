@@ -65,10 +65,10 @@ class ExpandRectsTests(unittest.TestCase):
 
 
 class DockPointTests(unittest.TestCase):
-    def test_centre_x_is_window_x_plus_sidebar_minus_18(self):
+    def test_centre_x_is_on_the_divider_line(self):
         for win in [(100.0, 100.0, 760.0, 560.0), (-400.0, 30.0, 900.0, 700.0), (640.0, 10.0, 1100.0, 800.0)]:
             cx, _cy = _center(om.dock_point(win))
-            self.assertAlmostEqual(cx, win[0] + fw.SIDEBAR_W - 18.0)
+            self.assertAlmostEqual(cx, win[0] + fw.SIDEBAR_W)
 
     def test_centre_y_sits_below_the_titlebar(self):
         for win in [(100.0, 100.0, 760.0, 560.0), (0.0, 0.0, 1000.0, 700.0)]:
@@ -218,6 +218,11 @@ class ExpandWiringTests(unittest.TestCase):
         self.assertIn("EXPAND_START_SCALE", collapse)
         land = _func(self.ui, "_land_orb_collapse")
         self.assertIn("_sync_orb()", land)  # the bob resumes once the orb is free
+
+    def test_collapse_reads_the_orb_only_after_binding_it(self):
+        # A NameError here would leave the state stuck in collapsing, so bind names before the trace uses them.
+        collapse = _func(self.ui, "_collapse_orb_from_full")
+        self.assertLess(collapse.index("orb = self.orb_view"), collapse.index("orb collapse: start"))
 
     def test_closing_the_window_collapses_it(self):
         self.assertIn("_collapse_orb_from_full", _func(self.ui, "windowWillClose_"))
