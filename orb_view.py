@@ -13,6 +13,7 @@ from orb_motion import DESIGN_SIZE as PANEL_SIZE
 from orb_motion import cursor_moved, idle_active, pupil_offset, tracking_active, voice_pose, wav_envelope
 
 LOOK_EASE = 0.25  # lookIntensity eases over this many seconds when the character state changes
+TRACK_PUPILS = False  # PR 8: the eyes are white pills with no pupils, so the cursor-tracking poll stays off
 SPEECH_WATCH_SECONDS = 0.2  # while the reply's WAV is not known yet, check for it this often
 SPEECH_WATCH_LIMIT = 30.0  # give up on the WAV after this long and keep the pulse
 
@@ -330,7 +331,7 @@ def make_orb_view(frame):
                     self.lastCursor = None  # the pupils were just centred, so the next poll must place them
                 self.alive = alive
                 # PR 6a: docking stops the bob, but the pupils keep following the cursor.
-                self.tracking = tracking_active(visible, motion, self.asleep) and not self.halted
+                self.tracking = tracking_active(visible, motion, self.asleep) and not self.halted and TRACK_PUPILS
                 idle = alive and self.character == "idle"  # PR 7: every other character state suspends the idle motion
                 self.tree.set_passives(idle and not self.solid)
                 self.ticker.sync(self.tracking and not self.solid, self.scheduleCursor)

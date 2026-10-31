@@ -5,7 +5,7 @@ orb_layers reads these constants to build the Core Animation tree.
 """
 import math
 
-from full_window import DOCK_ORB, SIDEBAR_W, TITLEBAR_H
+from full_window import DOCK_ORB
 
 DESIGN_SIZE = 72.0
 DESIGN_EXTENT = 70.0  # orb + listening ring, with a hair of margin; the fit scale divides by this
@@ -17,6 +17,9 @@ BODY_ORIGIN = (DESIGN_SIZE - BODY_SIZE) / 2.0
 EYE_SIZE = 11.0  # the eye's own frame; the cream bar inside it is EYE_BAR_W wide
 EYE_BAR_W = 4.0  # restored from 1c63b74: cream bars, 4 x 10 pt
 EYE_SPACING = 8.0  # each eye sits this far left or right of the body centre
+EYE_OFFSET_X = 2.0  # PR 8: both eyes sit this far right of centre, so the orb looks turned a little to its right
+# PR 8: perspective. The left eye is a touch wider and taller than the right, as if it is nearer. (x, y) scale.
+EYE_PERSPECTIVE = {"L": (1.12, 1.08), "R": (1.0, 1.0)}
 EYE_CENTER_Y = 40.0  # restored from 1c63b74 (bars span y 35-45)
 PUPIL_SIZE = 2.2  # small, so eye tracking still shows on the bar
 
@@ -48,7 +51,7 @@ SHADE_ALPHA = {"light": 0.0, "dark": 0.0}  # restored from 1c63b74: no shade ove
 RIM_RGB = (0.45, 0.85, 1.0)
 RIM_ALPHA = 0.0  # restored from 1c63b74: no rim
 OUTLINE_ALPHA = 0.0  # restored from 1c63b74: no outline stroke
-EYE_EDGE_RGB = (1.0, 0.98, 0.88)  # restored from 1c63b74: cream eyes, solid
+EYE_EDGE_RGB = (1.0, 1.0, 1.0)  # PR 8: solid white pill eyes, no pupils (was cream, from 1c63b74)
 GLYPH_RGB = (1.0, 0.98, 0.88)  # the cream used for the thinking, speaking and error cues
 LISTEN_GLYPH_RGB = (0.55, 0.86, 1.0)
 RING_RGB = (0.18, 0.65, 1.0)
@@ -65,7 +68,7 @@ def layer_geometry(bob=0.0):
         "ring": (RING_INSET, RING_INSET + bob, RING_DIAMETER, RING_DIAMETER),
     }
     for side, sign in (("L", -1.0), ("R", 1.0)):
-        cx = DESIGN_CENTER + sign * EYE_SPACING
+        cx = DESIGN_CENTER + sign * EYE_SPACING + EYE_OFFSET_X
         cy = EYE_CENTER_Y + bob
         frames["eye" + side] = (cx - EYE_SIZE / 2.0, cy - EYE_SIZE / 2.0, EYE_SIZE, EYE_SIZE)
         frames["pupil" + side] = (cx - PUPIL_SIZE / 2.0, cy - PUPIL_SIZE / 2.0, PUPIL_SIZE, PUPIL_SIZE)
@@ -655,16 +658,14 @@ def expand_rects(orb_frame, target_frame, screen=None):
 
 
 def dock_point(window_frame, dock=DOCK_ORB):
-    """Orb frame (x, y, w, h) docked on the sidebar/chat divider of a full window.
+    """Orb frame (x, y, w, h) docked on the left edge of a full window, at mid height.
 
-    The centre sits on the divider line (x = win.x + SIDEBAR_W), and DOCK_GAP below the titlebar,
-    so the orb never overlaps the titlebar.
+    The centre is on the window's left edge (x = win.x) and its vertical middle (y = win.midY), so half the orb
+    sits over the sidebar and half outside the window.
     """
     wx, wy, ww, wh = (float(v) for v in window_frame)
     half = float(dock) / 2.0
-    cx = wx + SIDEBAR_W
-    cy = wy + wh - TITLEBAR_H - half - DOCK_GAP
-    return (cx - half, cy - half, float(dock), float(dock))
+    return (wx - half, wy + wh / 2.0 - half, float(dock), float(dock))
 
 
 def collapse_target(saved_origin, screens, size=None):

@@ -624,6 +624,19 @@ class PillChromeOverlay(NSView):
             print(f"  mini bar draw failed: {exc}")
 
 
+PILL_SLIDE_PT = 24.0  # PR 8: the input pill slides this far from the orb's side when it comes back
+PILL_SLIDE_SECONDS = 0.18  # easeOut
+
+
+def _notify_pill_drag(delegate, began):
+    """Tell the app delegate that an orb drag started (hide the input pill) or ended (slide it back out)."""
+    if delegate is None:
+        return
+    hook = getattr(delegate, "_pill_drag_began" if began else "_pill_drag_ended", None)
+    if hook is not None:
+        hook()
+
+
 class MiniBarBackground(NSView):
     """Capsule behind the controls. The background moves it. The outer edge resizes it.
 
@@ -699,12 +712,17 @@ class MiniBarBackground(NSView):
         delegate.collapseOrbFromFull_(self)
 
     def rightMouseDown_(self, event):
-        """Right-click on the idle orb opens the quick popover (PR 6a). A docked orb ignores it."""
+        """Right-click on the orb opens a native menu at the cursor (PR 8). The popover stays on Control-Option-J.
+
+        A docked orb ignores it, as before.
+        """
         window = self.window()
         delegate = window.delegate() if window is not None else None
         docked = getattr(delegate, "_orb_docked_now", lambda: False)()
-        if delegate is not None and getattr(delegate, "pillCollapsed", False) and not docked:
-            delegate.expandMiniBar_(self)
+        if delegate is not None and hasattr(delegate, "_orb_context_menu") and not docked:
+            menu = delegate._orb_context_menu()
+            print("  orb menu: right-click opened the native menu at the cursor", flush=True)
+            NSMenu.popUpContextMenu_withEvent_forView_(menu, event, self)
             return
         objc.super(MiniBarBackground, self).rightMouseDown_(event)
 
@@ -720,10 +738,14 @@ class MiniBarBackground(NSView):
             now = NSEvent.mouseLocation()
             point = (float(now.x), float(now.y))
             if capsule_click_moved(start, point):
+                if not moved:
+                    _notify_pill_drag(window.delegate(), began=True)  # PR 8: the input pill hides at once
                 moved = True
             if moved:
                 x, y = drag_origin(origin, start, point)
                 window.setFrameOrigin_(NSMakePoint(x, y))
+        if moved:
+            _notify_pill_drag(window.delegate(), began=False)  # PR 8: the pill slides back out from the orb's side
         return moved
 
     @objc.python_method
@@ -753,6 +775,7 @@ class MiniBarBackground(NSView):
                 if not capsule_click_moved(start, point):
                     continue
                 moved = True
+                _notify_pill_drag(delegate, began=True)  # PR 8: the input pill hides at once
             pos, vel = follow_step(pos, vel, drag_origin(origin, start, point), dt, *SPRING_FOLLOW)
             smoothed = (smooth(smoothed[0], vel[0]), smooth(smoothed[1], vel[1]))
             window.setFrameOrigin_(NSMakePoint(pos[0], pos[1]))
@@ -760,6 +783,7 @@ class MiniBarBackground(NSView):
             samples.append((stamp, pos[0], pos[1]))
         if not moved:
             return False
+        _notify_pill_drag(delegate, began=False)  # PR 8: the pill slides back out from the orb's side
         orb.dropJiggle()
         if delegate is not None:
             delegate.last_drag_roughness = drag_roughness(samples)
@@ -888,14 +912,20 @@ class MiniBarBackground(NSView):
         frame = window.frame()
         start = (float(down.x), float(down.y))
         origin = (float(frame.origin.x), float(frame.origin.y))
+        began = False
         mask = NSEventMaskLeftMouseDragged | NSEventMaskLeftMouseUp
         while True:
             nxt = window.nextEventMatchingMask_(mask)
             if nxt is None or nxt.type() == NSEventTypeLeftMouseUp:
                 break
             now = NSEvent.mouseLocation()
+            if not began:
+                began = True
+                _notify_pill_drag(window.delegate(), began=True)  # PR 8: the input pill hides at once
             x, y = drag_origin(origin, start, (float(now.x), float(now.y)))
             window.setFrameOrigin_(NSMakePoint(x, y))
+        if began:
+            _notify_pill_drag(window.delegate(), began=False)  # PR 8: the pill slides back out from the orb's side
         delegate = window.delegate()
         if delegate is not None and hasattr(delegate, "_finalize_mini_bar_drag"):
             delegate._finalize_mini_bar_drag(window)
@@ -2409,6 +2439,100 @@ class AppDelegate(NSObject):
     def _area_hotkey_pressed(self):
         print("  area hotkey fired: control+option+command+W")
         self.captureAreaWand_(None)
+
+    @objc.python_method
+    def _orb_context_menu(self):
+        """The orb's right-click menu (PR 8): the popover's useful actions as a native menu. Control-Option-J keeps the popover."""
+        menu = NSMenu.alloc().initWithTitle_("Jev")
+
+        def add(title, action, key="", command=False, target=self):
+            item = menu.addItemWithTitle_action_keyEquivalent_(title, action, key)
+            item.setTarget_(target)
+            if command:
+                item.setKeyEquivalentModifierMask_(NSEventModifierFlagCommand)
+            return item
+
+        add("Open Jev", "orbMenuOpen:")
+        add("New Chat", "orbMenuNewChat:")
+        add("Capture Area", "captureAreaWand:", "w", command=True)
+        add("Mark Up", "orbMenuMarkup:")
+        type_item = add("Type to Jev…", "focusTypeField:", "j")
+        type_item.setKeyEquivalentModifierMask_(NSEventModifierFlagControl | NSEventModifierFlagOption)
+        menu.addItem_(NSMenuItem.separatorItem())
+        add("Settings…", "showSettings:", ",", command=True)
+        menu.addItem_(NSMenuItem.separatorItem())
+        add("Quit Jev", "terminate:", "q", command=True, target=NSApp)
+        return menu
+
+    def orbMenuOpen_(self, _sender):
+        print("  orb menu: Open Jev", flush=True)
+        self.expandOrbToFull_(self)
+
+    def orbMenuNewChat_(self, _sender):
+        print("  orb menu: New Chat", flush=True)
+        if not self._orb_docked_now():
+            self._expand_orb_to_full("")
+        self.fullNewChat_(None)
+
+    def orbMenuMarkup_(self, _sender):
+        print("  orb menu: Mark Up", flush=True)
+        self._open_markup()
+
+    @objc.python_method
+    def _pill_drag_views(self):
+        """The typing pill's views: everything in the orb panel except the orb and the recording stop button."""
+        panel = getattr(self, "mini_panel", None)
+        if panel is None:
+            return []
+        keep = [v for v in (getattr(self, "orb_view", None), getattr(self, "rec_stop", None)) if v is not None]
+        return [v for v in panel.contentView().subviews() if not any(v is k for k in keep)]
+
+    @objc.python_method
+    def _pill_drag_began(self):
+        """An orb drag started: hide the typing pill at once."""
+        if getattr(self, "_pill_drag_hidden", None):
+            return
+        views = [v for v in self._pill_drag_views() if not v.isHidden()]
+        for v in views:
+            v.setHidden_(True)
+        self._pill_drag_hidden = views
+        if views:
+            print("  orb drag: input pill hidden ({0} views)".format(len(views)), flush=True)
+
+    @objc.python_method
+    def _pill_drag_ended(self):
+        """The drag released: the pill slides back out from the orb's side, easeOut over PILL_SLIDE_SECONDS."""
+        from Quartz import CAMediaTimingFunction
+        views = getattr(self, "_pill_drag_hidden", None)
+        self._pill_drag_hidden = None
+        if not views:
+            return
+        orb = getattr(self, "orb_view", None)
+        reduce = orb is None or bool(orb.reduceMotion)
+        orb_box = orb.frame() if orb is not None else None
+        orb_mid = float(orb_box.origin.x) + float(orb_box.size.width) / 2.0 if orb_box is not None else 0.0
+        timing = CAMediaTimingFunction.functionWithName_("easeOut")
+        side = "-"
+        for v in views:
+            f = v.frame()
+            pill_mid = float(f.origin.x) + float(f.size.width) / 2.0
+            direction = -1.0 if orb_mid < pill_mid else 1.0  # the orb is on the left: the pill comes from the left
+            side = "left" if direction < 0 else "right"
+            final = f.origin
+            v.setHidden_(False)
+            v.setAlphaValue_(0.0)
+            if not reduce:
+                v.setFrameOrigin_(NSMakePoint(float(final.x) + direction * PILL_SLIDE_PT, float(final.y)))
+            NSAnimationContext.beginGrouping()
+            context = NSAnimationContext.currentContext()
+            context.setDuration_(PILL_SLIDE_SECONDS)
+            context.setTimingFunction_(timing)
+            if not reduce:
+                v.animator().setFrameOrigin_(final)
+            v.animator().setAlphaValue_(1.0)
+            NSAnimationContext.endGrouping()
+        print("  orb drag: input pill slides back out from the {0} ({1:.2f}s{2})".format(
+            side, PILL_SLIDE_SECONDS, ", reduce motion, fade only" if reduce else ""), flush=True)
 
     def captureAreaWand_(self, _sender):
         """Command-W: the same area capture the orb menu runs today. The crosshair appears, and the usual choices follow."""

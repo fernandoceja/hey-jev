@@ -21,6 +21,7 @@ from orb_motion import (
     DESIGN_EXTENT,
     DESIGN_SIZE,
     EYE_EDGE_RGB,
+    EYE_PERSPECTIVE,
     EYE_SIZE,
     ENVELOPE_HZ,
     FLOAT_AMPLITUDE,
@@ -155,6 +156,13 @@ def _scale_y(scale):
     """Eye height only: the bar grows or shrinks, and its width stays put."""
     from Quartz import CGAffineTransformMakeScale
     return CGAffineTransformMakeScale(1.0, float(scale))
+
+
+def _eye_transform(side, scale_y):
+    """One eye's height from the pose, with its perspective: the left eye is a little wider and taller."""
+    from Quartz import CGAffineTransformMake
+    kx, ky = EYE_PERSPECTIVE[side]
+    return CGAffineTransformMake(kx, 0.0, 0.0, ky * float(scale_y), 0.0, 0.0)
 
 
 def _body_transform(scale, lean_degrees):
@@ -366,6 +374,7 @@ class OrbLayers:
             eye.addSublayer_(pupil)
             self.eyes[side] = eye
             self.pupils[side] = pupil
+            pupil.setHidden_(True)  # PR 8: the eyes are plain white pills, with no pupils
 
         self.mouth = place(CAShapeLayer.layer(), MOUTH_RECT)
         self.mouth.setPath_(_ellipse_path(0, 0, MOUTH_RECT[2], MOUTH_RECT[3]))
@@ -458,7 +467,7 @@ class OrbLayers:
         def update():
             for side, shape in (("L", shapes[0]), ("R", shapes[1])):
                 self.eye_masks[side].setPath_(self._eye_paths[shape])
-                self.eyes[side].setAffineTransform_(_scale_y(scale_y))
+                self.eyes[side].setAffineTransform_(_eye_transform(side, scale_y))
             self.lean = lean
             self.body_group.setTransform_(_body_transform(pose["body_scale"], lean))
             self.spinner.setHidden_(not spinning)
@@ -520,9 +529,9 @@ class OrbLayers:
             self.spinner.removeAnimationForKey_(SPIN_KEY)
 
     def set_sweep(self, amplitude):
-        """Searching: the pupils scan left and right over 1.6 s. Additive, so the cursor offset still applies."""
+        """Searching: the eyes slide left and right over 1.6 s. Additive, so the pose still applies."""
         for side in ("L", "R"):
-            layer = self.pupils[side]
+            layer = self.eyes[side]
             layer.removeAnimationForKey_(SWEEP_KEY)
             if amplitude <= 0.0:
                 continue

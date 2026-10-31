@@ -65,22 +65,22 @@ class ExpandRectsTests(unittest.TestCase):
 
 
 class DockPointTests(unittest.TestCase):
-    def test_centre_x_is_on_the_divider_line(self):
+    def test_centre_x_is_on_the_window_left_edge(self):
         for win in [(100.0, 100.0, 760.0, 560.0), (-400.0, 30.0, 900.0, 700.0), (640.0, 10.0, 1100.0, 800.0)]:
             cx, _cy = _center(om.dock_point(win))
-            self.assertAlmostEqual(cx, win[0] + fw.SIDEBAR_W)
+            self.assertAlmostEqual(cx, win[0])
 
-    def test_centre_y_sits_below_the_titlebar(self):
+    def test_centre_y_is_the_window_mid_height(self):
         for win in [(100.0, 100.0, 760.0, 560.0), (0.0, 0.0, 1000.0, 700.0)]:
             _cx, cy = _center(om.dock_point(win))
-            top = win[1] + win[3]
-            self.assertAlmostEqual(cy, top - fw.TITLEBAR_H - 18.0 - 12.0)
+            self.assertAlmostEqual(cy, win[1] + win[3] / 2.0)
 
-    def test_dock_never_overlaps_the_titlebar(self):
+    def test_dock_is_half_over_the_sidebar_and_half_outside_and_clear_of_the_titlebar(self):
         for win in [(100.0, 100.0, 760.0, 560.0), (0.0, 0.0, 600.0, 420.0), (50.0, 50.0, 1600.0, 1200.0)]:
             x, y, w, h = om.dock_point(win)
+            self.assertLess(x, win[0])  # sticks out to the left of the window
+            self.assertGreater(x + w, win[0])  # and reaches into the sidebar
             self.assertLessEqual(y + h, win[1] + win[3] - fw.TITLEBAR_H)
-            self.assertTrue(_inside((x, y, w, h), win))
 
     def test_default_dock_is_the_half_size_orb(self):
         self.assertEqual(fw.DOCK_ORB, 36.0)
@@ -178,7 +178,8 @@ class ExpandWiringTests(unittest.TestCase):
     def test_single_click_expands_and_right_click_opens_the_popover(self):
         self.assertIn("expandOrbToFull_", _func(self.ui, "_collapsed_click_or_drag"))
         right = _func(self.ui, "rightMouseDown_")
-        self.assertIn("expandMiniBar_", right)
+        self.assertIn("_orb_context_menu", right)  # PR 8: right-click opens a native menu at the cursor
+        self.assertNotIn("expandMiniBar_", right)
         self.assertIn("not docked", right)
 
     def test_typing_while_docked_focuses_the_window_instead_of_a_popover(self):

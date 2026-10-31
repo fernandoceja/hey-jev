@@ -28,9 +28,11 @@ EYE_SHAPES = {
     "closedUp": ((0.5, 0.36), (0.682, 0.44), (0.5, 0.5), (0.318, 0.44)),
     "smileClosed": ((0.5, 0.28), (0.682, 0.62), (0.5, 0.5), (0.318, 0.62)),
     # PR 7: wide is the same 4 pt bar, run the full 11 pt height, so listening reads as taller eyes, not a diamond.
-    "wide": ((0.5, 0.0), (0.682, 0.5), (0.5, 1.0), (0.318, 0.5)),
+    "wide": ((0.5, 0.0), (0.73, 0.5), (0.5, 1.0), (0.27, 0.5)),
     # PR 7: a sceptic eye is one shorter bar, tilted, so it reads as a raised eyebrow. Same four anchors.
     "sceptic": ((0.6, 0.27), (0.68, 0.5), (0.4, 0.73), (0.32, 0.5)),
+    # PR 8: a squinted pill, short and a little wide, for thinking.
+    "squint": ((0.5, 0.22), (0.66, 0.5), (0.5, 0.78), (0.34, 0.5)),
 }
 
 # lookIntensity by character state. Only "idle" is driven by PR 2; the other rows are the plan's table for later PRs.
@@ -238,7 +240,7 @@ CLIPS = {
     "listen_1": Clip(("wide", "wide"), 1.15, (0.0, 0.0), 0.0, False, 0.0, False),
     "listen_2": Clip(("wide", "wide"), 1.10, (0.4, 0.0), -2.0, False, 0.0, False),
     "listen_3": Clip(("wide", "wide"), 1.20, (-0.4, 0.0), 2.0, False, 0.0, False),
-    "think_1": Clip(("open", "open"), 1.0, (1.8, 1.8), 0.0, True, 0.0, False),
+    "think_1": Clip(("squint", "squint"), 1.0, (1.8, 1.8), 0.0, True, 0.0, False),
     "think_2": Clip(("sceptic", "open"), 1.0, (0.8, 1.0), 0.0, True, 0.0, False),
     "think_3": Clip(("open", "open"), 1.0, (0.0, 2.2), 0.0, True, 0.0, False),
     "search_1": Clip(("open", "open"), 1.0, (0.0, 0.0), 0.0, True, 2.0, False),

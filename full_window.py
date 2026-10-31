@@ -38,9 +38,9 @@ GREETING_H = 30.0
 GREETING_TOP = 150.0  # the greeting's top edge, measured down from the window's top
 CONVERSATION_TOP = 96.0  # the conversation's top edge, measured down from the window's top
 HOME_W = 112.0
-SIDE_PAD = 12.0
+SIDE_PAD = 26.0  # 18 pt is the docked orb's half-width on the left edge, so the sidebar starts clear of it
 NEW_CHAT_H = 32.0
-SIDE_RIGHT = SIDEBAR_W - DOCK_ORB / 2.0 - 8.0  # 174: sidebar controls stop short of the docked orb
+SIDE_RIGHT = SIDEBAR_W - 12.0  # 188: the sidebar's right padding
 HEAD_H = 22.0
 ROW_H = 28.0
 ROW_GAP = 2.0
@@ -142,11 +142,11 @@ def full_layout(width, height, has_conversation=False):
 def dock_rect(layout, dock=DOCK_ORB):
     """The docked orb's frame (x, y, w, h) in window coordinates, for a full_layout result.
 
-    Its centre sits on the divider line, and dock/2 + 12 pt below the titlebar.
+    Centred on the window's left edge at mid height: half of it sits over the sidebar, half outside the window.
     """
     _w, h = layout["size"]
     half = dock / 2.0
-    return (SIDEBAR_W - half, h - TITLEBAR_H - half - 12.0 - half, dock, dock)
+    return (-half, h / 2.0 - half, dock, dock)
 
 
 def short_label(text, limit=LABEL_MAX):
