@@ -16,6 +16,8 @@ recorder stores.
 """
 import math
 
+from orb_motion import PEEK_EDGE_TOLERANCE, peek_edge_allowed, peek_frame
+
 BAR_W = 420.0
 BAR_H = 44.0
 # Wide enough for +, a short command, and the mic. Tall enough that the
@@ -77,6 +79,7 @@ CHOICE_SECONDS = 20.0
 REPLY_SECONDS = 4.0
 PREF_KEY = "mini_bar_enabled"
 ORIGIN_KEY = "mini_bar_origin"
+PEEK_PREF_KEY = "orb_peek_dock"  # PR 3b: tuck the orb into a free screen edge. Missing means on.
 SIZE_KEY = "mini_bar_size"
 
 # Status lines worth putting in the field. Idle "ready" lines are not a reply.
@@ -106,6 +109,40 @@ def enabled_from_pref(value):
         return bool(int(value))
     except (TypeError, ValueError):
         return True
+
+
+def peek_enabled_from_pref(value):
+    """Same parse as enabled_from_pref: missing is on, an explicit 0 is off."""
+    return enabled_from_pref(value)
+
+
+def peek_plan(origin, size, screen, screens):
+    """(edge, rest_origin) when a snapped orb can tuck on its edge, else None.
+
+    The origin must already sit on the inset (a snap). A tuck needs a left or right
+    edge that no other visible display touches. The saved origin stays the inset.
+    """
+    width, height = _placement_size(size)
+    if screen is None:
+        return None
+    sx, sy, sw, sh = (float(v) for v in screen)
+    x = float(origin[0])
+    if abs(x - (sx + ORB_EDGE_INSET)) <= PEEK_EDGE_TOLERANCE:
+        edge = "left"
+    elif abs(x - (sx + sw - width - ORB_EDGE_INSET)) <= PEEK_EDGE_TOLERANCE:
+        edge = "right"
+    else:
+        return None
+    if not peek_edge_allowed(edge, screen, _as_screens(screens)):
+        return None
+    rest = peek_frame((x, float(origin[1])), (width, height), screen, edge)
+    return (edge, (rest[0], rest[1]))
+
+
+def peek_rest_origin(origin, size, screen, screens):
+    """Rest origin (x, y) for a snapped origin, or None when it cannot tuck. See peek_plan."""
+    plan = peek_plan(origin, size, screen, screens)
+    return None if plan is None else plan[1]
 
 
 def parse_origin(text):
