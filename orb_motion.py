@@ -350,8 +350,10 @@ def drag_roughness(samples):
 
 
 # Peek-dock (PR 3b). A snapped orb on a free screen edge tucks most of itself off-screen.
-PEEK_PAST_FRACTION = 0.7  # share of the orb window pushed past the edge at rest
-PEEK_MIN_VISIBLE = 18.0  # pt still on screen at rest, whatever the window size
+PEEK_VISIBLE_FRACTION = 0.6  # share of the orb window still on screen at rest (about 26 pt of a 44 pt window)
+PEEK_MIN_VISIBLE = 24.0  # pt still on screen at rest, whatever the window size
+PEEK_GLOW_WIDTH = 10.0  # pt: the soft blue edge on the visible side of a tucked orb
+PEEK_GLOW_FADE_SECONDS = 0.15
 PEEK_HOT_DISTANCE = 24.0  # cursor this close to the edge slides the orb in
 PEEK_HOT_Y = 100.0  # ... and within this many points of the orb's centre height
 PEEK_RETRACT_DISTANCE = 120.0  # cursor this far from the orb starts the retract timer
@@ -391,14 +393,20 @@ def peek_edge_allowed(edge, screen, screens):
     return True
 
 
-def peek_frame(origin, size, screen, edge):
-    """Rest frame (x, y, w, h) for a tucked orb: PEEK_PAST_FRACTION of the width past the edge.
+def peek_visible_width(width):
+    """Points of a tucked orb window that stay on screen: PEEK_VISIBLE_FRACTION of it, at least PEEK_MIN_VISIBLE, never more than it."""
+    w = max(0.0, float(width))
+    return min(w, max(PEEK_MIN_VISIBLE, PEEK_VISIBLE_FRACTION * w))
 
-    At least PEEK_MIN_VISIBLE points stay on screen. The height is kept and kept on screen.
+
+def peek_frame(origin, size, screen, edge):
+    """Rest frame (x, y, w, h) for a tucked orb: all but peek_visible_width(w) of the width is past the edge.
+
+    The height is kept and kept on screen.
     """
     sx, sy, sw, sh = (float(v) for v in screen)
     w, h = float(size[0]), float(size[1])
-    past = min(PEEK_PAST_FRACTION * w, max(0.0, w - PEEK_MIN_VISIBLE))
+    past = w - peek_visible_width(w)
     y = float(origin[1])
     if sh >= h:
         y = min(max(y, sy), sy + sh - h)

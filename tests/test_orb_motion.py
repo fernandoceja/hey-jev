@@ -390,21 +390,34 @@ def test_should_retract_is_false_for_bad_input():
     (-1920.0, 0.0, 1920.0, 1080.0),
 ])
 @pytest.mark.parametrize('edge', ['left', 'right'])
-def test_peek_frame_keeps_at_least_18_points_on_screen_for_any_screen(width, screen, edge):
+def test_peek_frame_keeps_at_least_24_points_on_screen_for_any_screen(width, screen, edge):
     x, y, w, h = om.peek_frame((screen[0] + 12.0, screen[1] + 200.0), (width, width), screen, edge)
     sx, sy, sw, sh = screen
     visible = min(x + w, sx + sw) - max(x, sx)
     assert visible >= min(width, om.PEEK_MIN_VISIBLE) - 1e-9
     assert visible <= w + 1e-9
+    assert visible == pytest.approx(om.peek_visible_width(width))
 
 
-def test_peek_frame_puts_70_percent_of_the_orb_past_the_edge_for_a_72_point_window():
-    x, y, w, h = om.peek_frame((12.0, 200.0), (72.0, 72.0), MAIN, 'left')
-    assert x == pytest.approx(-50.4)
-    assert y == 200.0 and (w, h) == (72.0, 72.0)
-    x, _y, w, _h = om.peek_frame((1356.0, 200.0), (72.0, 72.0), MAIN, 'right')
-    assert 1440.0 - x == pytest.approx(21.6)  # 21.6 pt still showing on the right
-    assert x + w - 1440.0 == pytest.approx(50.4)  # and 50.4 pt past the edge
+@pytest.mark.parametrize('width, expected', [
+    (18.0, 18.0),  # narrower than the floor: all of it stays visible
+    (30.0, 24.0),  # 60% is 18, so the 24 pt floor wins
+    (44.0, 26.4),  # 60% of the 44 pt collapsed window
+    (72.0, 43.2),
+    (200.0, 120.0),
+])
+def test_peek_visible_width_is_60_percent_with_a_24_point_floor(width, expected):
+    assert om.PEEK_VISIBLE_FRACTION == 0.6 and om.PEEK_MIN_VISIBLE == 24.0
+    assert om.peek_visible_width(width) == pytest.approx(expected)
+
+
+def test_peek_frame_leaves_60_percent_of_a_44_point_window_on_screen():
+    x, y, w, h = om.peek_frame((12.0, 200.0), (44.0, 44.0), MAIN, 'left')
+    assert x == pytest.approx(-17.6)  # 17.6 pt past the edge, 26.4 pt still showing
+    assert y == 200.0 and (w, h) == (44.0, 44.0)
+    x, _y, w, _h = om.peek_frame((1384.0, 200.0), (44.0, 44.0), MAIN, 'right')
+    assert 1440.0 - x == pytest.approx(26.4)  # 26.4 pt still showing on the right
+    assert x + w - 1440.0 == pytest.approx(17.6)  # and 17.6 pt past the edge
 
 
 def test_peek_frame_rejects_an_unknown_edge():
