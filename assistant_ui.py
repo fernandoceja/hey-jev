@@ -6983,6 +6983,8 @@ class AppDelegate(NSObject):
         This only changes chip state. Nothing runs until a click, which is _translate_clicked. Clipboard history
         already drops paused copies and password-manager copies, so they never reach the offer.
         """
+        import commands
+
         chip = getattr(self, "translate_chip", None)
         if chip is None:
             chip = self.translate_chip = TranslateChip()
@@ -6999,6 +7001,8 @@ class AppDelegate(NSObject):
     @objc.python_method
     def _translate_clicked(self):
         """The only way a translate turn starts: the chip's click, run as a normal typed turn (PR 8b)."""
+        import commands
+
         chip = getattr(self, "translate_chip", None)
         if chip is None:
             return

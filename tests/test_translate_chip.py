@@ -311,3 +311,33 @@ class MiniBarChipTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_ui_callbacks_execute_clipboard_to_translation_without_global_commands():
+    """Execute the actual UI methods without AppKit or an accidental module-global import."""
+    import ast
+    import time
+    from pathlib import Path
+    from types import SimpleNamespace
+    import commands
+
+    source = ast.parse((Path(__file__).parents[1] / "assistant_ui.py").read_text())
+    delegate = next(n for n in source.body if isinstance(n, ast.ClassDef) and n.name == "AppDelegate")
+    methods = [n for n in delegate.body if isinstance(n, ast.FunctionDef)
+               and n.name in ("_translate_tick", "_translate_clicked")]
+    for method in methods:
+        method.decorator_list = []
+    namespace = {"TranslateChip": TranslateChip, "log_line": tc.log_line, "time": time,
+                 "submission": lambda command, _: {"kind": "run", "text": command}}
+    exec(compile(ast.Module(body=methods, type_ignores=[]), "assistant_ui callbacks", "exec"), namespace)
+    visible, dispatched = [], []
+    ui = SimpleNamespace(_translate_refresh=visible.append, _dispatch_text_plan=dispatched.append)
+    history = ClipboardHistory()
+    history.observe(Snapshot(1, text=SPANISH, frontmost="Safari"))
+    with mock.patch.object(commands, "CLIPBOARD", history), \
+         mock.patch.object(commands, "clipboard_is_paused", return_value=False):
+        namespace["_translate_tick"](ui)
+        assert visible == [True]
+        namespace["_translate_clicked"](ui)
+    assert visible == [True, False]
+    assert dispatched == [{"kind": "run", "text": translate_command(SPANISH)}]
