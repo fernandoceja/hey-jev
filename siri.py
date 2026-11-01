@@ -9,6 +9,7 @@ import numpy as np, requests, sounddevice as sd, soundfile as sf
 from dotenv import load_dotenv
 from pynput import keyboard
 import commands
+from commands import voicestudio_voice
 from commands.brief_offer import (BRIEF_OFFER_LINE, OFFER_WINDOW_SECONDS, BriefOffer, audio_request_kind, display_text,
                                   speech_chunks)
 from commands.model import (
@@ -988,6 +989,11 @@ def fetch_tts(text):
     back there. A model that returns HTTP 402 is not requested again
     until this process ends.
     """
+    if voicestudio_voice.provider() == "VOICESTUDIO":
+        try:
+            return voicestudio_voice.fetch_speech(text, CACHE_DIR)
+        except Exception as exc:
+            print("  voicestudio failed: {0}; using Fish fallback".format(type(exc).__name__), flush=True)
     os.makedirs(CACHE_DIR, exist_ok=True)
     result = commands.synthesize_speech(
         text,
@@ -1338,7 +1344,7 @@ def say(line, notify):
     print(f"  say: {line}")
     emit(notify, "Speaking", line)
     tts_ms = speak(line)
-    print(f"  fish {'cached' if tts_ms == 0 else str(tts_ms) + 'ms'}")
+    print(f"  speech {'cached' if tts_ms == 0 else str(tts_ms) + 'ms'}")
 
 
 def say_local(text, notify):
