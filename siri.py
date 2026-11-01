@@ -887,6 +887,13 @@ def decide(ans, text=""):
     call. None means nothing local matched, so the caller may ask Jev.
     Quit-all is never one half of a two-part command.
     """
+    # The chip's explicit translation payload is content, never a Mac command.
+    # Keep the normal turn's Zoe/confirmation gates and answer delivery, but do
+    # not let TypeSafe interpret words inside the copied sentence as actions.
+    from commands.translate_chip import TRANSLATE_COMMAND
+    prefix = TRANSLATE_COMMAND + ":"
+    if text.strip().lower().startswith(prefix.lower()) and text.strip()[len(prefix):].strip():
+        return ("llm", None)
     if ans is None:
         local = commands.route_before_api(text)
         if not local:
@@ -1194,16 +1201,19 @@ def _handle_turn(text, stt_ms=None, notify=None, reply_sink=None, quiet=False):
     early = decide(None, text)
     if early is None and commands.is_private_message_request(text):
         early = ("actions", [_picked("info_messages")])
-    if early is not None:
+    if early is not None and early[0] == "actions":
         misses = 0
         return _run_local(early[1], text, notify, reply_sink)
     emit(notify, "Thinking", text)
-    ans, jev_ms, cost = jev(text)
-    for k, (v, c) in ans.items():
-        flag = "" if c >= GATE else "  <- below gate"
-        print(f"  {k:15} {str(v):22} {c:.2f}{flag}")
-    print(f"  jev {jev_ms}ms  ${cost:.6f}")
-    kind, payload = decide(ans, text)
+    if early is not None:
+        kind, payload = early
+    else:
+        ans, jev_ms, cost = jev(text)
+        for k, (v, c) in ans.items():
+            flag = "" if c >= GATE else "  <- below gate"
+            print(f"  {k:15} {str(v):22} {c:.2f}{flag}")
+        print(f"  jev {jev_ms}ms  ${cost:.6f}")
+        kind, payload = decide(ans, text)
     if kind == "split":
         payload = commands.isolate_confirmations(split_actions(text, ans))
         kind = "actions" if payload else "clarify"
