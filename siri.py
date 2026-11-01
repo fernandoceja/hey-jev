@@ -1210,6 +1210,8 @@ def _handle_turn(text, stt_ms=None, notify=None, reply_sink=None, quiet=False):
         payload = commands.isolate_confirmations(payload)
     armed = False
     brief_paths = []
+    # A reply, a clarify and an LLM answer are not failures. Only an action that fails sets done to 0 below.
+    done = 1
     if kind == "clarify" and quiet:
         print("  (unclear follow up, staying quiet)")
         emit(notify, "Ready", "Didn't catch that")
@@ -1365,6 +1367,16 @@ def _log_action_failure(action, exc, private=False):
         print(f"  action failed: {action} {type(exc).__name__}", flush=True)
         return
     print(f"  action failed: {action} {exc}", flush=True)
+    print(traceback.format_exc(), flush=True)
+
+
+# What the user sees when a turn or a dictation fails. The exception text stays in the Mac's log, never on screen.
+FRIENDLY_FAILURE = "Something went wrong on my end. Try that again?"
+
+
+def _log_turn_failure(where, exc):
+    """Log the exception type and traceback for the Mac's log only. The user sees FRIENDLY_FAILURE instead."""
+    print(f"  {where} failed: {type(exc).__name__}", flush=True)
     print(traceback.format_exc(), flush=True)
 
 
@@ -1784,8 +1796,8 @@ def run_voice_assistant(notify=None, controls=None, mode="ptt", mic=""):
                     armed_until[0] = time.time() + commands.CONFIRM_SECONDS
                     emit(notify, "Listening", "Say yes to confirm, or no to cancel")
             except Exception as exc:
-                print(f"\n  turn failed: {exc}")
-                emit(notify, "Something went wrong", str(exc))
+                _log_turn_failure("turn", exc)
+                emit(notify, "Something went wrong", FRIENDLY_FAILURE)
                 time.sleep(2)
                 emit(notify, "Ready", ready_text(rec.wake))
             finally:
@@ -1830,8 +1842,8 @@ def run_voice_assistant(notify=None, controls=None, mode="ptt", mic=""):
             else:
                 emit(notify, "Ready", "Didn't catch anything to paste")
         except Exception as exc:
-            print(f"  dictation failed: {exc}")
-            emit(notify, "Something went wrong", str(exc))
+            _log_turn_failure("dictation", exc)
+            emit(notify, "Something went wrong", FRIENDLY_FAILURE)
         if late_timers:
             time.sleep(2)  # let the dictation result show before she talks over it
         while late_timers:
@@ -1842,7 +1854,8 @@ def run_voice_assistant(notify=None, controls=None, mode="ptt", mic=""):
         try:
             text, ms = transcribe(audio, COMMAND_PROMPT, drop_noise=True)
         except Exception as exc:
-            emit(notify, "Something went wrong", str(exc))
+            _log_turn_failure("transcribe", exc)
+            emit(notify, "Something went wrong", FRIENDLY_FAILURE)
             return
         run_turn(text, ms)
 
