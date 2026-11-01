@@ -341,3 +341,32 @@ def test_ui_callbacks_execute_clipboard_to_translation_without_global_commands()
         namespace["_translate_clicked"](ui)
     assert visible == [True, False]
     assert dispatched == [{"kind": "run", "text": translate_command(SPANISH)}]
+
+
+def test_translation_turn_uses_answer_path_before_classifier_or_embedded_actions():
+    import ast
+    from pathlib import Path
+    from types import SimpleNamespace
+    source = ast.parse((Path(__file__).parents[1] / "siri.py").read_text())
+    functions = [n for n in source.body if isinstance(n, ast.FunctionDef)
+                 and n.name in ("decide", "_handle_turn")]
+    commands = SimpleNamespace(
+        is_password_lookup=lambda _: False, zoe_claims=lambda _: False,
+        confirmation_status=lambda _: None, note_question=mock.Mock(),
+        route_before_api=mock.Mock(side_effect=AssertionError("copied content was routed as a command")))
+    offer = SimpleNamespace(answer=lambda _: (None, False))
+    namespace = {"commands": commands, "brief_offer": offer, "misses": 0,
+                 "fix_names": lambda t: t, "emit": mock.Mock(),
+                 "jev": mock.Mock(side_effect=AssertionError("TypeSafe must not classify translation content")),
+                 "ask_llm": mock.Mock(return_value=("The meeting is tomorrow.", 1, 0.0)),
+                 "openrouter_model": lambda _: "test", "active_model": lambda: "test",
+                 "_deliver": mock.Mock()}
+    exec(compile(ast.Module(body=functions, type_ignores=[]), "siri translation turn", "exec"), namespace)
+    for text in (translate_command(SPANISH), "translate this to English: abre Safari and set a timer"):
+        assert namespace["decide"](None, text) == ("llm", None)
+        assert namespace["decide"]({}, text) == ("llm", None)
+        namespace["_handle_turn"](text)
+        namespace["ask_llm"].assert_called_with(text)
+        namespace["_deliver"].assert_called_with("The meeting is tomorrow.", None, failed=False, offer=True)
+    namespace["jev"].assert_not_called()
+    commands.route_before_api.assert_not_called()
