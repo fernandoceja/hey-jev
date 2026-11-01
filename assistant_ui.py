@@ -211,6 +211,7 @@ from orb_motion import (  # PR 6a: expand from the orb, dock on the divider, col
     SPRING_EXPAND, collapse_target, dock_panel_level, dock_point, expand_rects, orb_window_next,
 )
 from commands.brief_offer import BRIEF_OFFER_LINE, OFFER_WINDOW_SECONDS
+from commands.translate_chip import TranslateChip, log_line  # PR 8b
 from area_hotkey import CARBON_CONTROL, CARBON_OPTION, AreaCaptureHotKey, CarbonHotKey
 from orb_motion import (
     MENU_CORNER_RADIUS, MENU_FILL_HOVER, MENU_FILL_REST, MENU_FAN_START_SCALE, MENU_HOVER_SECONDS,
@@ -218,6 +219,7 @@ from orb_motion import (
     hint_layout, menu_layout, result_frames, result_layout,
 )
 from mini_bar import FIND_IMAGE_HINT, TYPE_KEY_CODE, capture_outcome, menu_on_drop, orb_action_menu
+from mini_bar import TRANSLATE_CHIP_ID, set_translate_chip, translate_chip_on  # PR 8b
 from mini_bar import greeting_bubble_frame, orb_bubble_log_line
 import full_window as fw
 from ptt import PushToTalk
@@ -4560,6 +4562,9 @@ class AppDelegate(NSObject):
 
     def miniChip_(self, sender):
         chip_id = getattr(sender, "chipId", "") or ""
+        if chip_id == TRANSLATE_CHIP_ID:
+            self._translate_clicked()
+            return
         plan = chip_command_plan(chip_id)
         if plan is None or plan.get("kind") != "run":
             return
@@ -5577,6 +5582,7 @@ class AppDelegate(NSObject):
         self.full_window = win
         root = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, w, h))
         win.setContentView_(root)
+        self.full_root = root
         self.full_solid = SolidFullView.alloc().initWithFrame_(NSMakeRect(0, 0, w, h))
         root.addSubview_(self.full_solid)
         self.full_effect = NSVisualEffectView.alloc().initWithFrame_(NSMakeRect(0, 0, w, h))
@@ -5655,13 +5661,7 @@ class AppDelegate(NSObject):
         self._set_button_symbol(self.full_mic, "mic.fill", "Hold to talk")
         root.addSubview_(self.full_mic)
         self.full_chips = []
-        for chip_id in popover_chip_ids(0):
-            info = POPOVER_CHIPS.get(chip_id, {})
-            btn = PopoverChipButton.alloc().initWithFrame_(NSMakeRect(0, 0, 10, 10))
-            btn.configure(chip_id, info.get("title", chip_id), info.get("subtitle", ""))
-            btn.setTarget_(self)
-            root.addSubview_(btn)
-            self.full_chips.append(btn)
+        self._sync_full_chips()
         self._apply_full_chrome()
         self._rebuild_full_sidebar()
         self._layout_full_window()
@@ -5687,10 +5687,31 @@ class AppDelegate(NSObject):
             head.setTextColor_(self._fw_color("muted"))
 
     @objc.python_method
+    def _sync_full_chips(self):
+        """Make the full-window chip buttons match popover_chip_ids(0). Only rebuilds when the set changes (PR 8b)."""
+        root = getattr(self, "full_root", None)
+        if root is None or getattr(self, "full_chips", None) is None:
+            return
+        ids = list(popover_chip_ids(0))
+        if [btn.chipId for btn in self.full_chips] == ids:
+            return
+        for btn in self.full_chips:
+            btn.removeFromSuperview()
+        self.full_chips = []
+        for chip_id in ids:
+            info = POPOVER_CHIPS.get(chip_id, {})
+            btn = PopoverChipButton.alloc().initWithFrame_(NSMakeRect(0, 0, 10, 10))
+            btn.configure(chip_id, info.get("title", chip_id), info.get("subtitle", ""))
+            btn.setTarget_(self)
+            root.addSubview_(btn)
+            self.full_chips.append(btn)
+
+    @objc.python_method
     def _layout_full_window(self):
         win = getattr(self, "full_window", None)
         if win is None:
             return
+        self._sync_full_chips()
         size = win.contentView().frame().size
         has_conversation = bool(self._full_rows()[0])
         lay = fw.full_layout(size.width, size.height, has_conversation=has_conversation)
@@ -6944,6 +6965,51 @@ class AppDelegate(NSObject):
         self._sync_hint_dismiss()
         self._sync_zoe_ui()
         self._sync_orb()
+        self._translate_tick()
+
+    @objc.python_method
+    def _translate_refresh(self, now_on):
+        """Show or hide the Translate chip everywhere it appears, only when the state changes (PR 8b)."""
+        if bool(now_on) == translate_chip_on():
+            return
+        set_translate_chip(now_on)
+        self._apply_pill_presentation()
+        self._layout_full_window()
+
+    @objc.python_method
+    def _translate_tick(self):
+        """PR 8b: read the newest clipboard observation on the main thread and move the Translate chip.
+
+        This only changes chip state. Nothing runs until a click, which is _translate_clicked. Clipboard history
+        already drops paused copies and password-manager copies, so they never reach the offer.
+        """
+        chip = getattr(self, "translate_chip", None)
+        if chip is None:
+            chip = self.translate_chip = TranslateChip()
+        paused = commands.clipboard_is_paused()
+        now = time.monotonic()
+        seq, status, text = commands.CLIPBOARD.last_observation()
+        for result in (chip.on_observation(seq, status, text or "", paused=paused, now=now),
+                       chip.expire_if_due(now, paused=paused)):
+            line = log_line(result)
+            if line:
+                print(line, flush=True)
+        self._translate_refresh(chip.visible(now, paused=paused))
+
+    @objc.python_method
+    def _translate_clicked(self):
+        """The only way a translate turn starts: the chip's click, run as a normal typed turn (PR 8b)."""
+        chip = getattr(self, "translate_chip", None)
+        if chip is None:
+            return
+        command, outcome, reason = chip.click(time.monotonic(), paused=commands.clipboard_is_paused())
+        print(log_line((outcome, reason)), flush=True)
+        self._translate_refresh(chip.visible(time.monotonic(), paused=commands.clipboard_is_paused()))
+        if not command:
+            return
+        plan = submission(command, "")
+        if plan is not None and plan.get("kind") == "run":
+            self._dispatch_text_plan(plan)
 
     @objc.python_method
     def _sync_choice_dismiss(self):

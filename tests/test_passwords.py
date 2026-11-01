@@ -114,7 +114,9 @@ class TestPasswordRouting(unittest.TestCase):
         self.assertIn("def fullSubmit_", ui)
         # Five routes: typed popover, home, full window, the full window's sidebar commands (PR 6b), and the orb's
         # Spotlight-style panel (PR 8). Every route calls submission(), so the password rules apply to each.
-        self.assertEqual(ui.count("plan = submission("), 5)
+        # The sixth is the Translate chip's click (PR 8b): it runs the copied text as a typed turn, and the chip only
+        # exists for copies clipboard history already accepted (never a password-manager copy).
+        self.assertEqual(ui.count("plan = submission("), 6)
         for raw in (
             "Password for Netflix",
             "  what's my password for Chase? ",

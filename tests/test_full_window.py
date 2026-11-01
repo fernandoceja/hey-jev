@@ -247,7 +247,8 @@ class FullWindowWiringTests(unittest.TestCase):
         self.assertNotIn("controls.put", submit)
         build = _func(ui, "_build_full_window")
         self.assertIn("HoldMicButton", build)
-        self.assertIn("PopoverChipButton", build)
+        self.assertIn("self._sync_full_chips()", build)  # PR 8b: the chip buttons are built there
+        self.assertIn("PopoverChipButton", _func(ui, "_sync_full_chips"))
         self.assertIn("setFrameAutosaveName_(fw.FULL_AUTOSAVE)", build)
         self.assertIn("NSWindowStyleMaskResizable", build)
         self.assertIn("self._refresh_full_window()", _func(ui, "_refresh_popover_history"))

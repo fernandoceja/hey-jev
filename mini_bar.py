@@ -51,6 +51,20 @@ GREETING_NAME = "Fernando"
 
 # Quick-action chips below the composer. Refresh rotates pages locally only.
 MAC_HEALTH_CHIP = "mac_health"
+TRANSLATE_CHIP_ID = "translate_clip"  # PR 8b
+_translate_chip_on = False  # set by the app while a translate offer is open (see set_translate_chip)
+
+
+def set_translate_chip(on):
+    """Show or hide the Translate chip. It takes the first slot of the current page and drops the page's last chip,
+    so the chip count, the popover height and the full-window row stay the same."""
+    global _translate_chip_on
+    _translate_chip_on = bool(on)
+    return _translate_chip_on
+
+
+def translate_chip_on():
+    return _translate_chip_on
 
 
 def chip_title(chip_id, title, alert=False):
@@ -71,6 +85,9 @@ POPOVER_CHIPS = {
     "joke": {"title": "Joke", "subtitle": "Quick laugh", "phrase": "tell me a joke"},
     "games": {"title": "Games", "subtitle": "NXNative ports", "phrase": "list games"},
     "eta_work": {"title": "ETA work", "subtitle": "Commute", "phrase": "what's my ETA to work"},
+    # PR 8b: shown for 20 s after a non-English copy. Its click builds the command from the copied text in the UI
+    # (commands/translate_chip.py), so it has no fixed phrase here.
+    TRANSLATE_CHIP_ID: {"title": "Translate", "subtitle": "", "phrase": ""},
 }
 POPOVER_CHIP_PAGES = (
     ("eta_home", "hazard_check", "start_day", "mac_health"),  # PR 8c: replaces Plan my day in the popover
@@ -1406,7 +1423,10 @@ def popover_chip_ids(refresh_index=0):
     if not pages:
         return ()
     idx = int(refresh_index) % len(pages)
-    return pages[idx]
+    page = pages[idx]
+    if _translate_chip_on and page:
+        return (TRANSLATE_CHIP_ID,) + tuple(page[:-1])  # PR 8b: same count, translate first
+    return page
 
 
 def refresh_chip_suggestions(refresh_index):
