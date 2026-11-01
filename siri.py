@@ -9,7 +9,8 @@ import numpy as np, requests, sounddevice as sd, soundfile as sf
 from dotenv import load_dotenv
 from pynput import keyboard
 import commands
-from commands.brief_offer import BRIEF_OFFER_LINE, OFFER_WINDOW_SECONDS, BriefOffer, audio_request_kind, speech_chunks
+from commands.brief_offer import (BRIEF_OFFER_LINE, OFFER_WINDOW_SECONDS, BriefOffer, audio_request_kind, display_text,
+                                  speech_chunks)
 from commands.model import (
     MAX_TOKENS_ANSWER,
     MAX_TOKENS_REMINDER,
@@ -439,6 +440,8 @@ ACTIONS = {
     "nx_play": lambda _arg, text: commands.nx_play_from_text(text),
     # Scan only: opens CleanMyMac and presses Scan. Never cleans. Not bridged.
     "cleanmymac_scan": lambda _arg, text: commands.cleanmymac_scan_from_text(text),
+    # PR 8d: list Downloads or Desktop by type, age, old installers, duplicates and large files. Reads only. Not bridged.
+    "tidy_scan": lambda _arg, text: commands.tidy_scan_from_text(text),
     # REA analyze of the front app. Read-only. LocalSpeech, so no paid API. Not bridged.
     "rea_analyze": lambda _arg, text: commands.analyze_front_app(text),
     # Offline brain: fm serve on 127.0.0.1:1976 only, on command. Not bridged.
@@ -888,6 +891,8 @@ def decide(ans, text=""):
         local = commands.route_before_api(text)
         if not local:
             local = commands.start_my_day_action(text)  # PR 8c: Mac voice and typed path only, never the bridge
+        if not local and commands.tidy_folder_key(text):  # PR 8d: Mac voice and typed path only, never the bridge
+            local = "tidy_scan"
         if local:
             return ("actions", [_picked(local)])
         return None
@@ -1206,6 +1211,8 @@ def _handle_turn(text, stt_ms=None, notify=None, reply_sink=None, quiet=False):
         payload = commands.isolate_confirmations(payload)
     armed = False
     brief_paths = []
+    # A reply, a clarify and an LLM answer are not failures. Only an action that fails sets done to 0 below.
+    done = 1
     if kind == "clarify" and quiet:
         print("  (unclear follow up, staying quiet)")
         emit(notify, "Ready", "Didn't catch that")
@@ -1293,14 +1300,14 @@ def _handle_turn(text, stt_ms=None, notify=None, reply_sink=None, quiet=False):
                 line = default_line()
     if brief_paths:  # a memo is playing, so this reply is spoken with it, as before
         with direct_speech():
-            _deliver(line, notify, failed=not done)
+            _deliver(line, notify, failed=not done, offer=kind != "clarify")  # a question back gets no read-aloud offer
         for memo_path in brief_paths:
             try:
                 commands.play_memo_file(memo_path)
             except Exception as exc:
                 print("  brief: {0}".format(type(exc).__name__))
     else:
-        _deliver(line, notify, failed=not done)  # nothing that ran is a failure
+        _deliver(line, notify, failed=not done, offer=kind != "clarify")  # nothing that ran is a failure
     if armed:
         # The 10 seconds start after the prompt, so speaking it doesn't eat the window.
         commands.refresh_confirmation()
@@ -1334,11 +1341,12 @@ def say_local(text, notify):
         print(f"  say-local failed: {type(exc).__name__}")
 
 
-def _deliver(line, notify, reply_sink=None, private=False, failed=False):
+def _deliver(line, notify, reply_sink=None, private=False, failed=False, offer=True):
     """Play a line. Private lines stay out of reply_sink so they cannot be written to iCloud.
 
     failed=True ends the turn with "Something went wrong", not "Ready", so the orb plays its failure reaction
     and a failed action never looks like a reply (PR 7b follow-up).
+    offer=False shows the text only, with no read-aloud offer. Clarify and retry lines use it (PR 8d polish).
     """
     if private:
         say_local(line, notify)
@@ -1349,9 +1357,9 @@ def _deliver(line, notify, reply_sink=None, private=False, failed=False):
     _remember_reply(line)
     if _direct_speech_on():
         say(line, notify)  # bridge, Zoe, and an explicit audio ask keep the spoken reply
-        emit(notify, "Something went wrong" if failed else "Ready", line)
+        emit(notify, "Something went wrong" if failed else "Ready", display_text(line))
         return
-    _offer_reply(line, notify, failed=failed)  # PR 8c: text first, audio only on a yes
+    _offer_reply(line, notify, failed=failed, offer=offer)  # PR 8c: text first, audio only on a yes
 
 
 def _log_action_failure(action, exc, private=False):
@@ -1361,6 +1369,16 @@ def _log_action_failure(action, exc, private=False):
         print(f"  action failed: {action} {type(exc).__name__}", flush=True)
         return
     print(f"  action failed: {action} {exc}", flush=True)
+    print(traceback.format_exc(), flush=True)
+
+
+# What the user sees when a turn or a dictation fails. The exception text stays in the Mac's log, never on screen.
+FRIENDLY_FAILURE = "Something went wrong on my end. Try that again?"
+
+
+def _log_turn_failure(where, exc):
+    """Log the exception type and traceback for the Mac's log only. The user sees FRIENDLY_FAILURE instead."""
+    print(f"  {where} failed: {type(exc).__name__}", flush=True)
     print(traceback.format_exc(), flush=True)
 
 
@@ -1491,14 +1509,20 @@ def _deliver_brief(text, notify, reply_sink):
     _deliver(text, notify, reply_sink)
 
 
-def _offer_reply(line, notify, failed=False):
-    """A reply as text, with the offer to read it aloud. Its audio is made in the background and played only on a yes."""
-    text = " ".join(str(line or "").split())
+def _offer_reply(line, notify, failed=False, offer=True):
+    """A reply as text, with the offer to read it aloud. Its audio is made in the background and played only on a yes.
+    The screen never shows [voice cues]; the audio keeps them. offer=False shows the text alone."""
+    text = " ".join(str(line or "").split())  # with cues: the audio input
+    shown = display_text(line)
     state = "Something went wrong" if failed else "Ready"
     if not text:
         emit(notify, state, "")
         return
-    emit(notify, state, text + " " + BRIEF_OFFER_LINE)
+    if not offer:
+        emit(notify, state, shown)
+        print("reply: text shown, no audio offer", flush=True)
+        return
+    emit(notify, state, shown + " " + BRIEF_OFFER_LINE)
     print("reply: text shown, audio offered", flush=True)
     BRIEF_AUDIO.prefetch(speech_chunks(text))
     brief_offer.offer()
@@ -1780,8 +1804,8 @@ def run_voice_assistant(notify=None, controls=None, mode="ptt", mic=""):
                     armed_until[0] = time.time() + commands.CONFIRM_SECONDS
                     emit(notify, "Listening", "Say yes to confirm, or no to cancel")
             except Exception as exc:
-                print(f"\n  turn failed: {exc}")
-                emit(notify, "Something went wrong", str(exc))
+                _log_turn_failure("turn", exc)
+                emit(notify, "Something went wrong", FRIENDLY_FAILURE)
                 time.sleep(2)
                 emit(notify, "Ready", ready_text(rec.wake))
             finally:
@@ -1826,8 +1850,8 @@ def run_voice_assistant(notify=None, controls=None, mode="ptt", mic=""):
             else:
                 emit(notify, "Ready", "Didn't catch anything to paste")
         except Exception as exc:
-            print(f"  dictation failed: {exc}")
-            emit(notify, "Something went wrong", str(exc))
+            _log_turn_failure("dictation", exc)
+            emit(notify, "Something went wrong", FRIENDLY_FAILURE)
         if late_timers:
             time.sleep(2)  # let the dictation result show before she talks over it
         while late_timers:
@@ -1838,7 +1862,8 @@ def run_voice_assistant(notify=None, controls=None, mode="ptt", mic=""):
         try:
             text, ms = transcribe(audio, COMMAND_PROMPT, drop_noise=True)
         except Exception as exc:
-            emit(notify, "Something went wrong", str(exc))
+            _log_turn_failure("transcribe", exc)
+            emit(notify, "Something went wrong", FRIENDLY_FAILURE)
             return
         run_turn(text, ms)
 
