@@ -222,6 +222,7 @@ from mini_bar import FIND_IMAGE_HINT, TYPE_KEY_CODE, capture_outcome, menu_on_dr
 from mini_bar import TRANSLATE_CHIP_ID, set_translate_chip, translate_chip_on  # PR 8b
 from mini_bar import greeting_bubble_frame, orb_bubble_log_line
 import full_window as fw
+import at_picker as atp
 from ptt import PushToTalk
 from secrets_store import KEY_NAMES, OPTIONAL, get_secret, missing_secrets, save_secret
 from commands.model import CLAUDE_MODEL, MODEL_PREF
@@ -980,6 +981,44 @@ class MiniBarBackground(NSView):
         delegate = window.delegate()
         if delegate is not None and hasattr(delegate, "_finalize_mini_bar_drag"):
             delegate._finalize_mini_bar_drag(window)
+
+
+class AtPickerView(SolidFullView):
+    """The full-window picker stays within its existing window."""
+
+
+class AtPickerRow(NSButton):
+    @objc.python_method
+    def configure(self, row, index, delegate, selected):
+        self.pickIndex, self.pickDelegate = index, delegate
+        self.pickSelected = selected
+        self.setBordered_(False)
+        self.setTitle_(row["title"])
+        self.setTarget_(delegate)
+        self.setAction_("atPick:")
+        self.setAccessibilityLabel_(row["title"] + ", " + row["subtitle"])
+        width = self.frame().size.width
+        self.pickIcon = NSImageView.alloc().initWithFrame_(NSMakeRect(8, 7, 16, 16))
+        self.pickIcon.setImage_(NSWorkspace.sharedWorkspace().iconForFile_(row["path"]))
+        self.addSubview_(self.pickIcon)
+        self.pickTitle = label(row["title"], NSMakeRect(32, 6, max(20, width * .60 - 32), 20), 13)
+        self.pickTitle.setTextColor_(delegate._fw_color("ink"))
+        self.addSubview_(self.pickTitle)
+        self.pickSubtitle = label(row["subtitle"], NSMakeRect(width * .60, 6, width * .40 - 8, 20), 11)
+        self.pickSubtitle.setAlignment_(2)  # right
+        self.pickSubtitle.setTextColor_(delegate._fw_color("muted"))
+        self.addSubview_(self.pickSubtitle)
+
+    def drawRect_(self, _rect):
+        if getattr(self, "pickSelected", False):
+            self.pickDelegate._fw_color("soft").setFill()
+            NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(self.bounds(), 6, 6).fill()
+
+    def mouseDown_(self, _event):
+        self.pickDelegate._at_pick(self.pickIndex)
+
+    def acceptsFirstMouse_(self, _event):
+        return True
 
 
 class PillButton(NSButton):
@@ -4631,6 +4670,19 @@ class AppDelegate(NSObject):
         self._apply_pill_presentation()
 
     def control_textView_doCommandBySelector_(self, control, _view, selector):
+        if control == getattr(self, "full_field", None) and getattr(self, "_at", None):
+            key = str(selector)
+            if key in ("moveDown:", "moveUp:"):
+                delta = 1 if key == "moveDown:" else -1
+                self._at["selected"] = (self._at["selected"] + delta) % len(self._at["rows"])
+                self._at_render()
+                return True
+            if key in ("insertNewline:", "insertTab:"):
+                self._at_pick(self._at["selected"])
+                return True
+            if key == "cancelOperation:":
+                self._at_hide()
+                return True
         if control == getattr(self, "model_field", None) and str(selector) == "insertNewline:":
             self._save_model()
             return True
@@ -4640,10 +4692,15 @@ class AppDelegate(NSObject):
         return False
 
     def controlTextDidChange_(self, notification):
+        if notification is not None and notification.object() == getattr(self, "full_field", None):
+            self._at_update(notification.userInfo().get("NSFieldEditor"))
+            return
         if notification is not None and notification.object() == getattr(self, "mini_field", None):
             self._refresh_trailing_symbol()
 
     def controlTextDidEndEditing_(self, notification):
+        if notification is not None and notification.object() == getattr(self, "full_field", None):
+            self._at_hide()
         if notification is not None and notification.object() == getattr(self, "model_field", None):
             self._save_model()
 
@@ -4693,6 +4750,8 @@ class AppDelegate(NSObject):
             self._sync_mini_bar()
 
     def windowDidBecomeKey_(self, notification):
+        if notification is not None and notification.object() == getattr(self, "full_window", None):
+            threading.Thread(target=self._at_warm, daemon=True).start()
         if notification.object() == self.panel:
             self._main_closing = False
             self._sync_mini_bar()
@@ -4732,6 +4791,8 @@ class AppDelegate(NSObject):
             format_size(float(size.width), float(size.height)), SIZE_KEY)
 
     def windowDidResignKey_(self, notification):
+        if notification is not None and notification.object() == getattr(self, "full_window", None):
+            self._at_hide()
         panel = getattr(self, "mini_panel", None)
         if notification is None or panel is None or notification.object() != panel:
             return
@@ -5470,6 +5531,7 @@ class AppDelegate(NSObject):
     @objc.python_method
     @orb_guarded
     def _collapse_orb_from_full(self):
+        self._at_hide()
         """The exact reverse of the expand: snapshot, hide the window, shrink the ghost into the orb's origin."""
         if not self._set_orb_window_state("collapse"):
             return
@@ -5650,6 +5712,7 @@ class AppDelegate(NSObject):
         self.full_field.setFocusRingType_(1)
         self.full_field.setFont_(NSFont.systemFontOfSize_(15))
         self.full_field.setPlaceholderString_(fw.PLACEHOLDER)
+        self.full_field.setDelegate_(self)
         self.full_field.setTarget_(self)
         self.full_field.setAction_("fullSubmit:")
         root.addSubview_(self.full_field)
@@ -5660,8 +5723,14 @@ class AppDelegate(NSObject):
         self.full_mic.pillRole = "mic"
         self._set_button_symbol(self.full_mic, "mic.fill", "Hold to talk")
         root.addSubview_(self.full_mic)
+        self.full_at = AtPickerView.alloc().initWithFrame_(NSMakeRect(0, 0, 10, 10))
+        self.full_at.fill, self.full_at.stroke, self.full_at.radius = "page", "line", atp.AT_RADIUS
+        self.full_at.setHidden_(True)
+        self._at = None
+        self._at_apps = []
         self.full_chips = []
         self._sync_full_chips()
+        root.addSubview_(self.full_at)  # last: picker is above the input and chips
         self._apply_full_chrome()
         self._rebuild_full_sidebar()
         self._layout_full_window()
@@ -5743,6 +5812,74 @@ class AppDelegate(NSObject):
             b.setHidden_(frame is None)
             if frame is not None:
                 b.setFrame_(R(frame))
+        if getattr(self, "_at", None):
+            self._at_render()
+
+    @objc.python_method
+    def _at_warm(self):
+        from commands.apps import app_index
+        self._at_apps = atp.app_rows(app_index())
+        atp.warm_files()
+
+    @objc.python_method
+    def _at_update(self, editor=None):
+        editor = editor or self.full_field.currentEditor()
+        if editor is None:
+            self._at_hide()
+            return
+        text = str(self.full_field.stringValue())
+        caret = atp.py_index(text, editor.selectedRange().location)
+        query = atp.at_query(text, caret)
+        rows = atp.picker_rows(query[1], getattr(self, "_at_apps", []), atp.cached_files()) if query else []
+        if not rows:
+            self._at_hide()
+            return
+        self._at = {"start": query[0], "caret": caret, "rows": rows, "selected": 0}
+        apps = sum(row["kind"] == "app" for row in rows)
+        print("at picker: rows apps={0} files={1} qlen={2}".format(apps, len(rows) - apps, len(query[1])), flush=True)
+        self._at_render()
+
+    @objc.python_method
+    def _at_hide(self):
+        self._at = None
+        view = getattr(self, "full_at", None)
+        if view is not None:
+            view.setHidden_(True)
+
+    @objc.python_method
+    def _at_render(self):
+        if not getattr(self, "_at", None):
+            return
+        view = self.full_at
+        size = self.full_window.contentView().frame().size
+        lay = fw.full_layout(size.width, size.height, has_conversation=bool(self._full_rows()[0]))
+        frame = atp.picker_frame(lay["input"], len(self._at["rows"]), size.height, fw.TITLEBAR_H)
+        view.setFrame_(NSMakeRect(*frame))
+        for child in list(view.subviews()):
+            child.removeFromSuperview()
+        for index, row in enumerate(self._at["rows"]):
+            y = frame[3] - atp.AT_PAD - (index + 1) * atp.AT_ROW_H
+            button = AtPickerRow.alloc().initWithFrame_(NSMakeRect(atp.AT_PAD, y, frame[2] - 2 * atp.AT_PAD, atp.AT_ROW_H))
+            button.configure(row, index, self, index == self._at["selected"])
+            view.addSubview_(button)
+        view.setHidden_(False)
+        view.setNeedsDisplay_(True)
+
+    def atPick_(self, sender):
+        self._at_pick(sender.pickIndex)
+
+    @objc.python_method
+    def _at_pick(self, index):
+        state = getattr(self, "_at", None)
+        if state is None or not 0 <= index < len(state["rows"]):
+            return
+        text, caret = atp.insert_pick(str(self.full_field.stringValue()), state["start"], state["caret"], state["rows"][index])
+        self.full_field.setStringValue_(text)
+        self._at_hide()
+        self.full_window.makeFirstResponder_(self.full_field)
+        editor = self.full_field.currentEditor()
+        if editor is not None:
+            editor.setSelectedRange_((atp.utf16_len(text[:caret]), 0))
 
     @objc.python_method
     def _rebuild_full_sidebar(self):
@@ -5796,6 +5933,7 @@ class AppDelegate(NSObject):
         self._close_orb_spotlight("full window")
         if getattr(self, "full_window", None) is None:
             self._build_full_window()
+        threading.Thread(target=self._at_warm, daemon=True).start()
         self._apply_full_chrome()
         self._layout_full_window()
         self._refresh_full_window()
@@ -5806,6 +5944,7 @@ class AppDelegate(NSObject):
         self.full_window.makeFirstResponder_(self.full_field)
 
     def fullSubmit_(self, _sender):
+        self._at_hide()
         plan = submission(self.full_field.stringValue(), "")
         self._note_turn_text(self.full_field.stringValue())
         if plan is None:
@@ -5816,6 +5955,7 @@ class AppDelegate(NSObject):
 
     def fullNewChat_(self, _sender):
         """+ New chat clears what is on screen only. The typed history, Recent and the popover keep their rows."""
+        self._at_hide()
         if hasattr(self, "typed"):
             self._full_chat_cut = int(getattr(self.typed, "added", 0))
         self.full_field.setStringValue_("")

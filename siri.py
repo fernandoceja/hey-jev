@@ -430,6 +430,7 @@ ACTIONS = {
     "recreate_status": lambda _arg, _text: commands.recreate_status(),
     "show_desktop": lambda _arg, _text: commands.show_desktop(),
     "folder_open": lambda _arg, text: commands.open_folder_from_text(text),
+    "file_open": lambda _arg, text: commands.open_picked_file(text),
     "videos_open": lambda _arg, _text: commands.open_videos_folder(),
     "gods_eye_open": lambda _arg, _text: commands.open_gods_eye(),
     # Opens the local static HTML test report in the default browser. Mac-only, not bridged.
