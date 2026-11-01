@@ -3,12 +3,15 @@ import ast
 import io
 import os
 import tempfile
+import sys
 import unittest
 import wave
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from commands import voicestudio_voice as vs
+# CI deliberately installs only pytest; all HTTP is mocked in this offline contract.
+with patch.dict(sys.modules, {"requests": MagicMock()}):
+    from commands import voicestudio_voice as vs
 
 
 class VoiceStudioTests(unittest.TestCase):
