@@ -4750,6 +4750,8 @@ class AppDelegate(NSObject):
             self._sync_mini_bar()
 
     def windowDidBecomeKey_(self, notification):
+        if notification is not None and notification.object() == getattr(self, "full_window", None):
+            threading.Thread(target=self._at_warm, daemon=True).start()
         if notification.object() == self.panel:
             self._main_closing = False
             self._sync_mini_bar()

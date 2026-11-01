@@ -122,3 +122,24 @@ def test_picker_source_wiring_and_logs():
     assert "print(" not in (root / "at_picker.py").read_text()
     logs = [line.strip() for line in source.splitlines() if 'print("at picker:' in line]
     assert len(logs) == 1 and "qlen=" in logs[0]
+
+
+def test_orb_open_path_warms_picker_when_full_window_becomes_key():
+    import ast
+    from types import SimpleNamespace
+    root = Path(__file__).parents[1]
+    source = (root / "assistant_ui.py").read_text()
+    tree = ast.parse(source)
+    delegate = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "AppDelegate")
+    node = next(n for n in delegate.body if isinstance(n, ast.FunctionDef) and n.name == "windowDidBecomeKey_")
+    # Execute with another window distinct from panel, so the old main-window reveal path exits.
+    import threading
+    from unittest.mock import Mock
+    full, panel = object(), object()
+    ui = SimpleNamespace(full_window=full, panel=panel, _at_warm=Mock())
+    thread = Mock()
+    namespace = {"threading": SimpleNamespace(Thread=thread)}
+    exec(compile(ast.Module(body=[node], type_ignores=[]), "full window key", "exec"), namespace)
+    namespace["windowDidBecomeKey_"](ui, SimpleNamespace(object=lambda: full))
+    thread.assert_called_once_with(target=ui._at_warm, daemon=True)
+    thread.return_value.start.assert_called_once()
