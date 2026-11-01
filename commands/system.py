@@ -346,3 +346,36 @@ def open_case_status():
     if not entry:
         return "I couldn't open the case status site."
     return _open_in_chrome(entry["url"], "Opening the case status site.")
+
+
+def picked_file_path(text):
+    """Resolve a quoted picker path, restricted to visible files under home."""
+    from .routing import _PICKED_FILE_RE
+    match = _PICKED_FILE_RE.match(str(text or ""))
+    if not match:
+        return None
+    raw = match.group(1)
+    if any(c in raw for c in ("\0", "\n", "\r")) or any(part.startswith(".") for part in raw[2:].split("/")):
+        return None
+    home = os.path.realpath(os.path.expanduser("~"))
+    target = os.path.realpath(os.path.expanduser(raw))
+    if not target.startswith(home + os.sep):
+        return None
+    relative = os.path.relpath(target, home)
+    if any(part.startswith(".") for part in relative.split(os.sep)):
+        return None
+    return target
+
+
+def open_picked_file(text):
+    target = picked_file_path(text)
+    if target is None:
+        return "I can only open files in your home folder."
+    if not os.path.isfile(target):
+        return "I can't find that file."
+    name = os.path.basename(target)
+    try:
+        _run(("open", target))
+    except Exception:
+        return "I couldn't open {0}.".format(name)
+    return "Opening {0}.".format(name)
