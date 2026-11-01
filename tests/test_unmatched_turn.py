@@ -96,8 +96,8 @@ class Harness:
             return None  # the early local-phrase check finds nothing
         return self.decide_result
 
-    def _deliver(self, line, notify, reply_sink=None, private=False, failed=False):
-        self.delivered.append({"line": line, "failed": failed})
+    def _deliver(self, line, notify, reply_sink=None, private=False, failed=False, offer=True):
+        self.delivered.append({"line": line, "failed": failed, "offer": offer})
 
     def run(self, text):
         return self.handle(text, None, None)
@@ -107,17 +107,17 @@ class UnmatchedInputTests(unittest.TestCase):
     def test_a_typo_clarifies_without_an_error(self):
         h = Harness(("clarify", None))
         h.run("idy my downloads")  # used to raise UnboundLocalError: done
-        self.assertEqual(h.delivered, [{"line": "[line:clarify]", "failed": False}])
+        self.assertEqual(h.delivered, [{"line": "[line:clarify]", "failed": False, "offer": False}])
 
     def test_a_canned_reply_is_delivered_as_a_normal_reply(self):
         h = Harness(("reply", "info_time"))
         h.run("what's the time")
-        self.assertEqual(h.delivered, [{"line": "[line:info_time]", "failed": False}])
+        self.assertEqual(h.delivered, [{"line": "[line:info_time]", "failed": False, "offer": True}])
 
     def test_an_llm_answer_is_delivered_as_a_normal_reply(self):
         h = Harness(("llm", None), llm_answer="Paris is the capital.")
         h.run("what is the capital of france")
-        self.assertEqual(h.delivered, [{"line": "Paris is the capital.", "failed": False}])
+        self.assertEqual(h.delivered, [{"line": "Paris is the capital.", "failed": False, "offer": True}])
 
     def test_a_failed_action_still_reports_failure_not_a_reply(self):
         def boom(arg, text):
@@ -126,7 +126,7 @@ class UnmatchedInputTests(unittest.TestCase):
         payload = [(1.0, "boom", None, "unsupported", {})]
         h = Harness(("actions", payload), actions={"boom": boom})
         h.run("open the thing")
-        self.assertEqual(h.delivered, [{"line": "[line:unsupported]", "failed": True}])
+        self.assertEqual(h.delivered, [{"line": "[line:unsupported]", "failed": True, "offer": True}])
         self.assertIn(("logged", "boom"), h.events)
         self.assertNotIn("secret detail", str(h.delivered))
 
@@ -134,7 +134,7 @@ class UnmatchedInputTests(unittest.TestCase):
         payload = [(1.0, "ok", None, "ok", {})]
         h = Harness(("actions", payload), actions={"ok": lambda arg, text: "Done it."})
         h.run("do the thing")
-        self.assertEqual(h.delivered, [{"line": "Done it.", "failed": False}])
+        self.assertEqual(h.delivered, [{"line": "Done it.", "failed": False, "offer": True}])
 
 
 class RawErrorTextTests(unittest.TestCase):

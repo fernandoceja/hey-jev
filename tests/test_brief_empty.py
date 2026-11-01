@@ -227,8 +227,8 @@ class FailedActionTests(unittest.TestCase):
         for name in ("direct_speech", "_direct_speech_on", "_remember_reply"):
             exec(compile(_siri_function(name), "siri.py", "exec"), ns)
         ns["LAST_REPLY_TEXT"] = ""
-        ns["_offer_reply"] = lambda line, notify, failed=False: emits.append(
-            ("Something went wrong" if failed else "Ready", line + " Want me to read it out loud?"))
+        ns["_offer_reply"] = lambda line, notify, failed=False, offer=True: emits.append(
+            ("Something went wrong" if failed else "Ready", line + (" Want me to read it out loud?" if offer else "")))
         return ns
 
     def test_a_failed_action_ends_as_something_went_wrong_and_not_ready(self):
@@ -270,7 +270,7 @@ class FailedActionTests(unittest.TestCase):
     def test_the_failure_paths_in_siri_use_the_failed_flag(self):
         source = open(os.path.join(ROOT, "siri.py"), encoding="utf-8").read()
         self.assertIn('_deliver(say_line("unsupported"), notify, reply_sink, failed=True)', source)
-        self.assertIn("_deliver(line, notify, failed=not done)", source)
+        self.assertIn("_deliver(line, notify, failed=not done, offer=kind != \"clarify\")", source)
         self.assertIn("_deliver(line, notify, failed=True)  # a failed action plays the failure reaction", source)
 
 

@@ -79,6 +79,15 @@ def split_sentences(text):
     return [piece.strip() for piece in pieces if piece.strip()]
 
 
+_CUE = re.compile(r"\[[^\[\]\n]{1,60}\]")
+
+
+def display_text(text):
+    """The reply as it is shown on screen: voice cues such as "[clear throat]" or "[chuckling]" removed, spacing
+    collapsed. The audio is still made from the text with its cues (speech_chunks), so only the screen changes."""
+    return " ".join(_CUE.sub(" ", str(text or "")).split())
+
+
 SPEECH_CHUNK_CHARS = 150
 
 

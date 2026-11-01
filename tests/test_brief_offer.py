@@ -164,9 +164,10 @@ class SiriWiringTests(unittest.TestCase):
         self.assertIn("_deliver(text, notify, reply_sink)", _func(self.siri, "_deliver_brief"))
         offer = _func(self.siri, "_offer_reply")
         self.assertNotIn("say(", offer)
-        self.assertIn('emit(notify, state, text + " " + BRIEF_OFFER_LINE)', offer)
+        self.assertIn('emit(notify, state, shown + " " + BRIEF_OFFER_LINE)', offer)
         self.assertIn('print("reply: text shown, audio offered", flush=True)', offer)
         self.assertIn("BRIEF_AUDIO.prefetch(speech_chunks(text))", offer)
+        self.assertIn("shown = display_text(line)", offer)
 
     def test_the_local_runner_sends_info_brief_to_text_first(self):
         run_local = _func(self.siri, "_run_local")

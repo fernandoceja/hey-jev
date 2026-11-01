@@ -96,7 +96,7 @@ class ReplyWiringTests(unittest.TestCase):
         deliver = _func(self.siri, "_deliver")
         self.assertIn("if _direct_speech_on():", deliver)
         self.assertIn("say(line, notify)", deliver)
-        self.assertIn("_offer_reply(line, notify, failed=failed)", deliver)
+        self.assertIn("_offer_reply(line, notify, failed=failed, offer=offer)", deliver)
         self.assertLess(deliver.index("if _direct_speech_on():"), deliver.index("_offer_reply(line"))
 
     def test_the_bridge_and_zoe_stay_spoken(self):
@@ -117,7 +117,7 @@ class ReplyWiringTests(unittest.TestCase):
     def test_the_memo_playback_stays_spoken(self):
         turn = _func(self.siri, "_handle_turn")
         self.assertIn("if brief_paths:  # a memo is playing", turn)
-        self.assertIn("with direct_speech():\n            _deliver(line, notify, failed=not done)", turn)
+        self.assertIn("with direct_speech():\n            _deliver(line, notify, failed=not done, offer=kind != \"clarify\")", turn)
         local = _func(self.siri, "_run_local")
         self.assertIn("with direct_speech():  # the memo plays its own audio", local)
 
