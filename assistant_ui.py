@@ -983,8 +983,18 @@ class MiniBarBackground(NSView):
             delegate._finalize_mini_bar_drag(window)
 
 
+class AtPickerPanel(NSPanel):
+    """PR 8a-2: the one shared @ picker window. A child of the field's window, never key, so clicks keep focus."""
+
+    def canBecomeKeyWindow(self):
+        return False
+
+    def canBecomeMainWindow(self):
+        return False
+
+
 class AtPickerView(SolidFullView):
-    """The full-window picker stays within its existing window."""
+    """Rounded page-fill content of the picker panel, with a 1 pt line stroke in light and dark."""
 
 
 class AtPickerRow(NSButton):
@@ -993,7 +1003,7 @@ class AtPickerRow(NSButton):
         self.pickIndex, self.pickDelegate = index, delegate
         self.pickSelected = selected
         self.setBordered_(False)
-        self.setTitle_(row["title"])
+        self.setTitle_("")  # PR 8a-2: the label below is the only title, so it shows once
         self.setTarget_(delegate)
         self.setAction_("atPick:")
         self.setAccessibilityLabel_(row["title"] + ", " + row["subtitle"])
@@ -1019,6 +1029,9 @@ class AtPickerRow(NSButton):
 
     def acceptsFirstMouse_(self, _event):
         return True
+
+    def acceptsFirstResponder(self):
+        return False
 
 
 class PillButton(NSButton):
@@ -1528,6 +1541,8 @@ class AppDelegate(NSObject):
 
     def applicationDidFinishLaunching_(self, _notification):
         self.controls = queue.Queue()
+        self._at, self._at_apps = None, []  # PR 8a-2: one @ picker state for full, Home and the right-click panel
+        self._at_prev, self._at_bypass = {}, {}
         self._start_disk_watch()  # PR 7b: a background free-space read at launch, then hourly. It only reads.
         self.option_down = False
         self.ptt = PushToTalk()
@@ -2365,6 +2380,9 @@ class AppDelegate(NSObject):
     @objc.python_method
     def _local_key(self, event):
         if event.keyCode() == 53:
+            if getattr(self, "_at", None):
+                self._at_hide()  # PR 8a-2: Esc with the picker open closes only the picker
+                return None
             if self._hint_open:
                 self._close_hint()
                 return None
@@ -2660,6 +2678,7 @@ class AppDelegate(NSObject):
         from Quartz import CABasicAnimation, CAMediaTimingFunction
         if getattr(self, "_spotlight", None) is not None:
             self._close_orb_spotlight("reopen")
+        threading.Thread(target=self._at_warm, daemon=True).start()  # PR 8a-2: the panel field has the @ picker
         # Spotlight-style: on the screen that holds the mouse, centred, a quarter down from the top of its visible frame.
         mouse = NSEvent.mouseLocation()
         screens = self._visible_screens()
@@ -2765,8 +2784,8 @@ class AppDelegate(NSObject):
                 self._close_orb_spotlight("click outside")
 
         def outside_jev(event):
-            if event.window() is not win:
-                self._close_orb_spotlight("click outside")
+            if event.window() is not win and event.window() is not getattr(self, "at_panel", None):
+                self._close_orb_spotlight("click outside")  # a click on the @ picker list is not outside
             return event
 
         state["monitors"] = [
@@ -2816,6 +2835,8 @@ class AppDelegate(NSObject):
             return
         state["closing"] = True
         self._spotlight = None
+        if getattr(self, "_at", None) and self._at.get("surface") == "spotlight":
+            self._at_hide()
         for monitor in state.get("monitors", []):
             NSEvent.removeMonitor_(monitor)
         panel = state.get("panel")
@@ -2871,6 +2892,9 @@ class AppDelegate(NSObject):
     @objc.python_method
     def _send_orb_spotlight_text(self, text):
         """The same as the mini type box: submission() runs the line where it was typed."""
+        if self._at_gate(self._spotlight["field"] if getattr(self, "_spotlight", None) else None, "spotlight"):
+            return
+        self._at_hide()
         plan = submission(text, self.bar.reply)
         self._note_turn_text(text)
         if plan is None:
@@ -2911,7 +2935,10 @@ class AppDelegate(NSObject):
             state["mode"] = "text"
             state["index"] = -1
             self._set_orb_spotlight_highlight(state, -1)
+            self._at_update(state["field"], "spotlight")
             return False
+        if kind == "command" and self._at_command("spotlight", selector):
+            return True
         if selector == "moveDown:":
             self._spotlight_move(KEY_DOWN)
             return True
@@ -4670,19 +4697,9 @@ class AppDelegate(NSObject):
         self._apply_pill_presentation()
 
     def control_textView_doCommandBySelector_(self, control, _view, selector):
-        if control == getattr(self, "full_field", None) and getattr(self, "_at", None):
-            key = str(selector)
-            if key in ("moveDown:", "moveUp:"):
-                delta = 1 if key == "moveDown:" else -1
-                self._at["selected"] = (self._at["selected"] + delta) % len(self._at["rows"])
-                self._at_render()
-                return True
-            if key in ("insertNewline:", "insertTab:"):
-                self._at_pick(self._at["selected"])
-                return True
-            if key == "cancelOperation:":
-                self._at_hide()
-                return True
+        surface = self._at_surface_for(control)
+        if surface is not None and self._at_command(surface, selector):
+            return True
         if control == getattr(self, "model_field", None) and str(selector) == "insertNewline:":
             self._save_model()
             return True
@@ -4693,13 +4710,17 @@ class AppDelegate(NSObject):
 
     def controlTextDidChange_(self, notification):
         if notification is not None and notification.object() == getattr(self, "full_field", None):
-            self._at_update(notification.userInfo().get("NSFieldEditor"))
+            self._at_update(self.full_field, "full")
+            return
+        if notification is not None and notification.object() == getattr(self, "home_field", None):
+            self._at_update(self.home_field, "home")
             return
         if notification is not None and notification.object() == getattr(self, "mini_field", None):
             self._refresh_trailing_symbol()
 
     def controlTextDidEndEditing_(self, notification):
-        if notification is not None and notification.object() == getattr(self, "full_field", None):
+        surface = self._at_surface_for(notification.object() if notification is not None else None)
+        if surface is not None and getattr(self, "_at", None) and self._at.get("surface") == surface:
             self._at_hide()
         if notification is not None and notification.object() == getattr(self, "model_field", None):
             self._save_model()
@@ -4740,6 +4761,8 @@ class AppDelegate(NSObject):
                 self._expand_orb_to_full("")  # PR 8: a restored full window re-docks the orb
 
     def windowWillClose_(self, notification):
+        if notification is not None and self._at_host_is(notification.object()):
+            self._at_hide()
         if notification.object() == getattr(self, "full_window", None):
             # Closing the full window collapses the orb back out of the divider (PR 6a), then hands back to the orb.
             self._collapse_orb_from_full()
@@ -4750,7 +4773,7 @@ class AppDelegate(NSObject):
             self._sync_mini_bar()
 
     def windowDidBecomeKey_(self, notification):
-        if notification is not None and notification.object() == getattr(self, "full_window", None):
+        if notification is not None and notification.object() in (getattr(self, "full_window", None), self.panel):
             threading.Thread(target=self._at_warm, daemon=True).start()
         if notification.object() == self.panel:
             self._main_closing = False
@@ -4791,7 +4814,7 @@ class AppDelegate(NSObject):
             format_size(float(size.width), float(size.height)), SIZE_KEY)
 
     def windowDidResignKey_(self, notification):
-        if notification is not None and notification.object() == getattr(self, "full_window", None):
+        if notification is not None and self._at_host_is(notification.object()):
             self._at_hide()
         panel = getattr(self, "mini_panel", None)
         if notification is None or panel is None or notification.object() != panel:
@@ -5531,8 +5554,8 @@ class AppDelegate(NSObject):
     @objc.python_method
     @orb_guarded
     def _collapse_orb_from_full(self):
-        self._at_hide()
         """The exact reverse of the expand: snapshot, hide the window, shrink the ghost into the orb's origin."""
+        self._at_hide()
         if not self._set_orb_window_state("collapse"):
             return
         full = self.full_window
@@ -5723,14 +5746,8 @@ class AppDelegate(NSObject):
         self.full_mic.pillRole = "mic"
         self._set_button_symbol(self.full_mic, "mic.fill", "Hold to talk")
         root.addSubview_(self.full_mic)
-        self.full_at = AtPickerView.alloc().initWithFrame_(NSMakeRect(0, 0, 10, 10))
-        self.full_at.fill, self.full_at.stroke, self.full_at.radius = "page", "line", atp.AT_RADIUS
-        self.full_at.setHidden_(True)
-        self._at = None
-        self._at_apps = []
         self.full_chips = []
         self._sync_full_chips()
-        root.addSubview_(self.full_at)  # last: picker is above the input and chips
         self._apply_full_chrome()
         self._rebuild_full_sidebar()
         self._layout_full_window()
@@ -5822,48 +5839,195 @@ class AppDelegate(NSObject):
         atp.warm_files()
 
     @objc.python_method
-    def _at_update(self, editor=None):
-        editor = editor or self.full_field.currentEditor()
-        if editor is None:
+    def _at_surface_for(self, control):
+        """Which picker surface a field is: the full window input, the Home box, or the right-click panel field."""
+        if control is None:
+            return None
+        if control == getattr(self, "full_field", None):
+            return "full"
+        if control == getattr(self, "home_field", None):
+            return "home"
+        state = getattr(self, "_spotlight", None)
+        if state is not None and control == state.get("field"):
+            return "spotlight"
+        return None
+
+    @objc.python_method
+    def _at_host_is(self, window):
+        state = getattr(self, "_at", None)
+        return bool(state) and window is not None and state["field"].window() == window
+
+    @objc.python_method
+    def _at_rows_for(self, query):
+        return atp.picker_rows(query, getattr(self, "_at_apps", []), atp.cached_files())
+
+    @objc.python_method
+    def _at_update(self, field, surface):
+        """Typing or a paste in one of the three fields. The ⌃⌥J mini pill has no picker."""
+        if field is None:
             self._at_hide()
             return
-        text = str(self.full_field.stringValue())
-        caret = atp.py_index(text, editor.selectedRange().location)
-        query = atp.at_query(text, caret)
-        rows = atp.picker_rows(query[1], getattr(self, "_at_apps", []), atp.cached_files()) if query else []
+        text = str(field.stringValue() or "")
+        prev = self._at_prev.get(surface, "")
+        self._at_prev[surface] = text
+        self._at_bypass[surface] = None  # any edit re-arms the Return gate
+        editor = field.currentEditor()
+        caret = atp.py_index(text, editor.selectedRange().location) if editor is not None else len(text)
+        hit = atp.at_query(text, caret)
+        token = None
+        if hit:
+            token = (hit[0], atp.token_end(text, hit[0]), hit[1])
+        elif atp.is_bulk_insert(prev, text):
+            tokens = atp.at_tokens(text)
+            token = tokens[0] if tokens else None
+        rows = self._at_rows_for(token[2]) if token else []
         if not rows:
             self._at_hide()
             return
-        self._at = {"start": query[0], "caret": caret, "rows": rows, "selected": 0}
-        apps = sum(row["kind"] == "app" for row in rows)
-        print("at picker: rows apps={0} files={1} qlen={2}".format(apps, len(rows) - apps, len(query[1])), flush=True)
+        self._at_open(field, surface, token, rows, "pick")
+
+    @objc.python_method
+    def _at_open(self, field, surface, token, rows, mode):
+        if getattr(self, "_at", None) and self._at["field"] != field:
+            self._at_hide()
+        self._at = {"surface": surface, "field": field, "start": token[0], "end": token[1],
+                    "rows": rows, "selected": 0, "mode": mode, "query": token[2]}
+        if mode == "pick":
+            apps = sum(row["kind"] == "app" for row in rows)
+            print("at picker: rows apps={0} files={1} qlen={2} surface={3}".format(
+                apps, len(rows) - apps, len(token[2]), surface), flush=True)
         self._at_render()
 
     @objc.python_method
+    def _at_command(self, surface, selector):
+        """Keys while the picker is open, the same on every surface. True means the key was used."""
+        state = getattr(self, "_at", None)
+        if not state or state["surface"] != surface:
+            return False
+        key = str(selector)
+        if key in ("moveDown:", "moveUp:"):
+            if state["mode"] == "pick":
+                delta = 1 if key == "moveDown:" else -1
+                state["selected"] = (state["selected"] + delta) % len(state["rows"])
+                self._at_render()
+            return True  # never moves the right-click panel's own rows
+        if key in ("insertNewline:", "insertTab:"):
+            if state["mode"] == "pick":
+                self._at_pick(state["selected"])
+            elif key == "insertNewline:":
+                self._at_send_as_typed(surface)  # notice mode: the bypass is set, so this sends as typed
+            return True
+        if key == "cancelOperation:":
+            self._at_hide()  # backup for the Esc check in _local_key
+            return True
+        return False
+
+    @objc.python_method
+    def _at_send_as_typed(self, surface):
+        self._at_hide()
+        if surface == "full":
+            self.fullSubmit_(None)
+        elif surface == "home":
+            self.homeSubmit_(None)
+        elif surface == "spotlight":
+            self._spotlight_return()
+
+    @objc.python_method
+    def _at_gate(self, field, surface):
+        """Return never silently sends an unresolved @token. True means the caller must not send."""
+        if field is None:
+            return False
+        text = str(field.stringValue() or "")
+        decision, token = atp.submit_decision(text, self._at_rows_for, self._at_bypass.get(surface))
+        print("at picker: gate {0} surface={1}".format(decision, surface), flush=True)
+        if decision == "pick":
+            self._at_open(field, surface, token, self._at_rows_for(token[2]), "pick")
+            return True
+        if decision == "nomatch":
+            self._at_open(field, surface, token, [], "notice")
+            self._at_bypass[surface] = text
+            return True
+        self._at_bypass[surface] = None
+        return False
+
+    @objc.python_method
     def _at_hide(self):
+        state = getattr(self, "_at", None)
         self._at = None
-        view = getattr(self, "full_at", None)
-        if view is not None:
-            view.setHidden_(True)
+        panel = getattr(self, "at_panel", None)
+        if panel is None:
+            return
+        parent = panel.parentWindow()
+        if parent is not None:
+            parent.removeChildWindow_(panel)
+        panel.orderOut_(None)
+
+    @objc.python_method
+    def _at_anchor(self, state):
+        """(anchor rect in screen points, prefer) for the active surface."""
+        field = state["field"]
+        host = field.window()
+        if state["surface"] == "full":
+            size = self.full_window.contentView().frame().size
+            lay = fw.full_layout(size.width, size.height, has_conversation=bool(self._full_rows()[0]))
+            rect = host.convertRectToScreen_(NSMakeRect(*lay["input"]))
+            prefer = "above"
+        elif state["surface"] == "home":
+            rect = host.convertRectToScreen_(field.convertRect_toView_(field.bounds(), None))
+            prefer = "below"
+        else:
+            rect = host.frame()  # the list sits under the right-click panel, not over its rows
+            prefer = "below"
+        return (float(rect.origin.x), float(rect.origin.y), float(rect.size.width), float(rect.size.height)), prefer
 
     @objc.python_method
     def _at_render(self):
-        if not getattr(self, "_at", None):
+        state = getattr(self, "_at", None)
+        if not state:
             return
-        view = self.full_at
-        size = self.full_window.contentView().frame().size
-        lay = fw.full_layout(size.width, size.height, has_conversation=bool(self._full_rows()[0]))
-        frame = atp.picker_frame(lay["input"], len(self._at["rows"]), size.height, fw.TITLEBAR_H)
-        view.setFrame_(NSMakeRect(*frame))
-        for child in list(view.subviews()):
-            child.removeFromSuperview()
-        for index, row in enumerate(self._at["rows"]):
-            y = frame[3] - atp.AT_PAD - (index + 1) * atp.AT_ROW_H
-            button = AtPickerRow.alloc().initWithFrame_(NSMakeRect(atp.AT_PAD, y, frame[2] - 2 * atp.AT_PAD, atp.AT_ROW_H))
-            button.configure(row, index, self, index == self._at["selected"])
-            view.addSubview_(button)
-        view.setHidden_(False)
+        host = state["field"].window()
+        if host is None:
+            self._at_hide()
+            return
+        anchor, prefer = self._at_anchor(state)
+        screen = host.screen() or NSScreen.mainScreen()
+        vis = screen.visibleFrame()
+        visible = (float(vis.origin.x), float(vis.origin.y), float(vis.size.width), float(vis.size.height))
+        count = len(state["rows"]) if state["mode"] == "pick" else 1
+        x, y, w, h = atp.picker_screen_frame(anchor, count, visible, prefer)
+        panel = getattr(self, "at_panel", None)
+        if panel is None:
+            panel = AtPickerPanel.alloc().initWithContentRect_styleMask_backing_defer_(
+                NSMakeRect(x, y, w, h), NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel, 2, False)
+            panel.setOpaque_(False)
+            panel.setBackgroundColor_(NSColor.clearColor())
+            panel.setHasShadow_(True)
+            panel.setHidesOnDeactivate_(False)
+            panel.setReleasedWhenClosed_(False)
+            panel.setFloatingPanel_(False)
+            self.at_panel = panel
+        panel.setFrame_display_(NSMakeRect(x, y, w, h), False)
+        view = AtPickerView.alloc().initWithFrame_(NSMakeRect(0, 0, w, h))
+        view.fill, view.stroke, view.radius = "page", "line", atp.AT_RADIUS
+        if state["mode"] == "pick":
+            for index, row in enumerate(state["rows"]):
+                row_y = h - atp.AT_PAD - (index + 1) * atp.AT_ROW_H
+                button = AtPickerRow.alloc().initWithFrame_(NSMakeRect(atp.AT_PAD, row_y, w - 2 * atp.AT_PAD, atp.AT_ROW_H))
+                button.configure(row, index, self, index == state["selected"])
+                view.addSubview_(button)
+        else:
+            notice = label(atp.NOTICE_TEMPLATE.format(state["query"]),
+                           NSMakeRect(atp.AT_PAD + 8, atp.AT_PAD + 6, w - 2 * atp.AT_PAD - 16, 20), 12)
+            notice.setTextColor_(self._fw_color("muted"))
+            view.addSubview_(notice)
+        panel.setContentView_(view)
         view.setNeedsDisplay_(True)
+        if panel.parentWindow() != host:
+            if panel.parentWindow() is not None:
+                panel.parentWindow().removeChildWindow_(panel)
+            panel.setLevel_(host.level() + 1)
+            host.addChildWindow_ordered_(panel, 1)  # NSWindowAbove: the list moves with its window
+        panel.orderFront_(None)
 
     def atPick_(self, sender):
         self._at_pick(sender.pickIndex)
@@ -5871,13 +6035,17 @@ class AppDelegate(NSObject):
     @objc.python_method
     def _at_pick(self, index):
         state = getattr(self, "_at", None)
-        if state is None or not 0 <= index < len(state["rows"]):
+        if state is None or state["mode"] != "pick" or not 0 <= index < len(state["rows"]):
             return
-        text, caret = atp.insert_pick(str(self.full_field.stringValue()), state["start"], state["caret"], state["rows"][index])
-        self.full_field.setStringValue_(text)
+        field = state["field"]
+        text, caret = atp.insert_pick(str(field.stringValue() or ""), state["start"], state["end"], state["rows"][index])
+        field.setStringValue_(text)
+        self._at_prev[state["surface"]] = text
         self._at_hide()
-        self.full_window.makeFirstResponder_(self.full_field)
-        editor = self.full_field.currentEditor()
+        host = field.window()
+        if host is not None:
+            host.makeFirstResponder_(field)
+        editor = field.currentEditor()
         if editor is not None:
             editor.setSelectedRange_((atp.utf16_len(text[:caret]), 0))
 
@@ -5944,6 +6112,8 @@ class AppDelegate(NSObject):
         self.full_window.makeFirstResponder_(self.full_field)
 
     def fullSubmit_(self, _sender):
+        if self._at_gate(self.full_field, "full"):
+            return
         self._at_hide()
         plan = submission(self.full_field.stringValue(), "")
         self._note_turn_text(self.full_field.stringValue())
@@ -6753,9 +6923,12 @@ class AppDelegate(NSObject):
         )
 
     def homeSubmit_(self, _sender):
+        if self._at_gate(getattr(self, "home_field", None), "home"):
+            return
         field = getattr(self, "home_field", None)
         if field is None:
             return
+        self._at_hide()
         plan = submission(field.stringValue(), "")
         self._note_turn_text(field.stringValue())
         if plan is None:

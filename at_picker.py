@@ -1,4 +1,4 @@
-"""Pure full-window @ picker helpers. File discovery runs only in the warmer."""
+"""Pure @ picker helpers for the full window, Home and the orb right-click panel. File discovery runs only in the warmer."""
 import os
 import re
 import threading
@@ -11,6 +11,9 @@ AT_PAD = 6.0
 AT_GAP = 6.0
 AT_RADIUS = 12.0
 AT_QUERY_MAX = 40
+AT_MIN_W = 300.0
+AT_MAX_W = 640.0
+NOTICE_TEMPLATE = 'No app or file matches \u201c@{0}\u201d. Press Return again to send as typed.'
 FILE_ROOTS = ("~/Desktop", "~/Documents", "~/Downloads")
 FILE_DEPTH = 2
 FILE_SCAN_CAP = 2000
@@ -136,14 +139,62 @@ def picker_rows(query, apps, files):
     return apps[:na] + files[:nf]
 
 
-def insert_pick(text, start, caret, row):
+def at_tokens(text):
+    """Every @token: "@" at index 0 or after whitespace, then 1..AT_QUERY_MAX non-whitespace characters."""
+    tokens = []
+    for start, char in enumerate(text):
+        if char != "@" or (start and not text[start - 1].isspace()):
+            continue
+        end = start + 1
+        while end < len(text) and not text[end].isspace():
+            end += 1
+        query = text[start + 1:end]
+        if 1 <= len(query) <= AT_QUERY_MAX:
+            tokens.append((start, end, query))
+    return tokens
+
+
+def token_end(text, start):
+    """Index just after the non-whitespace run that starts at an "@"."""
+    end = start + 1
+    while end < len(text) and not text[end].isspace():
+        end += 1
+    return end
+
+
+def is_bulk_insert(old_text, new_text):
+    """Paste, dictation or autocomplete: more than one character arrived in one edit."""
+    return len(new_text or "") - len(old_text or "") > 1
+
+
+def submit_decision(text, rows_for, bypass_text):
+    """("send", None), ("pick", token) or ("nomatch", token) for the first @token in the line."""
+    tokens = at_tokens(text)
+    if not tokens or (bypass_text is not None and text == bypass_text):
+        return "send", None
+    token = tokens[0]
+    return ("pick", token) if rows_for(token[2]) else ("nomatch", token)
+
+
+def insert_pick(text, start, end, row):
+    """Replace the whole token text[start:end] with the pick and one space. Returns (text, caret)."""
     inserted = row["insert"] + " "
-    return text[:start] + inserted + text[caret:], start + len(inserted)
+    return text[:start] + inserted + text[end:], start + len(inserted)
 
 
-def picker_frame(input_rect, row_count, window_h, top_limit):
-    x, y, width, height = input_rect
-    list_h = row_count * AT_ROW_H + 2 * AT_PAD
-    above = y + height + AT_GAP
-    list_y = above if above + list_h <= window_h - top_limit else y - AT_GAP - list_h
-    return x, list_y, width, list_h
+def picker_screen_frame(anchor, row_count, visible, prefer):
+    """(x, y, w, h) in screen points, bottom-left origin, for a list beside anchor inside visible."""
+    ax, ay, aw, ah = anchor
+    vx, vy, vw, vh = visible
+    width = max(AT_MIN_W, min(AT_MAX_W, aw))
+    height = row_count * AT_ROW_H + 2 * AT_PAD
+    x = max(vx, min(ax, vx + vw - width))
+    above = ay + ah + AT_GAP
+    below = ay - AT_GAP - height
+    fits_above = above + height <= vy + vh
+    fits_below = below >= vy
+    if prefer == "above":
+        y = above if fits_above or not fits_below else below
+    else:
+        y = below if fits_below or not fits_above else above
+    return x, y, width, height
