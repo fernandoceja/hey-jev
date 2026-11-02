@@ -416,6 +416,7 @@ from .system import (
     _open_in_chrome,
     open_site_from_text,
     open_folder_from_text,
+    open_picked_file,
     open_videos_folder,
     videos_folder_path,
     OPENING_VIDEOS,
