@@ -1185,13 +1185,13 @@ def quick_commands(hazard_alerts=False, game_library=None, nx_ports=None):
     from commands.rea_modes import menu as rea_menu
     return (
         websites_menu(),
+        nxnative_menu(nx_ports),
+        *build_rows,
+        rea_menu(bool(STUDY.status())),
         _menu_text("tutor", "Tutor", "tutor me", "graduationcap"),
         *([_menu_text("play_zelda", "Play Zelda", "play zelda", "gamecontroller")]
           if "ocarina" in installed else []),
         *console_menus(game_library, installed=installed),
-        nxnative_menu(nx_ports),
-        *build_rows,
-        rea_menu(bool(STUDY.status())),
         _menu_text("cleanmymac_scan", "CleanMyMac Scan", "cleanmymac scan", "sparkles"),
         _menu_text("offline_brain_on", "Start Offline Brain", "start offline brain", "brain"),
         _menu_text("offline_brain_off", "Stop Offline Brain", "stop offline brain", "brain.head.profile"),
