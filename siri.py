@@ -992,7 +992,9 @@ def fetch_tts(text):
     """
     if voicestudio_voice.provider() == "VOICESTUDIO":
         try:
-            return voicestudio_voice.fetch_speech(text, CACHE_DIR)
+            result = voicestudio_voice.fetch_speech(text, CACHE_DIR)
+            if result is not None:
+                return result
         except Exception as exc:
             print("  voicestudio failed: {0}; using Fish fallback".format(type(exc).__name__), flush=True)
     os.makedirs(CACHE_DIR, exist_ok=True)
@@ -1344,8 +1346,11 @@ def _ask_jev_turn(question, notify):
 def say(line, notify):
     print(f"  say: {line}")
     emit(notify, "Speaking", line)
-    tts_ms = speak(line)
-    print(f"  speech {'cached' if tts_ms == 0 else str(tts_ms) + 'ms'}")
+    try:
+        tts_ms = speak(line)
+        print(f"  speech {'cached' if tts_ms == 0 else str(tts_ms) + 'ms'}")
+    finally:
+        emit(notify, "Ready", "")
 
 
 def say_local(text, notify):
@@ -1356,6 +1361,8 @@ def say_local(text, notify):
         subprocess.run(["/usr/bin/say", text or ""], check=False)
     except Exception as exc:
         print(f"  say-local failed: {type(exc).__name__}")
+    finally:
+        emit(notify, "Ready", "Spoken on this Mac only")
 
 
 def _deliver(line, notify, reply_sink=None, private=False, failed=False, offer=True):
@@ -1491,25 +1498,31 @@ class BriefAudio:
                 print(f"brief: rest of the brief ready in {int((time.monotonic() - begun) * 1000)}ms", flush=True)
 
         def player():
-            first = True
-            for index, event in enumerate(events):
-                event.wait(self.SENTENCE_WAIT_SECONDS)
-                if generation != self.generation:
-                    return
-                path = paths[index]
-                if not path:
-                    continue
-                if first:
-                    print(f"tts: first audio in {int((time.monotonic() - started) * 1000)}ms", flush=True)
-                    first = False
-                subprocess.run(["afplay", path])
-                if generation != self.generation:
-                    return
-            emit(notify, "Ready", "")
+            try:
+                first = True
+                for index, event in enumerate(events):
+                    event.wait(self.SENTENCE_WAIT_SECONDS)
+                    if generation != self.generation:
+                        return
+                    path = paths[index]
+                    if not path:
+                        continue
+                    if first:
+                        print(f"tts: first audio in {int((time.monotonic() - started) * 1000)}ms", flush=True)
+                        first = False
+                    subprocess.run(["afplay", path])
+                    if generation != self.generation:
+                        return
+            finally:
+                emit(notify, "Ready", "")
 
         emit(notify, "Speaking", "Reading the brief")
-        threading.Thread(target=rest, name="brief-rest", daemon=True).start()
-        threading.Thread(target=player, name="brief-play", daemon=True).start()
+        try:
+            threading.Thread(target=rest, name="brief-rest", daemon=True).start()
+            threading.Thread(target=player, name="brief-play", daemon=True).start()
+        except Exception:
+            emit(notify, "Ready", "")
+            raise
 
 
 BRIEF_AUDIO = BriefAudio()
