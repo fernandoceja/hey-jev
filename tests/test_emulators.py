@@ -94,9 +94,9 @@ class ActionTests(unittest.TestCase):
         run.assert_called_once_with(["open", "/Applications/Ryujinx.app"])
         self.assertEqual(spoken, "Firing up the Switch. Have fun!")
 
-    def test_melee_and_slippi_are_gone(self):
+    def test_no_separate_melee_or_slippi_emulator(self):
         self.assertFalse(any(g["id"] == "melee" for g in games.GAMES))
-        for p in ("play melee", "play smash", "open slippi", "turn off melee"):
+        for p in ("play smash", "open slippi"):
             self.assertIsNone(games.match_game(p), p)
             self.assertIsNone(games.match_game_close(p), p)
         src = open(os.path.join(ROOT, "commands", "games.py"), encoding="utf-8").read()

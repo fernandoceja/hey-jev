@@ -78,7 +78,8 @@ class TestGames(unittest.TestCase):
             self.assertEqual(games.open_game_from_text("play zelda", platform="darwin", exists=lambda p: True),
                              "I couldn't open Ocarina of Time.")
 
-    def test_quick_command(self):
+    @mock.patch("commands.game_library.installed_apps", return_value=("ocarina",))
+    def test_quick_command(self, installed):
         from mini_bar import plus_item
         item = plus_item("play_zelda")
         self.assertEqual(item["phrase"], "play zelda")
@@ -222,6 +223,7 @@ class TestDolphinGames(unittest.TestCase):
         self.assertEqual(g["needs_verb"], ("xg",))
 
 
+@mock.patch("commands.game_library.installed_apps", return_value=("switch", "wiiu", "gamecube"))
 class EmulatorQuickCommandTests(unittest.TestCase):
     """Quick Commands type the same phrases as voice, so they hit the same emulator handlers."""
 
@@ -236,14 +238,14 @@ class EmulatorQuickCommandTests(unittest.TestCase):
         walk(mini_bar.plus_menu(can_attach=False))
         return {it.get("id"): it for it in flat}
 
-    def test_play_items_open_the_right_emulator(self):
+    def test_play_items_open_the_right_emulator(self, installed):
         from commands.games import match_game
         items = self._items()
         for item_id, emu in (("play_switch", "switch"), ("play_wiiu", "wiiu"),
                              ("play_gamecube", "gamecube")):
             self.assertEqual(match_game(items[item_id]["phrase"])["id"], emu)
 
-    def test_each_console_submenu_turns_off_its_emulator(self):
+    def test_each_console_submenu_turns_off_its_emulator(self, installed):
         import mini_bar
         from commands.games import match_game_close
         menus = {m["id"]: m for m in mini_bar.console_menus({})}

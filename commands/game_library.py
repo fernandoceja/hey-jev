@@ -168,15 +168,23 @@ def scan(roots=None, title_lookup=ryujinx_title):
     return found
 
 
-_CACHE = {"at": 0.0, "games": None}
+_CACHE = {"at": 0.0, "games": None, "installed": ()}
 
 
-def library(refresh=False, now=time.monotonic, scanner=scan):
-    """Cached scan. The menu calls this each time it opens; a rescan runs at most every CACHE_SECONDS."""
+def library(refresh=False, now=time.monotonic, scanner=scan, exists=os.path.exists):
+    """Cache playable ROMs and app detection together for CACHE_SECONDS.
+
+    scan() still inventories every console, including ROMs without an emulator.
+    """
     t = now()
     if refresh or _CACHE["games"] is None or t - _CACHE["at"] > CACHE_SECONDS:
+        from .games import GAMES, emulator_installed
+        _CACHE["installed"] = tuple(g["id"] for g in GAMES
+                                    if emulator_installed(g["id"], exists))
         try:
-            _CACHE["games"] = scanner()
+            scanned = scanner()
+            _CACHE["games"] = {c: items if c in _CACHE["installed"] else []
+                               for c, items in scanned.items()}
         except Exception:
             _CACHE["games"] = {c: [] for c in CONSOLES}
         _CACHE["at"] = t
@@ -189,3 +197,9 @@ def find_game(game_id, games=None):
             if g["id"] == game_id:
                 return console, g
     return None
+
+
+def installed_apps(refresh=False):
+    """App ids from the same cached snapshot as the playable library."""
+    library(refresh=refresh)
+    return _CACHE["installed"]

@@ -490,3 +490,14 @@ Run `.venv/bin/python -m commands.dashboard` (or `.venv/bin/python commands/dash
 
 Say "have an agent build X" or "ask an agent to research X". Jev writes a local JSON job file to `~/Library/Application Support/Hey Jev/agent-jobs/<id>.json` (`AGENT_JOBS_DIR`, or `JEV_AGENT_JOBS_DIR`) with `id`, `text`, `time`, and `status: "queued"`, then says "Got it, I queued that for your agent." Say "what's my agent doing" or "agent status" to hear the latest job statuses from those files after your external agent (Grok Bot Chief of Staff) picks them up and updates them. Requests about paying, buying, purchasing, or transferring money are rejected before any file is written. No network, no sockets, and no new API keys. Mac-only: `agent_job` and `agent_status` are not on the iPhone bridge allowlist.
 
+
+## Games and emulators (Mac-only)
+
+Console commands in Quick Commands (including Spotlight) appear only when the
+matching emulator app is installed in `/Applications` or `~/Applications`:
+Ryujinx for Switch, Cemu for Wii U, and Dolphin for GameCube. ROMs without an
+installed emulator are excluded from the playable library. Detection refreshes
+with the library cache (30 seconds), so reinstalling an emulator brings its
+commands back automatically. Missing emulator voice requests get a short reply.
+The Zelda port shortcut also requires soh.app. NXNative Games and List games
+continue to discover native port apps such as High On Life.
