@@ -28,6 +28,7 @@ SPOTLIGHT_ROWS = (
     ("Capture Area", "captureAreaWand:", "wand.and.stars", "⌘W"),
     ("Mark Up", "orbMenuMarkup:", "pencil.tip.crop.circle", ""),
     ("Type to Jev", "focusTypeField:", "keyboard", "⌃⌥J"),
+    ("Quick Commands", "quickCommands:", "bolt.fill", ""),
     ("Settings", "showSettings:", "gearshape", "⌘,"),
     ("Quit", "terminate:", "power", "⌘Q"),
 )
@@ -61,3 +62,13 @@ def spotlight_frame(visible, size=None):
     x = min(max(x, vx), max(vx, vx + vw - w))
     y = min(max(y, vy), max(vy, vy + vh - h))
     return (x, y, w, h)
+
+
+def search_rows(query="", quick=False, items=None):
+    """Search both navigation and the shared command titles and phrases."""
+    from mini_bar import quick_command_leaves
+    query = query.strip().casefold()
+    commands = tuple((item["title"], ("send:" + item["phrase"] if item["kind"] == "text" else "menu:" + item["id"]), item["symbol"], "")
+                     for item in quick_command_leaves(items))
+    rows = commands if quick else SPOTLIGHT_ROWS + (commands if query else ())
+    return tuple(row for row in rows if not query or query in (row[0] + " " + row[1]).casefold())

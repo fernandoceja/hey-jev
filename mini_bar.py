@@ -1169,34 +1169,9 @@ def nxnative_menu(ports=None):
             "symbol": "gamecontroller.fill", "items": tuple(rows)}
 
 
-def plus_menu(can_attach=None, recording=False, clipboard_entries=None,
-              clipboard_paused=False, zoe_mode=False, hazard_alerts=False, game_library=None,
-              nx_ports=None):
-    """Items for the + button. Only commands the app already runs.
-
-    `can_attach` defaults to attachments_supported(). Attach File is included
-    only when that is true. Screenshot does not pretend to send the picture.
-    No item sends money or reads My Love. Mail and Messages stay unsent.
-    Zoe Mode is checked while kid-safe mode is on. Turning it off is a
-    separate confirmation in the window, not a phrase this menu types.
-    Hazard Check types "hazard check", the same phrase as the voice command.
-    Tutor types "tutor me". Typed text in the pill is sent as "tutor me on ...".
-    Open God's Eye types "open god's eye", the same phrase as the voice command.
-    The alert row is Turn On Hazard Alerts until `hazard_alerts` is true,
-    then Turn Off Hazard Alerts, and it is checked while alerts are on.
-    """
-    if can_attach is None:
-        can_attach = attachments_supported()
-    shots = (
-        _menu_action("screenshot_full", "Full Screen", "screenshot_full", "camera.viewfinder"),
-        _menu_action("screenshot_area", "Area", "screenshot_area", "selection.pin.in.out"),
-        _menu_action("screenshot_window", "Window", "screenshot_window", "macwindow"),
-    )
-    if recording:
-        record = _menu_action("record_stop", "Stop Screen Recording", "record_stop", "stop.circle.fill")
-    else:
-        record = _menu_action("record_start", "Start Screen Recording", "record_start", "record.circle")
-    quick = (
+def quick_commands(hazard_alerts=False, game_library=None, nx_ports=None):
+    """The shared Quick Commands tree for every surface."""
+    return (
         websites_menu(),
         _menu_text("tutor", "Tutor", "tutor me", "graduationcap"),
         _menu_text("play_zelda", "Play Zelda", "play zelda", "gamecontroller"),
@@ -1238,6 +1213,45 @@ def plus_menu(can_attach=None, recording=False, clipboard_entries=None,
             ),
         },
     )
+
+
+def quick_command_leaves(items=None, parents=()):
+    """Flatten the tree with breadcrumb titles, preserving the original phrases."""
+    for item in quick_commands() if items is None else items:
+        if item["kind"] == "submenu":
+            yield from quick_command_leaves(item["items"], parents + (item["title"],))
+        elif item["kind"] in ("text", "game_launch"):
+            yield dict(item, title=" / ".join(parents + (item["title"],)))
+
+
+def plus_menu(can_attach=None, recording=False, clipboard_entries=None,
+              clipboard_paused=False, zoe_mode=False, hazard_alerts=False, game_library=None,
+              nx_ports=None):
+    """Items for the + button. Only commands the app already runs.
+
+    `can_attach` defaults to attachments_supported(). Attach File is included
+    only when that is true. Screenshot does not pretend to send the picture.
+    No item sends money or reads My Love. Mail and Messages stay unsent.
+    Zoe Mode is checked while kid-safe mode is on. Turning it off is a
+    separate confirmation in the window, not a phrase this menu types.
+    Hazard Check types "hazard check", the same phrase as the voice command.
+    Tutor types "tutor me". Typed text in the pill is sent as "tutor me on ...".
+    Open God's Eye types "open god's eye", the same phrase as the voice command.
+    The alert row is Turn On Hazard Alerts until `hazard_alerts` is true,
+    then Turn Off Hazard Alerts, and it is checked while alerts are on.
+    """
+    if can_attach is None:
+        can_attach = attachments_supported()
+    shots = (
+        _menu_action("screenshot_full", "Full Screen", "screenshot_full", "camera.viewfinder"),
+        _menu_action("screenshot_area", "Area", "screenshot_area", "selection.pin.in.out"),
+        _menu_action("screenshot_window", "Window", "screenshot_window", "macwindow"),
+    )
+    if recording:
+        record = _menu_action("record_stop", "Stop Screen Recording", "record_stop", "stop.circle.fill")
+    else:
+        record = _menu_action("record_start", "Start Screen Recording", "record_start", "record.circle")
+    quick = quick_commands(hazard_alerts, game_library, nx_ports)
     zoe_item = _menu_action(
         "zoe_mode",
         "Turn Off Zoe Mode\u2026" if zoe_mode else "Zoe Mode",

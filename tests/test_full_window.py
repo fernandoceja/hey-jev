@@ -131,7 +131,7 @@ class SidebarTests(unittest.TestCase):
     def test_sections_in_order(self):
         items, _ = fw.sidebar_items()
         heads = [i["label"] for i in items if i["kind"] == "head"]
-        self.assertEqual(heads, ["Get started", "Today", "Captures", "Games", "Mac", "Pages", "Recent"])
+        self.assertEqual(heads, ["Get started", "Today", "Captures", "Games", "Mac", "Quick Commands", "Pages", "Recent"])
 
     def test_get_started_has_three_rows(self):
         self.assertEqual(len(fw.GET_STARTED), 3)
