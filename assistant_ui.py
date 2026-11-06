@@ -4,13 +4,18 @@ The window is resizable. Frames come from assistant_layout so a smaller window
 reflows instead of clipping. The frame is saved under HeyJevMainWindow, and a
 missing or offscreen frame is centered.
 """
+import functools
 import json
+import math
 import os
 import re
 import queue
+import subprocess
 import sys
 import threading
 import time
+import traceback
+from datetime import datetime
 
 import objc
 from AppKit import (
@@ -22,12 +27,21 @@ from AppKit import (
     NSApplicationActivationPolicyRegular,
     NSBackingStoreBuffered,
     NSBezierPath,
+    NSBitmapImageFileTypePNG,
+    NSBitmapImageRep,
     NSBox,
     NSButton,
     NSColor,
+    NSCursor,
+    NSRoundLineCapStyle,
+    NSRoundLineJoinStyle,
+    NSTextAlignmentCenter,
+    NSTrackingCursorUpdate,
+    NSTrackingMouseMoved,
     NSEvent,
     NSEventMaskFlagsChanged,
     NSEventMaskKeyDown,
+    NSEventModifierFlagCommand,
     NSEventModifierFlagControl,
     NSEventModifierFlagOption,
     NSImageView,
@@ -79,6 +93,7 @@ from AppKit import (
     NSWindowCollectionBehaviorCanJoinAllSpaces,
     NSWindowCollectionBehaviorFullScreenAuxiliary,
     NSWindowCollectionBehaviorStationary,
+    NSWindowCollectionBehaviorTransient,
     NSImageScaleProportionallyUpOrDown,
     NSViewHeightSizable,
     NSViewWidthSizable,
@@ -86,7 +101,9 @@ from AppKit import (
     NSWindowStyleMaskResizable,
     NSWindowStyleMaskTitled,
 )
-from Foundation import NSInsetRect, NSAttributedString, NSMutableAttributedString, NSString, NSMakeSize, NSObject, NSURL, NSTimer, NSUserDefaults
+from Foundation import NSSelectorFromString, NSStringFromSelector
+from Foundation import NSProcessInfo
+from Foundation import NSInsetRect, NSAttributedString, NSMutableAttributedString, NSString, NSMakeSize, NSObject, NSURL, NSTimer, NSUserDefaults, NSDate, NSDefaultRunLoopMode
 from assistant_layout import (
     DEFAULT_H,
     DEFAULT_W,
@@ -100,11 +117,16 @@ from assistant_layout import (
 )
 from bubble import Bubble
 from dictation import HISTORY, read_vocab, save_vocab
+from markup import LINE_WIDTH_PT, Strokes, can_save, image_line_width, markup_folder, reference_rect, temp_capture_now, to_image_points
 from mini_bar import (
     ORIGIN_KEY,
+    PEEK_PREF_KEY,
     PLACEHOLDER,
+    chip_title,
     PREF_KEY,
     SIZE_KEY,
+    peek_enabled_from_pref,
+    peek_plan,
     BarController,
     BAR_COLLECTION,
     PillPresentation,
@@ -162,7 +184,7 @@ from mini_bar import (
     smooth,
     submission,
     trailing_symbol,
-    type_focus_hotkey,
+    control_option_command_held,
     TypedHistory,
     PillKeyFocus,
     caret_range,
@@ -171,8 +193,36 @@ from mini_bar import (
     undo_main_reveal,
     is_our_app,
 )
-from orb_view import make_orb_view, orb_frame
+from orb_motion import (
+    CURSOR_POLL_SECONDS, DRAG_TICK_SECONDS, PEEK_FADE_SECONDS, PEEK_RETRACT_DISTANCE, SPRING_FOLLOW,
+    SPRING_PEEK_IN, SPRING_PEEK_OUT, SPRING_SNAP,
+    drag_roughness, drag_stretch, follow_step, in_hot_zone, peek_frame, should_retract,
+    spring, spring_done,
+)
+from orb_motion import peek_edge_allowed  # PR 8: a tuck never sits on a shared display edge
+from orb_motion import dock_strip, rects_overlap
+from orb_character import disk_check, is_thanks, reaction_for_status, rough_drag
+from orb_tuck import (TUCK_CLOSE_SIZE, TUCK_FADE_IN_SECONDS, TUCK_FADE_OUT_SECONDS, TUCK_KEY, TUCK_SECONDS,
+                      decode_tuck, encode_tuck, tuck_close_centre, tuck_edge, tuck_eye_centres, tucked_frame,
+                      untucked_frame)
+from orb_view import make_orb_view, orb_frame, orb_state
+from orb_motion import (  # PR 6a: expand from the orb, dock on the divider, collapse back
+    EXPAND_START_SCALE, ORB_STATE_COLLAPSING, ORB_STATE_EXPANDING, ORB_STATE_IDLE, ORB_STATE_OPEN,
+    SPRING_EXPAND, collapse_target, dock_panel_level, dock_point, expand_rects, orb_window_next,
+)
+from commands.brief_offer import BRIEF_OFFER_LINE, OFFER_WINDOW_SECONDS
+from commands.translate_chip import TranslateChip, log_line  # PR 8b
+from area_hotkey import CARBON_CONTROL, CARBON_OPTION, AreaCaptureHotKey, CarbonHotKey
+from orb_motion import (
+    MENU_CORNER_RADIUS, MENU_FILL_HOVER, MENU_FILL_REST, MENU_FAN_START_SCALE, MENU_HOVER_SECONDS,
+    HINT_SECONDS, HINT_TEXT_INSET, RESULT_FADE_SECONDS, RESULT_SCALE_FROM, SPRING_MENU_FAN, TEXT_ACTIONS,
+    hint_layout, menu_layout, result_frames, result_layout,
+)
+from mini_bar import FIND_IMAGE_HINT, TYPE_KEY_CODE, capture_outcome, menu_on_drop, orb_action_menu
+from mini_bar import TRANSLATE_CHIP_ID, set_translate_chip, translate_chip_on  # PR 8b
+from mini_bar import greeting_bubble_frame, orb_bubble_log_line
 import full_window as fw
+import at_picker as atp
 from ptt import PushToTalk
 from secrets_store import KEY_NAMES, OPTIONAL, get_secret, missing_secrets, save_secret
 from commands.model import CLAUDE_MODEL, MODEL_PREF
@@ -183,6 +233,7 @@ KeyablePanel = keyable_panel(NSPanel)
 
 NORMAL, FLOATING = 0, 3  # NSNormalWindowLevel, NSFloatingWindowLevel
 BAR_LEVEL = 28  # above NSStatusWindowLevel, so the capsule stays over status items
+MARKUP_LEVEL = 101  # NSPopUpMenuWindowLevel: the mark up overlay covers the menu bar and the Dock (PR 5b)
 SIDEBAR_MATERIAL = 7  # NSVisualEffectMaterialSidebar
 HINTS = {"ptt": "Hold right Option to talk", "wake": "Say “Hey Jev”, then your command"}
 MODES = ("ptt", "wake")
@@ -347,6 +398,26 @@ def hid_modifier_flags():
         return None
 
 
+def orb_guarded(fn):
+    """Log a traceback instead of letting an error in an orb transition take the app down.
+
+    On failure the orb settles on what is really on screen, so the state is never left stuck.
+    """
+    @functools.wraps(fn)
+    def wrapper(self, *args, **kwargs):
+        try:
+            return fn(self, *args, **kwargs)
+        except Exception:
+            print("  orb transition failed in {0}:".format(fn.__name__))
+            traceback.print_exc()
+            try:
+                self._orb_recover()
+            except Exception:
+                traceback.print_exc()
+            return None
+    return wrapper
+
+
 class CenteredFieldCell(NSTextFieldCell):
     """One line of text, vertically centered in the field. Placeholder included."""
 
@@ -452,6 +523,73 @@ class SolidFullView(NSView):
             path.stroke()
 
 
+class FullSidebarDocView(NSView):
+    """Document view of the sidebar list. Flipped, so the list reads from the top down."""
+
+    def isFlipped(self):
+        return True
+
+
+class FullRowButton(NSButton):
+    """A sidebar row, or a pill button (New chat, Jev Home). Drawn in REA tokens, so light and dark both follow."""
+
+    def initWithFrame_(self, frame):
+        self = objc.super(FullRowButton, self).initWithFrame_(frame)
+        if self is None:
+            return None
+        self.setBordered_(False)
+        self.setTitle_("")
+        self.setAction_("fullRow:")
+        self.rowLabel = ""
+        self.rowStyle = "row"
+        self.rowAction = ("", "")
+        return self
+
+    @objc.python_method
+    def configure(self, label, style="row", action=("", ""), target=None, action_name=None):
+        self.rowLabel = str(label or "")
+        self.rowStyle = str(style or "row")
+        self.rowAction = tuple(action or ("", ""))
+        if action_name:
+            self.setAction_(action_name)
+        if target is not None:
+            self.setTarget_(target)
+        self.setToolTip_(self.rowLabel)
+        self.setAccessibilityLabel_(self.rowLabel)
+        self.setNeedsDisplay_(True)
+
+    def drawRect_(self, _rect):
+        try:
+            b = self.bounds()
+            w, h = float(b.size.width), float(b.size.height)
+            if w < 4.0 or h < 4.0:
+                return
+            dark = "Dark" in str(self.effectiveAppearance().name())
+            pill = getattr(self, "rowStyle", "row") == "pill"
+            pressed = bool(self.isHighlighted())
+            if pill or pressed:
+                radius = min(h / 2.0, 14.0) if pill else 8.0
+                path = NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+                    NSInsetRect(NSMakeRect(0, 0, w, h), 0.5, 0.5), radius, radius)
+                r, g, bl = fw.token("soft" if pill else "line", dark)
+                NSColor.colorWithSRGBRed_green_blue_alpha_(r, g, bl, 1.0).setFill()
+                path.fill()
+                if pill:
+                    r, g, bl = fw.token("line", dark)
+                    NSColor.colorWithSRGBRed_green_blue_alpha_(r, g, bl, 1.0).setStroke()
+                    path.setLineWidth_(1.0)
+                    path.stroke()
+            r, g, bl = fw.token("ink", dark)
+            attrs = {NSFontAttributeName: NSFont.systemFontOfSize_weight_(13.0 if pill else 12.5, 0.3 if pill else 0.0),
+                     NSForegroundColorAttributeName: NSColor.colorWithSRGBRed_green_blue_alpha_(r, g, bl, 1.0)}
+            text = NSString.stringWithString_(getattr(self, "rowLabel", "") or "")
+            size = text.sizeWithAttributes_(attrs)
+            x = (w - size.width) / 2.0 if pill else 10.0
+            text.drawAtPoint_withAttributes_(NSMakePoint(x, (h - size.height) / 2.0), attrs)
+        except Exception as exc:
+            print(f"  row draw failed: {exc}")
+
+
 class PassThroughEffect(NSVisualEffectView):
     """HUD vibrancy that does not eat clicks. Drag and resize stay on the pill."""
 
@@ -501,6 +639,24 @@ class PillChromeOverlay(NSView):
             print(f"  mini bar draw failed: {exc}")
 
 
+PILL_SLIDE_PT = 24.0  # PR 8: the input pill slides this far from the orb's side when it comes back
+PILL_SLIDE_SECONDS = 0.18  # easeOut
+
+
+def _notify_pill_drag(delegate, began):
+    """Tell the app delegate that an orb drag started (hide the input pill) or ended (slide it back out)."""
+    if delegate is None:
+        return
+    hook = getattr(delegate, "_pill_drag_began" if began else "_pill_drag_ended", None)
+    if hook is not None:
+        hook()
+
+
+def _drag_clock():
+    """Seconds since boot, the same base as NSEvent timestamps, so drag samples share one clock (PR 7b dizzy)."""
+    return float(NSProcessInfo.processInfo().systemUptime())
+
+
 class MiniBarBackground(NSView):
     """Capsule behind the controls. The background moves it. The outer edge resizes it.
 
@@ -530,14 +686,13 @@ class MiniBarBackground(NSView):
             delegate.refreshPillChrome_(self)
 
     @objc.python_method
-    def _collapsed_click_or_drag(self, window, delegate, _event):
-        """A still click opens the typing pill. A drag moves the capsule."""
+    def _tuck_press(self, window, delegate, orb):
+        """A press on a tucked orb. A drag past the threshold untucks at once and carries on as a drag. A still click
+        slides the orb back out fully, then behaves like a normal orb click (the full window).
+        """
         down = NSEvent.mouseLocation()
         start = (float(down.x), float(down.y))
-        frame = window.frame()
-        origin = (float(frame.origin.x), float(frame.origin.y))
         mask = NSEventMaskLeftMouseDragged | NSEventMaskLeftMouseUp
-        moved = False
         while True:
             nxt = window.nextEventMatchingMask_(mask)
             if nxt is None or nxt.type() == NSEventTypeLeftMouseUp:
@@ -545,15 +700,191 @@ class MiniBarBackground(NSView):
             now = NSEvent.mouseLocation()
             point = (float(now.x), float(now.y))
             if capsule_click_moved(start, point):
+                delegate._tuck_untuck("drag", instant=True)
+                frame = window.frame()
+                origin = (float(frame.origin.x), float(frame.origin.y))
+                self._drag_with_spring(window, delegate, orb, point, origin)
+                return
+        delegate._tuck_untuck("click", instant=False, then=lambda: delegate.expandOrbToFull_(orb))
+
+    def _collapsed_click_or_drag(self, window, delegate, _event):
+        """A still click opens the typing pill. A drag moves the capsule.
+
+        Press squashes the orb. A drag trails the cursor on a spring, stretches along its travel, then
+        jiggles and springs to the snap target on release. Reduce Motion keeps the exact-follow drag.
+        """
+        if delegate is not None and getattr(delegate, "_orb_docked_now", lambda: False)():
+            self._docked_click(window, delegate)  # PR 6a: a docked orb never drags off the divider
+            return
+        if delegate is not None and getattr(delegate, "_tuck_active", lambda: False)():
+            self._tuck_press(window, delegate, getattr(delegate, "orb_view", None))  # PR 8: a tucked orb
+            return
+        self._finish_drag_settle()
+        if delegate is not None and hasattr(delegate, "_peek_before_drag"):
+            delegate._peek_before_drag()  # a tucked orb comes out to its inset before the drag starts
+        orb = getattr(delegate, "orb_view", None) if delegate is not None else None
+        animate = orb is not None and not orb.reduceMotion
+        if animate:
+            orb.pressSquash()
+        down = NSEvent.mouseLocation()
+        start = (float(down.x), float(down.y))
+        frame = window.frame()
+        origin = (float(frame.origin.x), float(frame.origin.y))
+        if animate:
+            moved = self._drag_with_spring(window, delegate, orb, start, origin)
+            if moved:
+                return  # the settle spring finalizes the drag when it lands
+        else:
+            moved = self._drag_exactly(window, start, origin)
+            if moved and delegate is not None and hasattr(delegate, "_finalize_mini_bar_drag"):
+                delegate._finalize_mini_bar_drag(window)
+                return
+        if delegate is not None:
+            delegate._orb_dragging = False  # only a press that never moved gets here; a real drag clears it on finalize
+        if animate:
+            orb.releaseSquash()
+        if not moved and delegate is not None and hasattr(delegate, "expandOrbToFull_"):
+            delegate.expandOrbToFull_(self)  # PR 6a (R2): a single click on the idle orb opens the full window
+
+    @objc.python_method
+    def _docked_click(self, window, delegate):
+        """Wait for the release, then collapse. Drags are ignored so the docked orb stays on the divider."""
+        while True:
+            nxt = window.nextEventMatchingMask_(NSEventMaskLeftMouseUp)
+            if nxt is None or nxt.type() == NSEventTypeLeftMouseUp:
+                break
+        delegate.collapseOrbFromFull_(self)
+
+    def rightMouseDown_(self, event):
+        """Right-click on the orb opens the Spotlight-style Jev panel (PR 8). The popover stays on Control-Option-J.
+
+        A docked orb ignores it, as before.
+        """
+        window = self.window()
+        delegate = window.delegate() if window is not None else None
+        docked = getattr(delegate, "_orb_docked_now", lambda: False)()
+        if delegate is not None and hasattr(delegate, "_open_orb_spotlight") and not docked:
+            delegate._open_orb_spotlight()  # PR 8: the Spotlight-style Jev panel beside the orb
+            return
+        objc.super(MiniBarBackground, self).rightMouseDown_(event)
+
+    @objc.python_method
+    def _drag_exactly(self, window, start, origin):
+        """Reduce Motion: the window follows the cursor exactly, as before PR 3a. Returns True once it moved."""
+        mask = NSEventMaskLeftMouseDragged | NSEventMaskLeftMouseUp
+        moved = False
+        samples = []
+        while True:
+            nxt = window.nextEventMatchingMask_(mask)
+            if nxt is None or nxt.type() == NSEventTypeLeftMouseUp:
+                break
+            now = NSEvent.mouseLocation()
+            point = (float(now.x), float(now.y))
+            if capsule_click_moved(start, point):
+                if not moved:
+                    _notify_pill_drag(window.delegate(), began=True)  # PR 8: the input pill hides at once
                 moved = True
             if moved:
                 x, y = drag_origin(origin, start, point)
                 window.setFrameOrigin_(NSMakePoint(x, y))
-        if moved and delegate is not None and hasattr(delegate, "_finalize_mini_bar_drag"):
-            delegate._finalize_mini_bar_drag(window)
+                samples.append((_drag_clock(), point[0], point[1]))  # PR 7b: RAW cursor samples, for dizzy
+        if moved:
+            _notify_pill_drag(window.delegate(), began=False)  # PR 8: the pill slides back out from the orb's side
+            delegate = window.delegate()
+            if delegate is not None:
+                delegate.last_drag_roughness = drag_roughness(samples)
+        return moved
+
+    @objc.python_method
+    def _drag_with_spring(self, window, delegate, orb, start, origin):
+        """Spring drag. Returns True once it moved past the click threshold, and then starts the release.
+
+        The window trails the cursor target with follow_step, and the orb stretches from the smoothed speed.
+        The loop wakes at DRAG_TICK_SECONDS even when the mouse is still, which is the 60 Hz tick. A nested
+        tracking loop blocks on events, so an NSTimer is not used here. The release uses an NSTimer.
+        """
+        mask = NSEventMaskLeftMouseDragged | NSEventMaskLeftMouseUp
+        pos, vel, smoothed = origin, (0.0, 0.0), (0.0, 0.0)
+        samples = []
+        moved = False
+        last = time.monotonic()
+        while True:
+            nxt = window.nextEventMatchingMask_untilDate_inMode_dequeue_(
+                mask, NSDate.dateWithTimeIntervalSinceNow_(DRAG_TICK_SECONDS), NSDefaultRunLoopMode, True)
+            if nxt is not None and nxt.type() == NSEventTypeLeftMouseUp:
+                break
+            now = NSEvent.mouseLocation()
+            point = (float(now.x), float(now.y))
+            stamp = time.monotonic()
+            dt = stamp - last
+            last = stamp
+            if not moved:
+                if not capsule_click_moved(start, point):
+                    continue
+                moved = True
+                _notify_pill_drag(delegate, began=True)  # PR 8: the input pill hides at once
+            pos, vel = follow_step(pos, vel, drag_origin(origin, start, point), dt, *SPRING_FOLLOW)
+            smoothed = (smooth(smoothed[0], vel[0]), smooth(smoothed[1], vel[1]))
+            window.setFrameOrigin_(NSMakePoint(pos[0], pos[1]))
+            orb.dragStretch(*drag_stretch(smoothed[0], smoothed[1]))
+            samples.append((_drag_clock(), point[0], point[1]))  # PR 7b: RAW cursor samples, not the spring path
+        if not moved:
+            return False
+        _notify_pill_drag(delegate, began=False)  # PR 8: the pill slides back out from the orb's side
+        orb.dropJiggle()
+        if delegate is not None:
+            delegate.last_drag_roughness = drag_roughness(samples)
+            size = window.frame().size
+            target = finish_drag(pos, (float(size.width), float(size.height)), delegate._visible_screens())
+            self._start_drag_settle(window, delegate, pos, vel, target)
+        return True
+
+    @objc.python_method
+    def _start_drag_settle(self, window, delegate, origin, velocity, target):
+        """Spring the window from where the drag left it to the snap target, at 60 Hz."""
+        self._stop_drag_settle()
+        self._drag_settle = {"window": window, "delegate": delegate, "origin": origin,
+                             "velocity": velocity, "target": target, "started": time.monotonic()}
+        self._drag_settle_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            DRAG_TICK_SECONDS, self, "settleDragTick:", None, True)
+
+    def settleDragTick_(self, _timer):
+        state = getattr(self, "_drag_settle", None)
+        if state is None:
+            self._stop_drag_settle()
             return
-        if not moved and delegate is not None and hasattr(delegate, "expandMiniBar_"):
-            delegate.expandMiniBar_(self)
+        elapsed = time.monotonic() - state["started"]
+        axes = [spring(elapsed, state["origin"][i], state["target"][i], *SPRING_SNAP,
+                       v0=state["velocity"][i]) for i in (0, 1)]
+        done = all(spring_done(axes[i][0], axes[i][1], state["target"][i]) for i in (0, 1))
+        x, y = state["target"] if done else (axes[0][0], axes[1][0])
+        state["window"].setFrameOrigin_(NSMakePoint(x, y))
+        if done:
+            self._land_drag_settle(state)
+
+    @objc.python_method
+    def _land_drag_settle(self, state):
+        self._stop_drag_settle()
+        delegate = state["delegate"]
+        if delegate is not None and hasattr(delegate, "_finalize_mini_bar_drag"):
+            delegate._finalize_mini_bar_drag(state["window"])
+
+    @objc.python_method
+    def _finish_drag_settle(self):
+        """A new press during the settle lands the window at once, so the drag never stacks two springs."""
+        state = getattr(self, "_drag_settle", None)
+        if state is None:
+            return
+        state["window"].setFrameOrigin_(NSMakePoint(state["target"][0], state["target"][1]))
+        self._land_drag_settle(state)
+
+    @objc.python_method
+    def _stop_drag_settle(self):
+        timer = getattr(self, "_drag_settle_timer", None)
+        if timer is not None:
+            timer.invalidate()
+        self._drag_settle_timer = None
+        self._drag_settle = None
 
     def mouseDown_(self, event):
         window = self.window()
@@ -628,17 +959,79 @@ class MiniBarBackground(NSView):
         frame = window.frame()
         start = (float(down.x), float(down.y))
         origin = (float(frame.origin.x), float(frame.origin.y))
+        began = False
+        samples = []
         mask = NSEventMaskLeftMouseDragged | NSEventMaskLeftMouseUp
         while True:
             nxt = window.nextEventMatchingMask_(mask)
             if nxt is None or nxt.type() == NSEventTypeLeftMouseUp:
                 break
             now = NSEvent.mouseLocation()
+            if not began:
+                began = True
+                _notify_pill_drag(window.delegate(), began=True)  # PR 8: the input pill hides at once
+            samples.append((_drag_clock(), float(now.x), float(now.y)))  # PR 7b: RAW cursor, for dizzy
             x, y = drag_origin(origin, start, (float(now.x), float(now.y)))
             window.setFrameOrigin_(NSMakePoint(x, y))
+        if began:
+            _notify_pill_drag(window.delegate(), began=False)  # PR 8: the pill slides back out from the orb's side
+            delegate = window.delegate()
+            if delegate is not None:
+                delegate.last_drag_roughness = drag_roughness(samples)
         delegate = window.delegate()
         if delegate is not None and hasattr(delegate, "_finalize_mini_bar_drag"):
             delegate._finalize_mini_bar_drag(window)
+
+
+class AtPickerPanel(NSPanel):
+    """PR 8a-2: the one shared @ picker window. A child of the field's window, never key, so clicks keep focus."""
+
+    def canBecomeKeyWindow(self):
+        return False
+
+    def canBecomeMainWindow(self):
+        return False
+
+
+class AtPickerView(SolidFullView):
+    """Rounded page-fill content of the picker panel, with a 1 pt line stroke in light and dark."""
+
+
+class AtPickerRow(NSButton):
+    @objc.python_method
+    def configure(self, row, index, delegate, selected):
+        self.pickIndex, self.pickDelegate = index, delegate
+        self.pickSelected = selected
+        self.setBordered_(False)
+        self.setTitle_("")  # PR 8a-2: the label below is the only title, so it shows once
+        self.setTarget_(delegate)
+        self.setAction_("atPick:")
+        self.setAccessibilityLabel_(row["title"] + ", " + row["subtitle"])
+        width = self.frame().size.width
+        self.pickIcon = NSImageView.alloc().initWithFrame_(NSMakeRect(8, 7, 16, 16))
+        self.pickIcon.setImage_(NSWorkspace.sharedWorkspace().iconForFile_(row["path"]))
+        self.addSubview_(self.pickIcon)
+        self.pickTitle = label(row["title"], NSMakeRect(32, 6, max(20, width * .60 - 32), 20), 13)
+        self.pickTitle.setTextColor_(delegate._fw_color("ink"))
+        self.addSubview_(self.pickTitle)
+        self.pickSubtitle = label(row["subtitle"], NSMakeRect(width * .60, 6, width * .40 - 8, 20), 11)
+        self.pickSubtitle.setAlignment_(2)  # right
+        self.pickSubtitle.setTextColor_(delegate._fw_color("muted"))
+        self.addSubview_(self.pickSubtitle)
+
+    def drawRect_(self, _rect):
+        if getattr(self, "pickSelected", False):
+            self.pickDelegate._fw_color("soft").setFill()
+            NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(self.bounds(), 6, 6).fill()
+
+    def mouseDown_(self, _event):
+        self.pickDelegate._at_pick(self.pickIndex)
+
+    def acceptsFirstMouse_(self, _event):
+        return True
+
+    def acceptsFirstResponder(self):
+        return False
 
 
 class PillButton(NSButton):
@@ -899,6 +1292,89 @@ class PillTextField(NSTextField):
         objc.super(PillTextField, self).mouseDown_(event)
 
 
+def set_action_fill(layer, alpha):
+    """Animate a round action button's white fill to `alpha` over MENU_HOVER_SECONDS, easeOut (PR 5a hover)."""
+    from Quartz import CAMediaTimingFunction, CATransaction
+    if layer is None:
+        return
+    CATransaction.begin()
+    CATransaction.setAnimationDuration_(MENU_HOVER_SECONDS)
+    CATransaction.setAnimationTimingFunction_(CAMediaTimingFunction.functionWithName_("easeOut"))
+    layer.setBackgroundColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, alpha).CGColor())
+    CATransaction.commit()
+
+
+class ActionMenuButton(NSView):
+    """One row of the action menu: a round circle with its symbol, and the label beside it.
+
+    A plain NSView, not NSButton, so the circle is a layer we control. hitTest_ answers every point inside the
+    row with the row itself, so the symbol and label never take the click. Hover fills the circle only.
+    """
+
+    circle_layer = None
+    pick_target = None  # the delegate; its actionMenuPick_ takes this view, and identifier() is the action id
+
+    def acceptsFirstMouse_(self, _event):
+        return True  # the panel never becomes key, so a first click must still count
+
+    def hitTest_(self, point):
+        from AppKit import NSMouseInRect
+        superview = self.superview()
+        if superview is None:
+            return None
+        return self if NSMouseInRect(point, self.frame(), superview.isFlipped()) else None
+
+    def mouseDown_(self, _event):
+        if self.pick_target is not None:
+            self.pick_target.actionMenuPick_(self)
+
+    def updateTrackingAreas(self):
+        objc.super(ActionMenuButton, self).updateTrackingAreas()
+        areas = self.trackingAreas()
+        if areas is not None:
+            for area in list(areas):
+                self.removeTrackingArea_(area)
+        options = NSTrackingMouseEnteredAndExited | NSTrackingActiveAlways | NSTrackingInVisibleRect
+        area = NSTrackingArea.alloc().initWithRect_options_owner_userInfo_(NSMakeRect(0, 0, 0, 0), options, self, None)
+        self.addTrackingArea_(area)
+
+    def mouseEntered_(self, _event):
+        set_action_fill(self.circle_layer, MENU_FILL_HOVER)
+
+    def mouseExited_(self, _event):
+        set_action_fill(self.circle_layer, MENU_FILL_REST)
+
+
+class HintClickView(NSView):
+    """Covers the Find Image hint. A click on it dismisses the hint."""
+
+    dismiss_target = None
+
+    def acceptsFirstMouse_(self, _event):
+        return True
+
+    def mouseDown_(self, _event):
+        if self.dismiss_target is not None:
+            self.dismiss_target.hintDismiss_(self)
+
+
+def result_pill(title, frame, scale, target, action):
+    """Copy and Close on the result panel: a small rounded pill with a faint white fill."""
+    pill = NSButton.alloc().initWithFrame_(NSMakeRect(*frame))
+    pill.setBordered_(False)
+    pill.setTitle_(title)
+    pill.setFont_(NSFont.systemFontOfSize_weight_(12, 0.4))
+    pill.setContentTintColor_(NSColor.whiteColor())
+    pill.setWantsLayer_(True)
+    pill.layer().setCornerRadius_(frame[3] / 2.0)
+    pill.layer().setContentsScale_(scale)
+    pill.layer().setBackgroundColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.14).CGColor())
+    pill.setTarget_(target)
+    pill.setAction_(action)
+    pill.setAccessibilityLabel_(title)
+    return pill
+
+
 class ClickAwayView(NSView):
     def mouseDown_(self, event):
         self.window().makeFirstResponder_(None)  # clicking empty space takes focus out of the search and text boxes
@@ -911,9 +1387,163 @@ class ClickAwayView(NSView):
             on_resize()
 
 
+class MarkupWindow(NSWindow):
+    """One per screen for Mark up. Borderless, so it can still become key and take Esc and ⌘Z."""
+
+    def canBecomeKeyWindow(self):
+        return True
+
+    def canBecomeMainWindow(self):
+        return False
+
+
+class MarkupHint(NSTextField):
+    """The one-line hint at the top of the overlay. It never takes a click, so the drawing under it still gets it."""
+
+    def hitTest_(self, _point):
+        return None
+
+
+class MarkupView(NSView):
+    """Covers one screen. Draws every stroke in its own coordinates and passes mouse and keys to the delegate.
+
+    Strokes are kept in global screen points by the delegate. This view only offsets them by its own origin, so a
+    stroke that crosses two displays shows on both. Each stroke is one CAShapeLayer, and each layer has its own
+    contentsScale.
+    """
+
+    markup_owner = None
+    markup_origin = (0.0, 0.0)  # this screen's origin, in global points
+    markup_scale = 2.0  # backing scale of the window on this screen
+    markup_layers = None  # [CAShapeLayer, points drawn] for each stroke, in stroke order
+
+    def acceptsFirstMouse_(self, _event):
+        return True
+
+    def acceptsFirstResponder(self):
+        return True
+
+    def isOpaque(self):
+        return False
+
+    def resetCursorRects(self):
+        self.addCursorRect_cursor_(self.bounds(), NSCursor.crosshairCursor())
+
+    def updateTrackingAreas(self):
+        objc.super(MarkupView, self).updateTrackingAreas()
+        for area in list(self.trackingAreas() or []):
+            self.removeTrackingArea_(area)
+        options = NSTrackingCursorUpdate | NSTrackingMouseMoved | NSTrackingActiveAlways | NSTrackingInVisibleRect
+        self.addTrackingArea_(NSTrackingArea.alloc().initWithRect_options_owner_userInfo_(
+            NSMakeRect(0, 0, 0, 0), options, self, None))
+
+    def cursorUpdate_(self, _event):
+        NSCursor.crosshairCursor().set()
+
+    def mouseMoved_(self, _event):
+        NSCursor.crosshairCursor().set()
+
+    def mouseDown_(self, event):
+        if self.markup_owner is not None:
+            self.markup_owner._markup_begin(self._markup_global_point(event))
+
+    def mouseDragged_(self, event):
+        if self.markup_owner is not None:
+            self.markup_owner._markup_extend(self._markup_global_point(event))
+
+    def mouseUp_(self, _event):
+        if self.markup_owner is not None:
+            self.markup_owner._markup_end()
+
+    def keyDown_(self, event):
+        if self.markup_owner is not None and self.markup_owner._markup_key(event):
+            return
+        objc.super(MarkupView, self).keyDown_(event)
+
+    def performKeyEquivalent_(self, event):
+        # ⌘Z can belong to a menu item, so it is taken here before the menu sees it.
+        if self.markup_owner is not None and self.markup_owner._markup_key(event):
+            return True
+        return objc.super(MarkupView, self).performKeyEquivalent_(event)
+
+    @objc.python_method
+    def _markup_global_point(self, event):
+        loc = event.locationInWindow()
+        frame = self.window().frame()
+        return (float(frame.origin.x + loc.x), float(frame.origin.y + loc.y))
+
+    @objc.python_method
+    def sync_strokes(self, strokes):
+        """Make the layers match the strokes: add, remove, or rebuild the path of a stroke that grew."""
+        from Quartz import CAShapeLayer  # lazy, as in orb_layers.py
+        root = self.layer()
+        if self.markup_layers is None:
+            self.markup_layers = []
+        while len(self.markup_layers) > len(strokes):
+            layer, _count = self.markup_layers.pop()
+            layer.removeFromSuperlayer()
+        ox, oy = self.markup_origin
+        for index, stroke in enumerate(strokes):
+            if index >= len(self.markup_layers):
+                layer = CAShapeLayer.layer()
+                layer.setFillColor_(None)
+                layer.setStrokeColor_(NSColor.systemRedColor().CGColor())
+                layer.setLineWidth_(LINE_WIDTH_PT)
+                layer.setLineCap_("round")
+                layer.setLineJoin_("round")
+                layer.setContentsScale_(self.markup_scale)
+                layer.setFrame_(self.bounds())
+                root.addSublayer_(layer)
+                self.markup_layers.append([layer, 0])
+            entry = self.markup_layers[index]
+            if entry[1] != len(stroke):
+                path = NSBezierPath.bezierPath()
+                x, y = stroke[0]
+                path.moveToPoint_(NSMakePoint(x - ox, y - oy))
+                for x, y in stroke[1:]:
+                    path.lineToPoint_(NSMakePoint(x - ox, y - oy))
+                entry[0].setPath_(path.CGPath())
+                entry[1] = len(stroke)
+
+
 class AppDelegate(NSObject):
+    # PR 3b peek-dock state. _peek_edge is None when the orb is not tucked.
+    _tuck = None  # PR 8: the edge tuck. A dict while the orb is tucked, else None
+    _peek_edge = None  # "left" or "right"
+    _peek_screen = None  # visible frame the orb is tucked against
+    _peek_inset = None  # window origin (x, y) at the 12 pt inset: the position that is saved
+    _peek_showing = True  # target state: True = inset, False = tucked at the rest
+    _peek_anim = None  # {from, to, k, c, t0} while sliding
+    _peek_fading = False  # Reduce Motion fade in progress
+    _peek_fade_token = None
+    _peek_timer = None
+    _peek_interval = None
+    _peek_outside = 0.0  # seconds the cursor has been far from the orb
+    _peek_last = None  # monotonic time of the last tick, or None after a pause
+    _peek_latched = False  # tucked while the cursor was already at the edge: wait for it to leave first
+    # PR 5a action menu, opened after a real drop (R3). Closed by a click, Esc, a click away or CHOICE_SECONDS.
+    _action_menu_open = False
+    _action_menu_panel = None
+    _action_menu_buttons = ()  # (button, centre in the panel's own coordinates), one per row
+    _action_menu_monitors = ()
+    _action_menu_observing = False  # the workspace activation observer is registered
+    # Summarize and Translate answer in a dark panel beside the orb, not in the Jev window.
+    _result_panel = None
+    _result_open = False
+    _result_heading = ""
+    _result_text = ""
+    # PR 5a: the Find Image hint bubble. Nonactivating; closes on its own, on Esc, or on a click on it.
+    _hint_panel = None
+    _hint_open = False
+    _hint_shown_at = 0.0
+    _action_menu_shown_at = 0.0
+    _orb_dragging = False
+
     def applicationDidFinishLaunching_(self, _notification):
         self.controls = queue.Queue()
+        self._at, self._at_apps = None, []  # PR 8a-2: one @ picker state for full, Home and the right-click panel
+        self._at_prev, self._at_bypass = {}, {}
+        self._start_disk_watch()  # PR 7b: a background free-space read at launch, then hourly. It only reads.
         self.option_down = False
         self.ptt = PushToTalk()
         self.worker_started = False
@@ -986,6 +1616,16 @@ class AppDelegate(NSObject):
         self.type_monitor = NSEvent.addGlobalMonitorForEventsMatchingMask_handler_(
             NSEventMaskKeyDown, self._global_type_key
         )
+        # Control-Option-Command-W: Carbon hotkey, so it works from any app with no Accessibility or Input Monitoring grant.
+        self.area_hotkey = AreaCaptureHotKey(self._area_hotkey_pressed)
+        _ok, hotkey_detail = self.area_hotkey.register()
+        print("  area hotkey: {0}".format(hotkey_detail))
+        # PR 7b follow-up: Control-Option-J is a Carbon hotkey too, so it works while another app is in front.
+        self.type_hotkey = CarbonHotKey(self._type_hotkey_pressed, TYPE_KEY_CODE, CARBON_CONTROL | CARBON_OPTION,
+                                        "Control-Option-J", hotkey_id=2)
+        ok_type, type_detail = self.type_hotkey.register()
+        print("orb hotkey: registered ctrl-opt-J" if ok_type else "orb hotkey: not registered ({0})".format(type_detail),
+              flush=True)
         self._sync_mini_bar()
         self._hold_option_blocked = self.global_monitor is None or not self._accessibility_trusted()
         if missing_secrets():
@@ -1739,10 +2379,19 @@ class AppDelegate(NSObject):
 
     @objc.python_method
     def _local_key(self, event):
-        if type_focus_hotkey(event.keyCode(), event.modifierFlags()):
-            self.focusTypeField_(None)
-            return None
         if event.keyCode() == 53:
+            if getattr(self, "_at", None):
+                self._at_hide()  # PR 8a-2: Esc with the picker open closes only the picker
+                return None
+            if self._hint_open:
+                self._close_hint()
+                return None
+            if self._result_open:
+                self._close_result_panel()
+                return None
+            if self._action_menu_open:
+                self._close_action_menu()
+                return None
             choices = getattr(self, "choice_panel", None)
             if choices is not None and choices.isVisible():
                 self._close_capture_choices()
@@ -1757,9 +2406,15 @@ class AppDelegate(NSObject):
         return event
 
     def _global_type_key(self, event):
-        if type_focus_hotkey(event.keyCode(), event.modifierFlags()):
-            self.performSelectorOnMainThread_withObject_waitUntilDone_("focusTypeField:", None, False)
-            return
+        if event.keyCode() == 53 and self._hint_open:
+            self._close_hint()  # PR 5a: Esc closes the hint even while Chrome has focus
+        if event.keyCode() == 53 and self._action_menu_open:
+            self._close_action_menu()  # PR 5a: Esc closes the action menu even while another app is active
+        flags = event.modifierFlags()
+        if control_option_command_held(flags) and not event.isARepeat():
+            # Diagnostic: proves the global monitor receives chords from other apps. Key code and flags only.
+            print("  global key: keyCode={0} flags=0x{1:x} control+option+command".format(
+                event.keyCode(), int(flags)))
         if getattr(self, "ptt", None) is not None and self.ptt.on_key(event.keyCode(), time.monotonic()) == "cancel":
             self._cancel_ptt()
 
@@ -1864,8 +2519,17 @@ class AppDelegate(NSObject):
         menu.addItemWithTitle_action_keyEquivalent_("Hide Mini Bar", "hideMiniBar:", "").setTarget_(self)
         self.zoe_item = menu.addItemWithTitle_action_keyEquivalent_("Zoe Mode", "zoeModeMenu:", "")
         self.zoe_item.setTarget_(self)
+        self.peek_item = menu.addItemWithTitle_action_keyEquivalent_("Tuck Jev into the edge", "peekDockMenu:", "")
+        self.peek_item.setTarget_(self)
+        self.peek_item.setState_(1 if peek_enabled_from_pref(NSUserDefaults.standardUserDefaults().objectForKey_(PEEK_PREF_KEY)) else 0)
         menu.addItemWithTitle_action_keyEquivalent_("Reset Mini Bar Position", "resetMiniBarPosition:", "").setTarget_(self)
         menu.addItemWithTitle_action_keyEquivalent_("Reset Mini Bar Size", "resetMiniBarSize:", "").setTarget_(self)
+        # Magic wand (PR 4): Command-W while Jev is the active app. A menu key equivalent only fires there, so it
+        # never takes Command-W from other apps. It is not a global hotkey, because Command-W closes windows everywhere.
+        wand = menu.addItemWithTitle_action_keyEquivalent_("Capture Area", "captureAreaWand:", "w")
+        wand.setKeyEquivalentModifierMask_(NSEventModifierFlagCommand)
+        wand.setImage_(NSImage.imageWithSystemSymbolName_accessibilityDescription_("wand.and.stars", "Capture Area"))
+        wand.setTarget_(self)
         item.setSubmenu_(menu)
         NSApp.setWindowsMenu_(menu)
 
@@ -1879,6 +2543,537 @@ class AppDelegate(NSObject):
         found = submenu.itemWithTitle_("Check for Updates\u2026")
         if found is not None:
             found.setTarget_(self)
+
+    @objc.python_method
+    def _area_hotkey_pressed(self):
+        print("  area hotkey fired: control+option+command+W")
+        self.captureAreaWand_(None)
+
+    def _type_hotkey_pressed(self):
+        """Control-Option-J from any app: the orb and the input pill, never the full window (see focusTypeField_)."""
+        self.focusTypeField_(None)
+
+    @objc.python_method
+    def _offer_button_pair(self, root, attr):
+        """The two small buttons for the brief's offer, on one root view. Built once, hidden until an offer."""
+        existing = getattr(self, attr, None)
+        if existing is not None:
+            return existing
+        audio = NSButton.alloc().initWithFrame_(NSMakeRect(0, 0, 96, 24))
+        audio.setTitle_("Play audio")
+        audio.setTarget_(self)
+        audio.setAction_("briefPlayAudio:")
+        no_thanks = NSButton.alloc().initWithFrame_(NSMakeRect(0, 0, 96, 24))
+        no_thanks.setTitle_("No thanks")
+        no_thanks.setTarget_(self)
+        no_thanks.setAction_("briefNoThanks:")
+        for button in (audio, no_thanks):
+            button.setHidden_(True)
+            root.addSubview_(button)
+        setattr(self, attr, (audio, no_thanks))
+        return audio, no_thanks
+
+    @objc.python_method
+    def _show_brief_offer_buttons(self, show):
+        """The offer's buttons, on the popover (and pill) and on the full window. They hide again when the window runs out."""
+        self._brief_offer_showing = bool(show)
+        if show or getattr(self, "_brief_buttons", None) is not None:
+            root = self.mini_panel.contentView()
+            audio, no_thanks = self._offer_button_pair(root, "_brief_buttons")
+            if show:
+                bounds = root.bounds()
+                top = float(bounds.size.height) - 34.0
+                right = float(bounds.size.width) - 12.0
+                no_thanks.setFrameOrigin_(NSMakePoint(right - 96.0, top))
+                audio.setFrameOrigin_(NSMakePoint(right - 96.0 - 8.0 - 96.0, top))
+            audio.setHidden_(not show)
+            no_thanks.setHidden_(not show)
+        if show or getattr(self, "_full_brief_buttons", None) is not None:
+            full_audio, full_no = self._offer_full_pair()
+            if full_audio is not None:
+                if show:
+                    self._place_full_offer_buttons()
+                full_audio.setHidden_(not show)
+                full_no.setHidden_(not show)
+        if show:
+            self.performSelector_withObject_afterDelay_("hideBriefOfferButtons:", None, OFFER_WINDOW_SECONDS)
+
+    @objc.python_method
+    def _offer_full_pair(self):
+        """The full window's pair sits above the input field, so it reads as the end of the conversation."""
+        full = getattr(self, "full_window", None)
+        field_bg = getattr(self, "full_input_bg", None)
+        if full is None or field_bg is None:
+            return None, None
+        return self._offer_button_pair(field_bg.superview(), "_full_brief_buttons")
+
+    @objc.python_method
+    def _place_full_offer_buttons(self):
+        field_bg = getattr(self, "full_input_bg", None)
+        pair = getattr(self, "_full_brief_buttons", None)
+        if field_bg is None or pair is None:
+            return
+        frame = field_bg.frame()
+        audio, no_thanks = pair
+        y = float(frame.origin.y) + float(frame.size.height) + 6.0
+        x = float(frame.origin.x) + 8.0
+        audio.setFrameOrigin_(NSMakePoint(x, y))
+        no_thanks.setFrameOrigin_(NSMakePoint(x + 96.0 + 8.0, y))
+
+    def hideBriefOfferButtons_(self, _sender):
+        self._show_brief_offer_buttons(False)
+
+    def briefPlayAudio_(self, _sender):
+        self._answer_brief_offer("play it")
+
+    def briefNoThanks_(self, _sender):
+        self._answer_brief_offer("no thanks")
+
+    @objc.python_method
+    def _answer_brief_offer(self, phrase):
+        """A button answers the offer the same way typing or saying the phrase would."""
+        self._show_brief_offer_buttons(False)
+        self._dispatch_text_plan({"kind": "run", "control": ("text", phrase), "reveal_main": False})
+        self._refresh_full_window()
+
+    @objc.python_method
+    def _note_turn_text(self, text):
+        """A turn whose text thanks Jev plays heart eyes (PR 7b). Matched on the text only; nothing is sent."""
+        if is_thanks(text) and getattr(self, "orb_view", None) is not None:
+            self.orb_view.offerReaction("heart")
+
+    @objc.python_method
+    def _start_disk_watch(self):
+        """Check the disk now, then at most hourly. The read happens on a background thread and only reads free space."""
+        self._disk_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            3600.0, self, "diskWatchTick:", None, True)
+        self._run_disk_check()
+
+    def diskWatchTick_(self, _timer):
+        self._run_disk_check()
+
+    @objc.python_method
+    def _run_disk_check(self):
+        threading.Thread(target=self._disk_check_worker, daemon=True).start()
+
+    @objc.python_method
+    def _disk_check_worker(self):
+        low = disk_check()  # shutil.disk_usage("/"): a read, nothing is cleaned or moved
+        self.performSelectorOnMainThread_withObject_waitUntilDone_("diskCheckDone:", bool(low), False)
+
+    def diskCheckDone_(self, result):
+        """Back on the main thread: low disk highlights the Mac health chip and plays the sweat-drop reaction."""
+        self.mac_health_alert = bool(result)
+        print("orb disk: low={0}".format(bool(result)), flush=True)
+        if self.mac_health_alert and getattr(self, "orb_view", None) is not None:
+            self.orb_view.offerReaction("low_disk")
+        self._apply_pill_presentation()  # redraws the chips, so the Mac health mark follows the alert
+
+    @objc.python_method
+    def _open_orb_spotlight(self):
+        """Right-click on the orb: a Spotlight-style Jev panel beside it (PR 8). Logs open, then close and pick."""
+        from orb_spotlight import (SPOTLIGHT_FADE_SECONDS, SPOTLIGHT_FIELD_H, SPOTLIGHT_LEVEL, SPOTLIGHT_PAD,
+                                   SPOTLIGHT_RADIUS, SPOTLIGHT_ROW_H, SPOTLIGHT_ROWS, SPOTLIGHT_START_SCALE,
+                                   spotlight_frame)
+        from Quartz import CABasicAnimation, CAMediaTimingFunction
+        if getattr(self, "_spotlight", None) is not None:
+            self._close_orb_spotlight("reopen")
+        threading.Thread(target=self._at_warm, daemon=True).start()  # PR 8a-2: the panel field has the @ picker
+        # Spotlight-style: on the screen that holds the mouse, centred, a quarter down from the top of its visible frame.
+        mouse = NSEvent.mouseLocation()
+        screens = self._visible_screens()
+        screen = screen_for_frame((float(mouse.x), float(mouse.y), 1.0, 1.0), screens) if screens else None
+        visible = screen or (0.0, 0.0, 1440.0, 900.0)
+        x, y, w, h = spotlight_frame(visible)
+
+        # Non-activating, so it can take key focus while another app stays the active one (PR 7b follow-up).
+        win = OrbSpotlightPanel.alloc().initWithContentRect_styleMask_backing_defer_(
+            NSMakeRect(x, y, w, h), NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel,
+            NSBackingStoreBuffered, False)
+        win.setOpaque_(False)
+        win.setBackgroundColor_(NSColor.clearColor())
+        win.setHasShadow_(True)  # the soft shadow follows the rounded glass
+        win.setLevel_(SPOTLIGHT_LEVEL)  # PR 7b: above other apps' windows, not behind them
+        win.setReleasedWhenClosed_(False)
+        win.setCollectionBehavior_(NSWindowCollectionBehaviorCanJoinAllSpaces |
+                                   NSWindowCollectionBehaviorFullScreenAuxiliary |
+                                   NSWindowCollectionBehaviorTransient)
+
+        content = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, w, h))
+        glass = NSVisualEffectView.alloc().initWithFrame_(NSMakeRect(0, 0, w, h))
+        glass.setMaterial_(NSVisualEffectMaterialHUDWindow)
+        glass.setBlendingMode_(NSVisualEffectBlendingModeBehindWindow)
+        glass.setState_(NSVisualEffectStateActive)
+        glass.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable)
+        glass.setWantsLayer_(True)
+        glass.layer().setCornerRadius_(SPOTLIGHT_RADIUS)
+        glass.layer().setMasksToBounds_(True)
+        glass.layer().setBorderWidth_(0.5)
+        glass.layer().setBorderColor_(NSColor.whiteColor().colorWithAlphaComponent_(0.28).CGColor())
+        content.addSubview_(glass)
+        win.setContentView_(content)
+
+        state = {"index": -1, "mode": "row", "rows": [], "closing": False}
+        delegate = OrbSpotlightDelegate.alloc().initWithHandler_(lambda kind, sel: self._spotlight_event(kind, sel))
+        win.setDelegate_(delegate)
+        state["delegate"] = delegate
+
+        field_w = w - 2 * SPOTLIGHT_PAD - 36
+        field_y = h - SPOTLIGHT_PAD - SPOTLIGHT_FIELD_H
+        field = NSTextField.alloc().initWithFrame_(NSMakeRect(SPOTLIGHT_PAD + 6, field_y + 12, field_w, 28))
+        field.setBezeled_(False)
+        field.setDrawsBackground_(False)
+        field.setFocusRingType_(1)  # NSFocusRingTypeNone
+        field.setFont_(NSFont.systemFontOfSize_(20))
+        field.setPlaceholderString_("Search or Ask Jev")
+        field.setDelegate_(delegate)
+        glass.addSubview_(field)
+        state["field"] = field
+
+        mic = OrbSpotlightMic.alloc().initWithFrame_(NSMakeRect(w - SPOTLIGHT_PAD - 30, field_y + 14, 24, 24))
+        mic.setBordered_(False)
+        mic.setImage_(NSImage.imageWithSystemSymbolName_accessibilityDescription_("mic.fill", "Talk to Jev"))
+        mic.micDown = lambda: self._spotlight_mic(True)
+        mic.micUp = lambda: self._spotlight_mic(False)
+        glass.addSubview_(mic)
+
+        for index, (title, selector, symbol, hint) in enumerate(SPOTLIGHT_ROWS):
+            row_y = h - SPOTLIGHT_PAD - SPOTLIGHT_FIELD_H - SPOTLIGHT_PAD - (index + 1) * SPOTLIGHT_ROW_H
+            row = OrbSpotlightRow.alloc().initWithFrame_(
+                NSMakeRect(SPOTLIGHT_PAD, row_y, w - 2 * SPOTLIGHT_PAD, SPOTLIGHT_ROW_H))
+            row.setWantsLayer_(True)
+            row.layer().setCornerRadius_(10)
+            icon = NSImageView.alloc().initWithFrame_(NSMakeRect(10, 9, 18, 18))
+            icon.setImage_(NSImage.imageWithSystemSymbolName_accessibilityDescription_(symbol, title))
+            row.addSubview_(icon)
+            label = NSTextField.labelWithString_(title)
+            label.setFont_(NSFont.systemFontOfSize_(14))
+            label.setFrame_(NSMakeRect(38, 8, w - 2 * SPOTLIGHT_PAD - 120, 20))
+            row.addSubview_(label)
+            if hint:
+                shortcut = NSTextField.labelWithString_(hint)
+                shortcut.setFont_(NSFont.systemFontOfSize_(13))
+                shortcut.setTextColor_(NSColor.secondaryLabelColor())
+                shortcut.setAlignment_(2)  # NSTextAlignmentRight
+                shortcut.setFrame_(NSMakeRect(w - 2 * SPOTLIGHT_PAD - 92, 8, 72, 20))
+                row.addSubview_(shortcut)
+            row.onPick = lambda i=index: self._pick_orb_spotlight_row(i)
+            glass.addSubview_(row)
+            state["rows"].append(row)
+
+        win.keyHandler = lambda code: self._spotlight_key(code)
+        self._spotlight = state
+        state["panel"] = win
+
+        win.setHidesOnDeactivate_(False)  # the panel stays up when another app is frontmost
+        win.setAlphaValue_(0.0)
+        win.makeKeyAndOrderFront_(None)
+        win.makeFirstResponder_(field)
+        win.orderFrontRegardless()
+        print("orb spotlight: level={0} key={1}".format(win.level(), bool(win.isKeyWindow())), flush=True)
+        # Any mouse-down outside the panel, in any app, closes it. The monitors live only while it is open.
+        from AppKit import NSEventMaskLeftMouseDown, NSEventMaskOtherMouseDown, NSEventMaskRightMouseDown
+        mask = NSEventMaskLeftMouseDown | NSEventMaskRightMouseDown | NSEventMaskOtherMouseDown
+
+        def outside_any_app(_event):
+            point = NSEvent.mouseLocation()
+            frame = win.frame()
+            inside = (frame.origin.x <= point.x <= frame.origin.x + frame.size.width
+                      and frame.origin.y <= point.y <= frame.origin.y + frame.size.height)
+            if not inside:
+                self._close_orb_spotlight("click outside")
+
+        def outside_jev(event):
+            if event.window() is not win and event.window() is not getattr(self, "at_panel", None):
+                self._close_orb_spotlight("click outside")  # a click on the @ picker list is not outside
+            return event
+
+        state["monitors"] = [
+            NSEvent.addGlobalMonitorForEventsMatchingMask_handler_(mask, outside_any_app),
+            NSEvent.addLocalMonitorForEventsMatchingMask_handler_(mask, outside_jev),
+        ]
+        self._spotlight_check = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            0.1, self, "spotlightAfterOpen:", None, False)
+        content.setWantsLayer_(True)
+        scale = CABasicAnimation.animationWithKeyPath_("transform.scale")
+        scale.setFromValue_(SPOTLIGHT_START_SCALE)
+        scale.setToValue_(1.0)
+        scale.setDuration_(SPOTLIGHT_FADE_SECONDS)
+        scale.setTimingFunction_(CAMediaTimingFunction.functionWithName_("easeOut"))
+        content.layer().addAnimation_forKey_(scale, "spotlightScale")
+        NSAnimationContext.beginGrouping()
+        context = NSAnimationContext.currentContext()
+        context.setDuration_(SPOTLIGHT_FADE_SECONDS)
+        context.setTimingFunction_(CAMediaTimingFunction.functionWithName_("easeOut"))
+        win.animator().setAlphaValue_(1.0)
+        NSAnimationContext.endGrouping()
+        print("orb spotlight: open at {0}".format(tuple(round(v, 1) for v in (x, y, w, h))), flush=True)
+
+    def spotlightAfterOpen_(self, _timer):
+        """One tick after the panel opens: whether it is key, on screen and unobscured. Logged for the hand test."""
+        state = getattr(self, "_spotlight", None)
+        panel = state.get("panel") if state else None
+        if panel is None:
+            return
+        print("orb spotlight: after open key={0} visible={1} occlusion={2}".format(
+            bool(panel.isKeyWindow()), bool(panel.isVisible()), int(panel.occlusionState())), flush=True)
+        if not panel.isKeyWindow() and not state.get("retried"):
+            state["retried"] = True  # one retry only: activate Jev, then ask for key again
+            if hasattr(NSApp, "activate"):
+                NSApp.activate()  # macOS 14
+            else:
+                NSApp.activateIgnoringOtherApps_(True)
+            panel.makeKeyAndOrderFront_(None)
+            panel.makeFirstResponder_(state["field"])
+            print("orb spotlight: retry activate key={0}".format(bool(panel.isKeyWindow())), flush=True)
+
+    @objc.python_method
+    def _close_orb_spotlight(self, reason):
+        """Close the panel and log why. Idempotent, so the resign-key from closing does nothing more."""
+        state = getattr(self, "_spotlight", None)
+        if state is None or state.get("closing"):
+            return
+        state["closing"] = True
+        self._spotlight = None
+        if getattr(self, "_at", None) and self._at.get("surface") == "spotlight":
+            self._at_hide()
+        for monitor in state.get("monitors", []):
+            NSEvent.removeMonitor_(monitor)
+        panel = state.get("panel")
+        if panel is not None:
+            panel.setDelegate_(None)
+            panel.orderOut_(None)
+        print("orb spotlight: close ({0})".format(reason), flush=True)
+
+    @objc.python_method
+    def _set_orb_spotlight_highlight(self, state, index):
+        for position, row in enumerate(state["rows"]):
+            color = NSColor.whiteColor().colorWithAlphaComponent_(0.14).CGColor() if position == index else None
+            row.layer().setBackgroundColor_(color)
+
+    @objc.python_method
+    def _spotlight_key(self, code):
+        """Keys from the panel itself (when the field is not editing). True if handled."""
+        from orb_spotlight import KEY_DOWN, KEY_ESCAPE, KEY_RETURN, KEY_UP
+        if code == KEY_ESCAPE:
+            self._close_orb_spotlight("escape")
+            return True
+        if code in (KEY_DOWN, KEY_UP):
+            self._spotlight_move(code)
+            return True
+        if code == KEY_RETURN:
+            self._spotlight_return()
+            return True
+        return False
+
+    @objc.python_method
+    def _spotlight_move(self, key):
+        from orb_spotlight import next_index
+        state = getattr(self, "_spotlight", None)
+        if state is None:
+            return
+        state["index"] = next_index(state["index"], key, len(state["rows"]))
+        state["mode"] = "row"  # arrows pick a row, so Return runs it rather than sending the typed text
+        self._set_orb_spotlight_highlight(state, state["index"])
+
+    @objc.python_method
+    def _spotlight_return(self):
+        state = getattr(self, "_spotlight", None)
+        if state is None:
+            return
+        text = str(state["field"].stringValue() or "")
+        if state["mode"] == "text" and text.strip():
+            self._send_orb_spotlight_text(text)
+        elif state["index"] >= 0:
+            self._pick_orb_spotlight_row(state["index"])
+        elif text.strip():
+            self._send_orb_spotlight_text(text)
+
+    @objc.python_method
+    def _send_orb_spotlight_text(self, text):
+        """The same as the mini type box: submission() runs the line where it was typed."""
+        if self._at_gate(self._spotlight["field"] if getattr(self, "_spotlight", None) else None, "spotlight"):
+            return
+        self._at_hide()
+        plan = submission(text, self.bar.reply)
+        self._note_turn_text(text)
+        if plan is None:
+            print("orb spotlight: nothing to send", flush=True)
+            return
+        self.bar.reply = ""
+        self._close_orb_spotlight("sent")
+        print("orb spotlight: sent text ({0} characters)".format(len(text)), flush=True)
+        self._dispatch_text_plan(plan)
+
+    @objc.python_method
+    def _pick_orb_spotlight_row(self, index):
+        from orb_spotlight import SPOTLIGHT_ROWS
+        title, selector, _symbol, _hint = SPOTLIGHT_ROWS[index]
+        print("orb spotlight: pick {0}".format(title), flush=True)
+        self._close_orb_spotlight("pick")
+        target = NSApp if selector == "terminate:" else self
+        NSApp.sendAction_to_from_(NSSelectorFromString(selector), target, self)
+
+    @objc.python_method
+    def _spotlight_mic(self, down):
+        if down:
+            self.miniMicDown_(None)
+        else:
+            self.miniMicUp_(None)
+
+    @objc.python_method
+    def _spotlight_event(self, kind, selector):
+        """Field commands, typing and resign-key from the panel's delegate."""
+        from orb_spotlight import KEY_DOWN, KEY_UP
+        state = getattr(self, "_spotlight", None)
+        if state is None:
+            return False
+        if kind == "resign":
+            self._close_orb_spotlight("click away")
+            return True
+        if kind == "typed":
+            state["mode"] = "text"
+            state["index"] = -1
+            self._set_orb_spotlight_highlight(state, -1)
+            self._at_update(state["field"], "spotlight")
+            return False
+        if kind == "command" and self._at_command("spotlight", selector):
+            return True
+        if selector == "moveDown:":
+            self._spotlight_move(KEY_DOWN)
+            return True
+        if selector == "moveUp:":
+            self._spotlight_move(KEY_UP)
+            return True
+        if selector == "insertNewline:":
+            self._spotlight_return()
+            return True
+        if selector == "cancelOperation:":
+            self._close_orb_spotlight("escape")
+            return True
+        return False
+
+    def orbMenuOpen_(self, _sender):
+        print("  orb menu: Open Jev", flush=True)
+        self.expandOrbToFull_(self)
+
+    def orbMenuNewChat_(self, _sender):
+        print("  orb menu: New Chat", flush=True)
+        if not self._orb_docked_now():
+            self._expand_orb_to_full("")
+        self.fullNewChat_(None)
+
+    def orbMenuMarkup_(self, _sender):
+        print("  orb menu: Mark Up", flush=True)
+        self._open_markup()
+
+    @objc.python_method
+    def _pill_drag_views(self):
+        """Every visible view in the orb panel's tree, except the orb, its ancestors and the recording stop button.
+
+        Walks the whole tree, so a pill nested in a container is found. Returns the outermost visible views, so
+        hiding one hides what is inside it.
+        """
+        panel = getattr(self, "mini_panel", None)
+        orb = getattr(self, "orb_view", None)
+        if panel is None or orb is None:
+            return []
+        rec = getattr(self, "rec_stop", None)
+        chain = []
+        view = orb
+        while view is not None:
+            chain.append(view)
+            view = view.superview()
+        found = []
+
+        def walk(parent):
+            for sub in parent.subviews() or []:
+                if sub.isEqual_(orb) or (rec is not None and sub.isEqual_(rec)):
+                    continue
+                if any(sub.isEqual_(c) for c in chain):
+                    walk(sub)  # an ancestor of the orb: keep it, and look inside
+                    continue
+                if not sub.isHidden():
+                    found.append(sub)
+
+        walk(panel.contentView())
+        return found
+
+    @objc.python_method
+    def _docked_frame_held(self):
+        """Once the full window is open and the orb is docked, the panel stays on dock_point. Returns True if it did.
+
+        Mid-transition states are left alone, so the expand and collapse springs are not fought.
+        """
+        full = getattr(self, "full_window", None)
+        panel = getattr(self, "mini_panel", None)
+        if full is None or panel is None or not full.isVisible():
+            return False
+        if self._orb_window_state_now() != ORB_STATE_OPEN:
+            return False
+        frame = dock_point(self._frame_tuple(full.frame()))
+        self._place_orb_rect(frame)
+        print("  orb dock: held at dock_point={0} panel={1}".format(
+            tuple(round(v, 1) for v in frame), tuple(round(v, 1) for v in self._frame_tuple(panel.frame()))),
+            flush=True)
+        return True
+
+    @objc.python_method
+    def _pill_drag_began(self):
+        """An orb drag started: hide the typing pill at once. Logs what it hid, or that nothing was visible."""
+        self._close_orb_spotlight("orb drag")
+        if getattr(self, "_pill_drag_hidden", None):
+            return
+        views = self._pill_drag_views()
+        for v in views:
+            v.setHidden_(True)
+        self._pill_drag_hidden = views
+        described = ", ".join("{0} {1}".format(str(v.className()),
+                                               tuple(round(float(c), 1) for c in (
+                                                   v.frame().origin.x, v.frame().origin.y,
+                                                   v.frame().size.width, v.frame().size.height)))
+                              for v in views) or "none visible"
+        print("  orb drag: input pill hidden ({0} views: {1})".format(len(views), described), flush=True)
+
+    @objc.python_method
+    def _pill_drag_ended(self):
+        """The drag released: the pill slides back out from the orb's side, easeOut over PILL_SLIDE_SECONDS."""
+        from Quartz import CAMediaTimingFunction
+        views = getattr(self, "_pill_drag_hidden", None)
+        self._pill_drag_hidden = None
+        if not views:
+            return
+        orb = getattr(self, "orb_view", None)
+        reduce = orb is None or bool(orb.reduceMotion)
+        orb_box = orb.frame() if orb is not None else None
+        orb_mid = float(orb_box.origin.x) + float(orb_box.size.width) / 2.0 if orb_box is not None else 0.0
+        timing = CAMediaTimingFunction.functionWithName_("easeOut")
+        side = "-"
+        for v in views:
+            f = v.frame()
+            pill_mid = float(f.origin.x) + float(f.size.width) / 2.0
+            direction = -1.0 if orb_mid < pill_mid else 1.0  # the orb is on the left: the pill comes from the left
+            side = "left" if direction < 0 else "right"
+            final = f.origin
+            v.setHidden_(False)
+            v.setAlphaValue_(0.0)
+            if not reduce:
+                v.setFrameOrigin_(NSMakePoint(float(final.x) + direction * PILL_SLIDE_PT, float(final.y)))
+            NSAnimationContext.beginGrouping()
+            context = NSAnimationContext.currentContext()
+            context.setDuration_(PILL_SLIDE_SECONDS)
+            context.setTimingFunction_(timing)
+            if not reduce:
+                v.animator().setFrameOrigin_(final)
+            v.animator().setAlphaValue_(1.0)
+            NSAnimationContext.endGrouping()
+        print("  orb drag: input pill slides back out from the {0} ({1:.2f}s{2})".format(
+            side, PILL_SLIDE_SECONDS, ", reduce motion, fade only" if reduce else ""), flush=True)
+
+    def captureAreaWand_(self, _sender):
+        """Command-W: the same area capture the orb menu runs today. The crosshair appears, and the usual choices follow."""
+        self._close_orb_spotlight("capture area")
+        threading.Thread(target=self._capture_for_bar, args=("area",), daemon=True).start()
 
     def toggleOnTop_(self, _sender):
         self.on_top = not self.on_top
@@ -2133,6 +3328,7 @@ class AppDelegate(NSObject):
 
     @objc.python_method
     def _hide_bar(self):
+        self._peek_disengage(move=False)
         panel = self.mini_panel
         orb = getattr(self, "orb_view", None)
         if orb is not None:
@@ -2222,6 +3418,16 @@ class AppDelegate(NSObject):
     @objc.python_method
     def _finalize_mini_bar_drag(self, window):
         """Clamp and snap when a drag ends. Dragging never opens the typing pill."""
+        self._orb_dragging = False
+        roughness = getattr(self, "last_drag_roughness", None) or drag_roughness([])
+        self.last_drag_roughness = None
+        rough = rough_drag(roughness.peak_window, roughness.seconds_fast)
+        print("orb drag: end reversals={0} fast_s={1:.2f} rough={2}".format(
+            roughness.reversals, roughness.seconds_fast, rough), flush=True)
+        print("orb drag: samples={0} peak_speed={1:.0f}".format(roughness.samples, roughness.peak_speed), flush=True)
+        if rough and getattr(self, "orb_view", None) is not None:
+            self.orb_view.offerReaction("dizzy")  # PR 7b: a rough drop plays before the tuck or dock moves
+        self._peek_disengage(move=False)
         frame = window.frame()
         origin = finish_drag(
             (float(frame.origin.x), float(frame.origin.y)),
@@ -2234,6 +3440,1149 @@ class AppDelegate(NSObject):
         if saved is not None:
             NSUserDefaults.standardUserDefaults().setObject_forKey_(
                 format_origin(saved[0], saved[1]), ORIGIN_KEY)
+        tucked = self._tuck_consider()  # PR 8: a drop near a free edge tucks the orb (replaces peek for that drop)
+        if not tucked:
+            self._peek_consider()
+        # PR 5a (R3): this runs only after a real drag has landed on its snap target. A drop that tucked the orb
+        # into the edge does not open the menu.
+        if not tucked and self._peek_edge is None and menu_on_drop(True):
+            self._open_action_menu()
+
+    # PR 5a: action menu. A panel beside the orb, fanned out after a drop. Its buttons reuse the post-capture ids.
+    @objc.python_method
+    def _build_action_menu(self):
+        style = NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel
+        panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
+            NSMakeRect(0, 0, 200, 200), style, NSBackingStoreBuffered, False)
+        panel.setLevel_(BAR_LEVEL)
+        panel.setFloatingPanel_(True)
+        panel.setHidesOnDeactivate_(False)
+        panel.setBecomesKeyOnlyIfNeeded_(True)
+        panel.setOpaque_(False)
+        panel.setBackgroundColor_(NSColor.clearColor())
+        panel.setHasShadow_(True)
+        panel.setCollectionBehavior_(BAR_COLLECTION)
+        panel.setReleasedWhenClosed_(False)
+        panel.setAccessibilityLabel_("Jev actions")
+        self._action_menu_panel = panel
+        return panel
+
+    @objc.python_method
+    def _fill_action_menu(self, layout):
+        panel = self._action_menu_panel
+        px, py, pw, ph = layout["panel"]
+        panel.setFrame_display_(NSMakeRect(px, py, pw, ph), False)
+        scale = float(panel.backingScaleFactor())
+        if NSWorkspace.sharedWorkspace().accessibilityDisplayShouldReduceTransparency():
+            content = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, pw, ph))
+            content.setWantsLayer_(True)
+            content.layer().setBackgroundColor_(NSColor.colorWithCalibratedWhite_alpha_(0.12, 0.96).CGColor())
+        else:
+            content = NSVisualEffectView.alloc().initWithFrame_(NSMakeRect(0, 0, pw, ph))
+            content.setMaterial_(NSVisualEffectMaterialHUDWindow)
+            content.setBlendingMode_(NSVisualEffectBlendingModeBehindWindow)
+            content.setState_(NSVisualEffectStateActive)
+            content.setWantsLayer_(True)
+        # The rounded corners clip the material. contentsScale matches the window on this screen.
+        content.layer().setCornerRadius_(MENU_CORNER_RADIUS)
+        content.layer().setMasksToBounds_(True)
+        content.layer().setContentsScale_(scale)
+        panel.setContentView_(content)
+        from Quartz import CALayer
+        buttons = []
+        for row, action in enumerate(orb_action_menu()):
+            bx, by, bw, bh = layout["buttons"][row]
+            lx, ly, lw, lh = layout["labels"][row]
+            x0 = min(bx, lx)
+            x1 = max(bx + bw, lx + lw)
+            item = ActionMenuButton.alloc().initWithFrame_(NSMakeRect(x0 - px, by - py, x1 - x0, bh))
+            item.setWantsLayer_(True)
+            item.layer().setContentsScale_(scale)
+            circle = CALayer.layer()
+            circle.setFrame_(NSMakeRect(bx - x0, 0.0, bw, bh))
+            circle.setCornerRadius_(bw / 2.0)
+            circle.setContentsScale_(scale)
+            circle.setBackgroundColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, MENU_FILL_REST).CGColor())
+            item.layer().addSublayer_(circle)
+            item.circle_layer = circle
+            image = None
+            try:
+                image = NSImage.imageWithSystemSymbolName_accessibilityDescription_(action["symbol"], action["title"])
+            except Exception:
+                image = None
+            if image is not None:
+                icon = NSImageView.alloc().initWithFrame_(NSMakeRect(bx - x0 + 10.0, 10.0, bw - 20.0, bh - 20.0))
+                icon.setImage_(image)
+                icon.setImageScaling_(NSImageScaleProportionallyUpOrDown)
+                icon.setContentTintColor_(NSColor.whiteColor())
+                item.addSubview_(icon)
+            text = label(action["title"], NSMakeRect(lx - x0, (bh - lh) / 2.0, lw, lh), 13, NSColor.whiteColor(), weight=0.5)
+            text.setAlignment_(2 if layout["side"] == "left" else 0)  # labels sit away from the orb
+            item.addSubview_(text)
+            item.setIdentifier_(action["id"])
+            item.pick_target = self
+            item.setAccessibilityElement_(True)
+            item.setAccessibilityRole_("AXButton")
+            item.setAccessibilityLabel_(action["title"])
+            item.setToolTip_(action["title"])
+            content.addSubview_(item)
+            end = (x0 - px + (x1 - x0) / 2.0, by - py + bh / 2.0)
+            buttons.append((item, end))
+        self._action_menu_buttons = tuple(buttons)
+
+    @objc.python_method
+    def _animate_action_menu_button(self, layer, start, end, delay):
+        """Scale 0.6 and alpha 0 at the orb's centre, to the slot on CASpring SPRING_MENU_FAN, after `delay` seconds."""
+        from Quartz import CABasicAnimation, CACurrentMediaTime, CASpringAnimation
+        from Foundation import NSValue
+        begin = CACurrentMediaTime() + float(delay)
+        stiffness, damping = SPRING_MENU_FAN
+        move = CASpringAnimation.animationWithKeyPath_("position")
+        move.setStiffness_(stiffness)
+        move.setDamping_(damping)
+        move.setMass_(1.0)
+        move.setFromValue_(NSValue.valueWithPoint_(NSMakePoint(start[0], start[1])))
+        move.setToValue_(NSValue.valueWithPoint_(NSMakePoint(end[0], end[1])))
+        move.setDuration_(move.settlingDuration())
+        move.setBeginTime_(begin)
+        move.setFillMode_("backwards")
+        grow = CASpringAnimation.animationWithKeyPath_("transform.scale")
+        grow.setStiffness_(stiffness)
+        grow.setDamping_(damping)
+        grow.setMass_(1.0)
+        grow.setFromValue_(MENU_FAN_START_SCALE)
+        grow.setToValue_(1.0)
+        grow.setDuration_(grow.settlingDuration())
+        grow.setBeginTime_(begin)
+        grow.setFillMode_("backwards")
+        fade = CABasicAnimation.animationWithKeyPath_("opacity")
+        fade.setFromValue_(0.0)
+        fade.setToValue_(1.0)
+        fade.setDuration_(0.18)
+        fade.setBeginTime_(begin)
+        fade.setFillMode_("backwards")
+        for anim, key in ((move, "menuFanMove"), (grow, "menuFanScale"), (fade, "menuFanFade")):
+            layer.addAnimation_forKey_(anim, key)
+
+    @objc.python_method
+    def _open_action_menu(self):
+        from AppKit import NSEventMaskLeftMouseDown, NSEventMaskRightMouseDown
+        window = getattr(self, "mini_panel", None)
+        if window is None or not window.isVisible():
+            return
+        self._close_action_menu()
+        frame = window.frame()
+        orb = (float(frame.origin.x), float(frame.origin.y), float(frame.size.width), float(frame.size.height))
+        screens = self._visible_screens() or [(0.0, 0.0, 1440.0, 900.0)]
+        screen = screen_for_frame(orb, screens) or screens[0]
+        layout = menu_layout(orb, screen)
+        if self._action_menu_panel is None:
+            self._build_action_menu()
+        self._fill_action_menu(layout)
+        self._action_menu_open = True
+        self._action_menu_shown_at = time.time()
+        # Clicks in Jev are seen by a local monitor. A click in any other app activates that app, so the
+        # workspace notification closes the menu. No global event monitor, so no new permission.
+        mask = NSEventMaskLeftMouseDown | NSEventMaskRightMouseDown
+        self._action_menu_monitors = (
+            NSEvent.addLocalMonitorForEventsMatchingMask_handler_(mask, self._action_menu_mouse_down),
+        )
+        NSWorkspace.sharedWorkspace().notificationCenter().addObserver_selector_name_object_(
+            self, "actionMenuAppActivated:", "NSWorkspaceDidActivateApplicationNotification", None)
+        self._action_menu_observing = True
+        orb_view = getattr(self, "orb_view", None)
+        if orb_view is None or not bool(getattr(orb_view, "reduceMotion", False)):
+            px, py = layout["panel"][0], layout["panel"][1]
+            start = (orb[0] + orb[2] / 2.0 - px, orb[1] + orb[3] / 2.0 - py)  # the orb's centre, in panel coordinates
+            for row, (item, end) in enumerate(self._action_menu_buttons):
+                self._animate_action_menu_button(item.layer(), start, end, layout["delays"][row])
+        self._action_menu_panel.orderFrontRegardless()
+
+    @objc.python_method
+    def _close_action_menu(self):
+        """Closes at once: no animation, so a click on an action never waits on the menu."""
+        for monitor in self._action_menu_monitors:
+            NSEvent.removeMonitor_(monitor)
+        self._action_menu_monitors = ()
+        if self._action_menu_observing:
+            NSWorkspace.sharedWorkspace().notificationCenter().removeObserver_name_object_(
+                self, "NSWorkspaceDidActivateApplicationNotification", None)
+            self._action_menu_observing = False
+        panel = self._action_menu_panel
+        if panel is not None and panel.isVisible():
+            panel.orderOut_(None)
+        self._action_menu_open = False
+        self._action_menu_shown_at = 0.0
+        self._action_menu_buttons = ()
+
+    @objc.python_method
+    def _action_menu_pointer_inside(self):
+        panel = self._action_menu_panel
+        if panel is None or not panel.isVisible():
+            return False
+        loc = NSEvent.mouseLocation()
+        frame = panel.frame()
+        return pointer_inside(
+            (float(loc.x), float(loc.y)),
+            (float(frame.origin.x), float(frame.origin.y), float(frame.size.width), float(frame.size.height)),
+        )
+
+    def _action_menu_mouse_down(self, event):
+        """A click in Jev outside the menu closes it. The click still goes on to whatever it hit."""
+        if self._action_menu_open and not self._action_menu_pointer_inside():
+            self._close_action_menu()
+        return event
+
+    def actionMenuAppActivated_(self, _notification):
+        """Another app came forward, so the click was away from the menu."""
+        if self._action_menu_open:
+            self._close_action_menu()
+
+    @objc.python_method
+    def _sync_action_menu_dismiss(self):
+        if not self._action_menu_open:
+            return
+        if choice_due(self._action_menu_shown_at, time.time(), self._action_menu_pointer_inside()):
+            self._close_action_menu()
+
+    def actionMenuPick_(self, sender):
+        ident = "" if sender is None else str(sender.identifier() or "")
+        self._close_action_menu()
+        if ident == "markup":
+            self._open_markup()  # PR 5b: the overlay, not an area capture
+            return
+        if ident:
+            threading.Thread(target=self._run_action_menu_capture, args=(ident,), daemon=True).start()
+
+    @objc.python_method
+    def _run_action_menu_capture(self, ident):
+        """Every area-capture menu action starts here, with take_screenshot(mode="area") on the captures book. Off the main thread. Mark up never comes here: it opens its own overlay (PR 5b).
+
+        Esc or a zero-size selection is "cancelled" and does nothing. Each action then runs on its own path. Find Image
+        and Copy Image use the same functions as the Jev commands, and none of them opens the Jev window. Ask and the
+        two text actions go back to the main thread, because they show a panel.
+        """
+        print(f"  action menu: {ident} clicked")
+        try:
+            from commands.captures import BOOK, ask_plan, execute_ask, run_capture_menu, take_screenshot
+            print("  action menu: capture started (area)")
+            sentence = take_screenshot("area", book=BOOK)
+            outcome = capture_outcome(sentence)
+            if outcome != "saved":
+                print(f"  action menu: capture {outcome}")
+                return
+            path = str((BOOK.last or {}).get("path") or "")
+            print(f"  action menu: capture saved {os.path.basename(path)}")
+            if ident == "share_copy":
+                print(f"  action menu: copy image: {run_capture_menu('share_copy', book=BOOK)}")
+                return
+            if ident == "ask_google":
+                # ask_plan + execute_ask: the copy and the Lens open each raise on failure, so no exception = both worked.
+                execute_ask(ask_plan("google", "capture", path=path))
+                print("  action menu: find image copied and opened Lens")
+                self.performSelectorOnMainThread_withObject_waitUntilDone_("findImageHint:", "", False)
+                return
+        except Exception as exc:
+            print(f"  action menu: {ident} failed: {exc}")
+            return
+        payload = json.dumps({"id": ident, "path": path})
+        self.performSelectorOnMainThread_withObject_waitUntilDone_("actionMenuCaptured:", payload, False)
+
+    def actionMenuCaptured_(self, payload):
+        try:
+            data = json.loads(str(payload))
+        except ValueError:
+            return
+        ident = str(data.get("id") or "")
+        if ident in TEXT_ACTIONS:
+            self._start_text_action(ident)
+            return
+        if ident == "ask_jev":
+            self._show_capture_choices()  # the usual thumbnail panel, with its question field open
+            self._open_choice_question()
+            return
+        print(f"  action menu: no handler for {ident}")
+
+    # PR 5b: Mark up on screen. One overlay per screen at MARKUP_LEVEL. Return saves, Esc leaves with no file, ⌘Z undoes.
+    # Every step is logged to Hey Jev.log. Strokes are kept in global points, and nothing is uploaded.
+    @objc.python_method
+    def _open_markup(self):
+        self._close_orb_spotlight("mark up")
+        if self._markup_live() or getattr(self, "_markup_saving", False):
+            return
+        screens = list(NSScreen.screens() or [])
+        if not screens:
+            print("  markup: no screen to draw on")
+            return
+        self._markup_strokes = Strokes()
+        self._markup_windows = []
+        self._markup_views = []
+        self._markup_saving = False
+        pointer = NSEvent.mouseLocation()
+        key_window = None
+        for screen in screens:
+            frame = screen.frame()
+            window = MarkupWindow.alloc().initWithContentRect_styleMask_backing_defer_(
+                frame, NSWindowStyleMaskBorderless, NSBackingStoreBuffered, False)
+            window.setLevel_(MARKUP_LEVEL)
+            window.setOpaque_(False)
+            # Near-clear rather than clear: a fully transparent window can let clicks fall through to the app underneath.
+            window.setBackgroundColor_(NSColor.colorWithCalibratedWhite_alpha_(0.0, 0.01))
+            window.setHasShadow_(False)
+            window.setIgnoresMouseEvents_(False)
+            window.setReleasedWhenClosed_(False)
+            window.setAcceptsMouseMovedEvents_(True)
+            window.setCollectionBehavior_(NSWindowCollectionBehaviorFullScreenAuxiliary)
+            view = MarkupView.alloc().initWithFrame_(NSMakeRect(0, 0, frame.size.width, frame.size.height))
+            view.markup_owner = self
+            view.markup_origin = (float(frame.origin.x), float(frame.origin.y))
+            view.markup_scale = float(window.backingScaleFactor())
+            view.setWantsLayer_(True)
+            view.layer().setContentsScale_(view.markup_scale)
+            view.markup_layers = []
+            window.setContentView_(view)
+            window.makeFirstResponder_(view)
+            window.orderFrontRegardless()
+            self._markup_windows.append(window)
+            self._markup_views.append(view)
+            fx, fy, fw, fh = float(frame.origin.x), float(frame.origin.y), float(frame.size.width), float(frame.size.height)
+            if key_window is None and fx <= pointer.x < fx + fw and fy <= pointer.y < fy + fh:
+                key_window = window
+        key_window = key_window or self._markup_windows[0]
+        # The hint goes on the screen with the pointer, at the top centre, so the mode is obvious at once.
+        key_view = key_window.contentView()
+        key_view.addSubview_(self._markup_hint_for(key_view))
+        key_window.makeKeyAndOrderFront_(None)
+        NSApp.activateIgnoringOtherApps_(True)
+        key_window.makeFirstResponder_(key_view)
+        for window in self._markup_windows:
+            window.invalidateCursorRectsForView_(window.contentView())
+        NSCursor.crosshairCursor().set()
+        print(f"  markup: opened on {len(self._markup_windows)} screen(s), key screen {self._markup_windows.index(key_window) + 1}")
+
+    @objc.python_method
+    def _markup_hint_for(self, view):
+        """A dark pill with white text, centred at the top of the view. Its layer is native and sets contentsScale."""
+        text = "Draw · ⌘Z undo · Return save · Esc cancel"
+        width = 380.0
+        height = 30.0
+        bounds = view.bounds()
+        hint = MarkupHint.alloc().initWithFrame_(NSMakeRect(
+            (bounds.size.width - width) / 2.0, bounds.size.height - height - 60.0, width, height))
+        hint.setStringValue_(text)
+        hint.setEditable_(False)
+        hint.setSelectable_(False)
+        hint.setBezeled_(False)
+        hint.setDrawsBackground_(False)
+        hint.setAlignment_(NSTextAlignmentCenter)
+        hint.setFont_(NSFont.systemFontOfSize_weight_(13, 0.4))
+        hint.setTextColor_(NSColor.whiteColor())
+        hint.setWantsLayer_(True)
+        hint.layer().setContentsScale_(float(view.window().backingScaleFactor()))
+        hint.layer().setCornerRadius_(height / 2.0)
+        hint.layer().setBackgroundColor_(NSColor.colorWithCalibratedWhite_alpha_(0.0, 0.72).CGColor())
+        return hint
+
+    @objc.python_method
+    def _markup_live(self):
+        return bool(getattr(self, "_markup_windows", None)) and not getattr(self, "_markup_saving", False)
+
+    @objc.python_method
+    def _markup_sync(self):
+        strokes = self._markup_strokes.all_strokes()
+        for view in self._markup_views:
+            view.sync_strokes(strokes)
+
+    @objc.python_method
+    def _markup_begin(self, point):
+        if self._markup_live():
+            print(f"  markup: mouse down at ({point[0]:.0f}, {point[1]:.0f})")
+            self._markup_strokes.begin(point)
+            self._markup_sync()
+
+    @objc.python_method
+    def _markup_extend(self, point):
+        if self._markup_live() and self._markup_strokes.extend(point):
+            self._markup_sync()
+
+    @objc.python_method
+    def _markup_end(self):
+        if self._markup_live():
+            self._markup_strokes.end()
+            self._markup_sync()
+            print(f"  markup: mouse up, {self._markup_strokes.count()} stroke(s)")
+
+    @objc.python_method
+    def _markup_undo(self):
+        if not self._markup_live():
+            return
+        if self._markup_strokes.undo():
+            self._markup_sync()
+            print(f"  markup: undo, {self._markup_strokes.count()} stroke(s) left")
+
+    @objc.python_method
+    def _markup_key(self, event):
+        """True when the key was handled. ⌘Z undoes, Esc cancels, Return saves. Everything else goes on."""
+        if not getattr(self, "_markup_windows", None):
+            return False
+        flags = int(event.modifierFlags())
+        if flags & NSEventModifierFlagCommand and str(event.charactersIgnoringModifiers() or "").lower() == "z":
+            print("  markup: key command-Z")
+            self._markup_undo()
+            return True
+        code = int(event.keyCode())
+        if code == 53:  # Esc
+            print("  markup: key Esc")
+            self._markup_cancel()
+            return True
+        if code in (36, 76):  # Return, keypad Enter
+            print("  markup: key Return")
+            self._markup_save()
+            return True
+        return False
+
+    @objc.python_method
+    def _markup_cancel(self):
+        if not self._markup_live():
+            return
+        count = self._markup_strokes.count()
+        self._close_markup()
+        print(f"  markup: cancelled with {count} stroke(s), no file saved")
+
+    @objc.python_method
+    def _markup_save(self):
+        if not self._markup_live():
+            return
+        self._markup_strokes.end()
+        self._markup_sync()
+        if not can_save(self._markup_strokes):
+            print("  markup: save refused, no strokes drawn")
+            return
+        self._markup_saving = True
+        stroke_list = self._markup_strokes.all_strokes()
+        frames = []
+        for screen in NSScreen.screens() or []:  # screens()[0] is the menu bar screen, the fallback reference
+            frame = screen.frame()
+            frames.append((float(frame.origin.x), float(frame.origin.y), float(frame.size.width), float(frame.size.height)))
+        # The overlay leaves the screen first, so the capture underneath it is clean. The strokes go on afterwards.
+        for window in self._markup_windows:
+            window.orderOut_(None)
+        print(f"  markup: saving {len(stroke_list)} stroke(s)")
+        threading.Thread(target=self._run_markup_save, args=(stroke_list, frames), daemon=True).start()
+
+    @objc.python_method
+    def _run_markup_save(self, stroke_list, frames):
+        """Off the main thread: a silent full-screen capture into ~/Documents/.cos-tmp, composited with the strokes.
+
+        The result goes into the Captures folder as one PNG. The temp capture is removed in every case.
+        """
+        temp = None
+        sentence = "Couldn't save the mark up."
+        try:
+            time.sleep(0.15)  # give the overlay windows time to leave the screen
+            from commands.captures import BOOK, capture_name, captures_folder, permission_failure, screenshot_command, _saved_sentence
+            folder = markup_folder()
+            os.makedirs(folder, exist_ok=True)
+            temp = temp_capture_now(folder)
+            result = subprocess.run(screenshot_command("full", temp), capture_output=True, text=True, timeout=30)
+            if result.returncode or not os.path.exists(temp) or os.path.getsize(temp) == 0:
+                detail = (result.stderr or "").strip() or "screencapture failed"
+                if permission_failure(detail):
+                    sentence = "I couldn't take a screenshot. Allow Screen Recording for Hey Jev."
+                raise RuntimeError(detail)
+            rep = NSBitmapImageRep.imageRepWithContentsOfFile_(temp)
+            if rep is None:
+                raise RuntimeError("could not read the capture")
+            image_px = (int(rep.pixelsWide()), int(rep.pixelsHigh()))
+            ref = reference_rect(image_px, frames)
+            out_dir = captures_folder()
+            os.makedirs(out_dir, exist_ok=True)
+            out_path = os.path.join(out_dir, capture_name("screenshot", "full", datetime.now().astimezone()))
+            self._composite_markup(temp, out_path, to_image_points(stroke_list, ref, image_px), image_line_width(image_px, ref), image_px)
+            BOOK.remember(out_path, "screenshot")
+            sentence = _saved_sentence("full", out_path)
+            print(f"  markup: saved {os.path.basename(out_path)} with {len(stroke_list)} stroke(s)")
+        except Exception as exc:
+            print(f"  markup: save failed: {exc}")
+        finally:
+            if temp and os.path.exists(temp):
+                try:
+                    os.remove(temp)
+                    print(f"  markup: removed temp capture {os.path.basename(temp)}")
+                except OSError as exc:
+                    print(f"  markup: could not remove temp capture: {exc}")
+        self.performSelectorOnMainThread_withObject_waitUntilDone_("markupFinished:", sentence, False)
+
+    @objc.python_method
+    def _composite_markup(self, base_path, out_path, strokes_px, line_px, image_px):
+        """The capture with each stroke drawn over it in systemRed, round caps, then written as a PNG."""
+        base = NSImage.alloc().initWithContentsOfFile_(base_path)
+        if base is None:
+            raise RuntimeError("could not load the capture")
+        width, height = image_px
+        canvas = NSImage.alloc().initWithSize_(NSMakeSize(width, height))
+        canvas.lockFocus()
+        try:
+            base.drawInRect_(NSMakeRect(0, 0, width, height))
+            NSColor.systemRedColor().setStroke()
+            for stroke in strokes_px:
+                path = NSBezierPath.bezierPath()
+                path.setLineWidth_(line_px)
+                path.setLineCapStyle_(NSRoundLineCapStyle)
+                path.setLineJoinStyle_(NSRoundLineJoinStyle)
+                x, y = stroke[0]
+                path.moveToPoint_(NSMakePoint(x, y))
+                for x, y in stroke[1:]:
+                    path.lineToPoint_(NSMakePoint(x, y))
+                path.stroke()
+        finally:
+            canvas.unlockFocus()
+        rep = NSBitmapImageRep.imageRepWithData_(canvas.TIFFRepresentation())
+        data = rep.representationUsingType_properties_(NSBitmapImageFileTypePNG, None)
+        if data is None or not data.writeToFile_atomically_(out_path, True):
+            raise RuntimeError("could not write the PNG")
+
+    @objc.python_method
+    def _close_markup(self):
+        for window in getattr(self, "_markup_windows", None) or []:
+            window.orderOut_(None)
+        self._markup_windows = []
+        self._markup_views = []
+        self._markup_strokes = None
+        self._markup_saving = False
+        NSCursor.arrowCursor().set()
+
+    def markupFinished_(self, sentence):
+        self._close_markup()
+        self.showCaptureResult_(str(sentence or ""))
+
+    # PR 5a: the Find Image hint. The same dark style as the result panel; nonactivating so Chrome keeps focus.
+    @objc.python_method
+    def _build_hint_panel(self):
+        style = NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel
+        panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
+            NSMakeRect(0, 0, 300, 52), style, NSBackingStoreBuffered, False)
+        panel.setLevel_(BAR_LEVEL)
+        panel.setFloatingPanel_(True)
+        panel.setHidesOnDeactivate_(False)
+        panel.setBecomesKeyOnlyIfNeeded_(True)
+        panel.setOpaque_(False)
+        panel.setBackgroundColor_(NSColor.clearColor())
+        panel.setHasShadow_(True)
+        panel.setCollectionBehavior_(BAR_COLLECTION)
+        panel.setReleasedWhenClosed_(False)
+        panel.setAccessibilityLabel_("Jev hint")
+        self._hint_panel = panel
+        return panel
+
+    @objc.python_method
+    def _show_hint(self, text):
+        if self._hint_panel is None:
+            self._build_hint_panel()
+        window = getattr(self, "mini_panel", None)
+        if window is None:
+            return
+        frame = window.frame()
+        orb = (float(frame.origin.x), float(frame.origin.y), float(frame.size.width), float(frame.size.height))
+        screens = self._visible_screens() or [(0.0, 0.0, 1440.0, 900.0)]
+        screen = screen_for_frame(orb, screens) or screens[0]
+        layout = hint_layout(orb, screen)
+        px, py, pw, ph = layout["panel"]
+        panel = self._hint_panel
+        panel.setFrame_display_(NSMakeRect(px, py, pw, ph), False)
+        scale = float(panel.backingScaleFactor())
+        if NSWorkspace.sharedWorkspace().accessibilityDisplayShouldReduceTransparency():
+            content = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, pw, ph))
+            content.setWantsLayer_(True)
+            content.layer().setBackgroundColor_(NSColor.colorWithCalibratedWhite_alpha_(0.12, 0.96).CGColor())
+        else:
+            content = NSVisualEffectView.alloc().initWithFrame_(NSMakeRect(0, 0, pw, ph))
+            content.setMaterial_(NSVisualEffectMaterialHUDWindow)
+            content.setBlendingMode_(NSVisualEffectBlendingModeBehindWindow)
+            content.setState_(NSVisualEffectStateActive)
+            content.setWantsLayer_(True)
+        content.layer().setCornerRadius_(MENU_CORNER_RADIUS)
+        content.layer().setMasksToBounds_(True)
+        content.layer().setContentsScale_(scale)
+        inset = HINT_TEXT_INSET
+        body = NSTextField.wrappingLabelWithString_(text)
+        body.setFrame_(NSMakeRect(inset, 10.0, pw - 2.0 * inset, ph - 20.0))
+        body.setFont_(NSFont.systemFontOfSize_(13))
+        body.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(0.92, 1.0))
+        content.addSubview_(body)
+        click = HintClickView.alloc().initWithFrame_(NSMakeRect(0, 0, pw, ph))
+        click.dismiss_target = self
+        content.addSubview_(click)  # on top: a click on the hint dismisses it
+        panel.setContentView_(content)
+        self._hint_open = True
+        self._hint_shown_at = time.time()
+        panel.orderFrontRegardless()
+        orb_view = getattr(self, "orb_view", None)
+        if not bool(getattr(orb_view, "reduceMotion", False)):
+            self._animate_result_in(content.layer())
+
+    @objc.python_method
+    def _close_hint(self):
+        panel = self._hint_panel
+        if panel is not None and panel.isVisible():
+            panel.orderOut_(None)
+        self._hint_open = False
+        self._hint_shown_at = 0.0
+
+    def findImageHint_(self, _payload):
+        self._show_hint(FIND_IMAGE_HINT)
+        print("  action menu: find image hint shown")
+
+    def hintDismiss_(self, _sender):
+        self._close_hint()
+
+    @objc.python_method
+    def _sync_hint_dismiss(self):
+        if self._hint_open and time.time() - self._hint_shown_at >= HINT_SECONDS:
+            self._close_hint()
+
+    # PR 5a (extra direction): Summarize and Translate. A dark rounded panel beside the orb, calm fade and scale.
+    @objc.python_method
+    def _build_result_panel(self):
+        style = NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel
+        panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
+            NSMakeRect(0, 0, 300, 200), style, NSBackingStoreBuffered, False)
+        panel.setLevel_(BAR_LEVEL)
+        panel.setFloatingPanel_(True)
+        panel.setHidesOnDeactivate_(False)
+        panel.setBecomesKeyOnlyIfNeeded_(True)
+        panel.setOpaque_(False)
+        panel.setBackgroundColor_(NSColor.clearColor())
+        panel.setHasShadow_(True)
+        panel.setCollectionBehavior_(BAR_COLLECTION)
+        panel.setReleasedWhenClosed_(False)
+        panel.setAccessibilityLabel_("Jev result")
+        self._result_panel = panel
+        return panel
+
+    @objc.python_method
+    def _fill_result_panel(self, heading, text):
+        panel = self._result_panel
+        frames = result_frames(text)
+        pw, ph = frames["panel"]
+        scale = float(panel.backingScaleFactor())
+        if NSWorkspace.sharedWorkspace().accessibilityDisplayShouldReduceTransparency():
+            content = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, pw, ph))
+            content.setWantsLayer_(True)
+            content.layer().setBackgroundColor_(NSColor.colorWithCalibratedWhite_alpha_(0.12, 0.96).CGColor())
+        else:
+            content = NSVisualEffectView.alloc().initWithFrame_(NSMakeRect(0, 0, pw, ph))
+            content.setMaterial_(NSVisualEffectMaterialHUDWindow)
+            content.setBlendingMode_(NSVisualEffectBlendingModeBehindWindow)
+            content.setState_(NSVisualEffectStateActive)
+            content.setWantsLayer_(True)
+        content.layer().setCornerRadius_(MENU_CORNER_RADIUS)
+        content.layer().setMasksToBounds_(True)
+        content.layer().setContentsScale_(scale)
+        head = label(heading, NSMakeRect(*frames["heading"]), 14, NSColor.whiteColor(), weight=0.8)
+        body = NSTextField.wrappingLabelWithString_(text)
+        body.setFrame_(NSMakeRect(*frames["body"]))
+        body.setFont_(NSFont.systemFontOfSize_(13))
+        body.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(0.86, 1.0))
+        copy = result_pill("Copy", frames["copy"], scale, self, "resultCopy:")
+        close = result_pill("Close", frames["close"], scale, self, "resultClose:")
+        for view in (head, body, copy, close):
+            content.addSubview_(view)
+        panel.setContentView_(content)
+
+    @objc.python_method
+    def _present_result(self, heading, text, animate):
+        if self._result_panel is None:
+            self._build_result_panel()
+        window = getattr(self, "mini_panel", None)
+        if window is None:
+            return
+        frame = window.frame()
+        orb = (float(frame.origin.x), float(frame.origin.y), float(frame.size.width), float(frame.size.height))
+        screens = self._visible_screens() or [(0.0, 0.0, 1440.0, 900.0)]
+        screen = screen_for_frame(orb, screens) or screens[0]
+        layout = result_layout(orb, screen, text)
+        self._result_heading = heading
+        self._result_text = text
+        self._fill_result_panel(heading, text)
+        px, py, pw, ph = layout["panel"]
+        self._result_panel.setFrame_display_(NSMakeRect(px, py, pw, ph), True)
+        self._result_open = True
+        self._result_panel.orderFrontRegardless()
+        orb_view = getattr(self, "orb_view", None)
+        if animate and not bool(getattr(orb_view, "reduceMotion", False)):
+            self._animate_result_in(self._result_panel.contentView().layer())
+
+    @objc.python_method
+    def _animate_result_in(self, layer):
+        """Fade in and scale 0.96 to 1 over RESULT_FADE_SECONDS, easeOut. No spring: the result panel stays calm."""
+        from Quartz import CABasicAnimation, CAMediaTimingFunction
+        grow = CABasicAnimation.animationWithKeyPath_("transform.scale")
+        grow.setFromValue_(RESULT_SCALE_FROM)
+        grow.setToValue_(1.0)
+        grow.setDuration_(RESULT_FADE_SECONDS)
+        grow.setTimingFunction_(CAMediaTimingFunction.functionWithName_("easeOut"))
+        fade = CABasicAnimation.animationWithKeyPath_("opacity")
+        fade.setFromValue_(0.0)
+        fade.setToValue_(1.0)
+        fade.setDuration_(RESULT_FADE_SECONDS)
+        fade.setTimingFunction_(CAMediaTimingFunction.functionWithName_("easeOut"))
+        layer.addAnimation_forKey_(grow, "resultScale")
+        layer.addAnimation_forKey_(fade, "resultFade")
+
+    @objc.python_method
+    def _close_result_panel(self):
+        panel = self._result_panel
+        if panel is not None and panel.isVisible():
+            panel.orderOut_(None)
+        self._result_open = False
+
+    def resultClose_(self, _sender):
+        self._close_result_panel()
+
+    def resultCopy_(self, _sender):
+        pasteboard = NSPasteboard.generalPasteboard()
+        pasteboard.clearContents()
+        pasteboard.setString_forType_(self._result_text, NSPasteboardTypeString)
+        self._close_result_panel()
+
+    @objc.python_method
+    def _start_text_action(self, ident):
+        """The capture is saved. Show the panel at once, then ask Jev about the picture on the existing path."""
+        heading = TEXT_ACTIONS[ident][0]
+        self._present_result(heading, "Reading the capture...", True)
+        threading.Thread(target=self._run_text_action, args=(ident,), daemon=True).start()
+
+    @objc.python_method
+    def _run_text_action(self, ident):
+        _heading, prompt = TEXT_ACTIONS[ident]
+        try:
+            from commands.captures import ask_jev_from_text
+            answer = ask_jev_from_text("ask jev about this", question=prompt)
+        except Exception as exc:
+            answer = "I couldn't do that."
+            print(f"  text action failed: {exc}")
+        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+            "resultReady:", json.dumps({"text": str(answer or "")}), False)
+
+    def resultReady_(self, payload):
+        try:
+            text = str(json.loads(str(payload)).get("text") or "")
+        except ValueError:
+            return
+        if self._result_open:
+            self._present_result(self._result_heading, text, False)
+
+    # PR 3b: peek-dock. A snapped orb on a free screen edge tucks most of itself off-screen, and slides back
+    # in when the cursor comes near. Reduce Motion fades in place instead of sliding. A tucked orb is never busy.
+
+    @objc.python_method
+    def _tuck_active(self):
+        return getattr(self, "_tuck", None) is not None
+
+    @objc.python_method
+    def _tuck_motion_on(self):
+        return bool(self._pill_flags().get("motion", True))
+
+    @objc.python_method
+    def _tuck_eye_centres(self, edge):
+        from orb_motion import layer_geometry
+        geo = layer_geometry()
+        horizontal = {side: (f[0] + f[2] / 2.0, f[1] + f[3] / 2.0)
+                      for side, f in (("L", geo["eyeL"]), ("R", geo["eyeR"]))}
+        return tuck_eye_centres(edge, horizontal)
+
+    @objc.python_method
+    def _tuck_consider(self):
+        """A drop near a free edge of a collapsed, idle orb tucks it. True if it did."""
+        if self._tuck_active() or self._orb_docked_now():
+            return False
+        panel = getattr(self, "mini_panel", None)
+        if panel is None or not panel.isVisible() or not getattr(self, "pillCollapsed", False):
+            return False
+        if not self.bar.should_show() or self._peek_is_busy():
+            return False
+        frame = panel.frame()
+        rect = self._frame_tuple(frame)
+        screens = self._visible_screens()
+        screen = screen_for_frame(rect, screens) if screens else None
+        if screen is None:
+            return False
+        edge = tuck_edge(rect, screen, screens)
+        if edge is None:
+            return False
+        self._tuck_engage(edge, screen, (rect[2], rect[3]), rect[1])
+        return True
+
+    @objc.python_method
+    def _tuck_engage(self, edge, screen, size, y):
+        """Slide the orb to its tucked frame, rotate the eyes, and fade in the "x" once it lands."""
+        inset = untucked_frame(size, screen, edge, y)
+        target = tucked_frame(size, screen, edge, y)
+        self._tuck = {"edge": edge, "inset": inset, "target": target, "size": size}
+        defaults = NSUserDefaults.standardUserDefaults()
+        defaults.setObject_forKey_(format_origin(inset[0], inset[1]), ORIGIN_KEY)  # an untuck lands here
+        defaults.setObject_forKey_(encode_tuck(edge, target[1]), TUCK_KEY)
+        print("orb tuck: edge={0} y={1:.1f}".format(edge, target[1]), flush=True)
+        animated = self._tuck_motion_on()
+        self._tuck_close_fade(False)
+        self._tuck_set_eyes(edge, animated)
+        self._tuck_move(target, animated, TUCK_SECONDS, lambda: self._tuck_close_fade(True))
+
+    @objc.python_method
+    def _tuck_untuck(self, reason, instant=False, then=None):
+        """Take the orb out of its tuck: slide back to the inset (or jump), then run then()."""
+        state = getattr(self, "_tuck", None)
+        if state is None:
+            if then is not None:
+                then()
+            return
+        self._tuck = None
+        print("orb untuck: reason={0}".format(reason), flush=True)
+        NSUserDefaults.standardUserDefaults().removeObjectForKey_(TUCK_KEY)
+        self._tuck_close_fade(False)
+        animated = (not instant) and self._tuck_motion_on()
+        self._tuck_set_eyes(None, animated)
+        self._tuck_move(state["inset"], animated, TUCK_SECONDS, then)
+
+    @objc.python_method
+    def _tuck_move(self, frame, animated, seconds, then=None):
+        panel = getattr(self, "mini_panel", None)
+        orb = getattr(self, "orb_view", None)
+        if panel is None or orb is None:
+            return
+        from Quartz import CAMediaTimingFunction
+        rect = NSMakeRect(*(float(v) for v in frame))
+        if not animated or seconds <= 0.0:
+            self._place_orb_rect(frame)
+            if then is not None:
+                then()
+            return
+        NSAnimationContext.beginGrouping()
+        context = NSAnimationContext.currentContext()
+        context.setDuration_(float(seconds))
+        context.setTimingFunction_(CAMediaTimingFunction.functionWithName_("easeOut"))
+        if then is not None:
+            context.setCompletionHandler_(then)
+        panel.animator().setFrame_display_(rect, True)
+        NSAnimationContext.endGrouping()
+
+    @objc.python_method
+    def _tuck_set_eyes(self, edge, animated):
+        orb = getattr(self, "orb_view", None)
+        if orb is None:
+            return
+        orb.tree.set_tuck_eyes(self._tuck_eye_centres(edge), animated, TUCK_SECONDS)
+
+    @objc.python_method
+    def _tuck_button(self):
+        """The round translucent "x". Built once, on the orb's superview so it sits above the orb."""
+        button = getattr(self, "_tuck_close", None)
+        if button is not None:
+            return button
+        button = NSButton.alloc().initWithFrame_(NSMakeRect(0, 0, TUCK_CLOSE_SIZE, TUCK_CLOSE_SIZE))
+        button.setBordered_(False)
+        button.setImage_(NSImage.imageWithSystemSymbolName_accessibilityDescription_("xmark", "Hide Jev"))
+        button.setContentTintColor_(NSColor.whiteColor())
+        button.setTarget_(self)
+        button.setAction_("tuckCloseClicked:")
+        button.setWantsLayer_(True)
+        layer = button.layer()
+        layer.setCornerRadius_(TUCK_CLOSE_SIZE / 2.0)
+        layer.setBackgroundColor_(NSColor.systemGrayColor().colorWithAlphaComponent_(0.55).CGColor())
+        layer.setContentsScale_(float(self.mini_panel.backingScaleFactor()))  # native layer, scale set explicitly
+        button.setAlphaValue_(0.0)
+        button.setHidden_(True)
+        self.orb_view.superview().addSubview_(button)
+        self._tuck_close = button
+        return button
+
+    @objc.python_method
+    def _tuck_close_fade(self, show):
+        """Fade the "x" in once a tuck has landed, and out on untuck or drag."""
+        if show and not self._tuck_active():
+            return
+        button = self._tuck_button()
+        if show:
+            edge = self._tuck["edge"]
+            cx, cy = tuck_close_centre(edge)
+            button.setFrame_(NSMakeRect(cx - TUCK_CLOSE_SIZE / 2.0, cy - TUCK_CLOSE_SIZE / 2.0,
+                                        TUCK_CLOSE_SIZE, TUCK_CLOSE_SIZE))
+            button.setHidden_(False)
+        seconds = TUCK_FADE_IN_SECONDS if show else TUCK_FADE_OUT_SECONDS
+        NSAnimationContext.beginGrouping()
+        context = NSAnimationContext.currentContext()
+        context.setDuration_(seconds)
+        if not show:
+            context.setCompletionHandler_(lambda: button.setHidden_(True))
+        button.animator().setAlphaValue_(1.0 if show else 0.0)
+        NSAnimationContext.endGrouping()
+
+    def tuckCloseClicked_(self, sender):
+        """The tuck's "x": hides the orb, the same as Hide Mini Bar."""
+        print("orb tuck: hide button", flush=True)
+        self._tuck_untuck("hide", instant=True)
+        NSUserDefaults.standardUserDefaults().removeObjectForKey_(TUCK_KEY)
+        self.hideMiniBar_(sender)
+
+    @objc.python_method
+    def _tuck_restore(self):
+        """Relaunch: a tucked orb comes back tucked on the same edge and height, if that edge is still free."""
+        if self._tuck_active():
+            return
+        decoded = decode_tuck(NSUserDefaults.standardUserDefaults().stringForKey_(TUCK_KEY))
+        if decoded is None:
+            return
+        edge, y = decoded
+        panel = getattr(self, "mini_panel", None)
+        if panel is None or not getattr(self, "pillCollapsed", False):
+            return
+        rect = self._frame_tuple(panel.frame())
+        screens = self._visible_screens()
+        screen = screen_for_frame(rect, screens) if screens else None
+        if screen is None or not peek_edge_allowed(edge, screen, screens):
+            return  # the edge is gone or shared with another display: stay where the origin put it
+        size = (rect[2], rect[3])
+        inset = untucked_frame(size, screen, edge, y)
+        self._tuck = {"edge": edge, "inset": inset, "target": tucked_frame(size, screen, edge, y), "size": size}
+        self._place_orb_rect(self._tuck["target"])
+        self._tuck_set_eyes(edge, False)
+        self._tuck_close_fade(True)
+        print("orb tuck: edge={0} y={1:.1f} (restored)".format(edge, y), flush=True)
+
+    @objc.python_method
+    def _peek_enabled(self):
+        return peek_enabled_from_pref(NSUserDefaults.standardUserDefaults().objectForKey_(PEEK_PREF_KEY))
+
+    @objc.python_method
+    def _peek_is_busy(self):
+        """Popover, menu, drag, listening, thinking or speaking. Busy keeps the orb out."""
+        if not getattr(self, "pillCollapsed", False) or self._orb_dragging:
+            return True
+        if getattr(self, "_pill_menu_open", False) or self._action_menu_open:
+            return True  # PR 5a: a tuck waits while the action menu is open
+        pill = getattr(self, "pill", None)
+        if pill is not None and pill.busy:
+            return True
+        status = getattr(self, "status", None)
+        text = str(status.stringValue()) if status is not None else "Ready"
+        return orb_state(text, bool(getattr(self, "option_down", False))) in ("listening", "thinking", "speaking")
+
+    @objc.python_method
+    def _peek_frame_is_not_inset(self):
+        """True while a peek is engaged and the window is tucked or moving, so it is not at the saved inset."""
+        if self._peek_edge is None:
+            return False
+        return bool(self._peek_anim is not None or self._peek_fading or not self._peek_showing)
+
+    @objc.python_method
+    def _peek_position(self, showing):
+        """Window x at the inset (showing) or at the tucked rest, for the current window size."""
+        size = self.mini_panel.frame().size
+        rest = peek_frame(self._peek_inset, (float(size.width), float(size.height)), self._peek_screen, self._peek_edge)
+        return float(self._peek_inset[0]) if showing else float(rest[0])
+
+    @objc.python_method
+    def _peek_frame_x(self, default_x):
+        """The x the presentation should use: the inset or rest, or wherever a move has got to."""
+        if self._peek_edge is None:
+            return default_x
+        if self._peek_anim is not None or self._peek_fading:
+            return float(self.mini_panel.frame().origin.x)
+        return self._peek_position(self._peek_showing)
+
+    @objc.python_method
+    def _peek_consider(self):
+        """Tuck the orb when it sits on an allowed edge, the pref is on, and nothing is busy."""
+        if self._peek_edge is not None or self._orb_docked_now() or self._tuck_active():
+            return
+        panel = getattr(self, "mini_panel", None)
+        if panel is None or not panel.isVisible() or not self.bar.should_show():
+            return
+        if not self._peek_enabled() or self._peek_is_busy():
+            return
+        frame = panel.frame()
+        origin = (float(frame.origin.x), float(frame.origin.y))
+        size = (float(frame.size.width), float(frame.size.height))
+        screens = self._visible_screens()
+        screen = screen_for_frame((origin[0], origin[1], size[0], size[1]), screens)
+        plan = peek_plan(origin, size, screen, screens)
+        if plan is None:
+            return
+        self._peek_edge = plan[0]
+        self._peek_screen = screen
+        self._peek_inset = origin  # the snapped inset; never overwritten while tucked
+        self._peek_outside = 0.0
+        self._peek_latched = True  # the drop may leave the cursor in the hot zone; it must leave before the orb comes back
+        self._peek_move(False)
+
+    @objc.python_method
+    def _peek_move(self, showing):
+        """Slide to the inset (showing) or the rest. Reduce Motion fades in place instead."""
+        panel = self.mini_panel
+        self._peek_showing = bool(showing)
+        self._peek_outside = 0.0
+        target_x = self._peek_position(self._peek_showing)
+        if not self._pill_flags().get("motion", True):
+            self._peek_fade_to(target_x)
+            self._peek_ensure_timer(CURSOR_POLL_SECONDS)
+            return
+        start_x = float(panel.frame().origin.x)
+        if abs(start_x - target_x) < 0.01:
+            self._peek_anim = None
+        else:
+            k, c = SPRING_PEEK_IN if showing else SPRING_PEEK_OUT
+            self._peek_anim = {"from": start_x, "to": target_x, "k": k, "c": c, "t0": time.monotonic()}
+        self._peek_ensure_timer(DRAG_TICK_SECONDS if self._peek_anim is not None else CURSOR_POLL_SECONDS)
+
+    @objc.python_method
+    def _peek_fade_to(self, target_x):
+        """Reduce Motion: fade out, move, fade back in. Two halves of PEEK_FADE_SECONDS, no sliding."""
+        panel = self.mini_panel
+        token = object()
+        self._peek_fade_token = token
+        self._peek_fading = True
+        self._peek_anim = None
+        half = PEEK_FADE_SECONDS / 2.0
+        y = float(self._peek_inset[1])
+
+        def fade(alpha, completion):
+            NSAnimationContext.beginGrouping()
+            ctx = NSAnimationContext.currentContext()
+            ctx.setDuration_(half)
+            ctx.setCompletionHandler_(completion)
+            panel.animator().setAlphaValue_(alpha)
+            NSAnimationContext.endGrouping()
+
+        def moved():
+            if self._peek_fade_token is not token:
+                return
+            panel.setFrameOrigin_(NSMakePoint(target_x, y))
+            fade(1.0, finished)
+
+        def finished():
+            if self._peek_fade_token is token:
+                self._peek_fade_token = None
+                self._peek_fading = False
+
+        fade(0.0, moved)
+
+    @objc.python_method
+    def _peek_show_now(self):
+        """Put a tucked orb at its inset at once, with no motion. A press on the orb does this first."""
+        if self._peek_edge is None:
+            return
+        self._peek_fade_token = None
+        self._peek_fading = False
+        self._peek_anim = None
+        self._peek_showing = True
+        self._peek_outside = 0.0
+        panel = self.mini_panel
+        panel.setAlphaValue_(1.0)
+        panel.setFrameOrigin_(NSMakePoint(self._peek_inset[0], self._peek_inset[1]))
+
+    @objc.python_method
+    def _peek_before_drag(self):
+        self._orb_dragging = True
+        self._peek_show_now()
+
+    @objc.python_method
+    def _peek_disengage(self, move):
+        """Stop peeking. With move, a tucked orb goes straight back to its inset (no motion)."""
+        was_edge = self._peek_edge
+        inset = self._peek_inset
+        was_fading = self._peek_fading
+        self._peek_stop_timer()
+        self._peek_edge = None
+        self._peek_screen = None
+        self._peek_inset = None
+        self._peek_showing = True
+        self._peek_anim = None
+        self._peek_fade_token = None
+        self._peek_fading = False
+        self._peek_outside = 0.0
+        self._peek_latched = False
+        panel = getattr(self, "mini_panel", None)
+        if was_edge is not None and move and inset is not None and panel is not None:
+            if was_fading:
+                panel.setAlphaValue_(1.0)
+            if getattr(self, "pillCollapsed", False):
+                panel.setFrameOrigin_(NSMakePoint(inset[0], inset[1]))
+
+    @objc.python_method
+    def _peek_cursor_and_center(self, panel):
+        loc = NSEvent.mouseLocation()
+        frame = panel.frame()
+        width, height = float(frame.size.width), float(frame.size.height)
+        center = (float(frame.origin.x) + width / 2.0, float(frame.origin.y) + height / 2.0)
+        return (float(loc.x), float(loc.y)), center
+
+    @objc.python_method
+    def _peek_ensure_timer(self, seconds):
+        if self._peek_timer is None or self._peek_interval != seconds:
+            self._peek_stop_timer()
+            self._peek_interval = seconds
+            self._peek_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                seconds, self, "peekTick:", None, True)
+
+    @objc.python_method
+    def _peek_stop_timer(self):
+        timer = self._peek_timer
+        self._peek_timer = None
+        self._peek_interval = None
+        if timer is not None:
+            timer.invalidate()
+
+    def peekTick_(self, _timer):
+        self._peek_tick()
+
+    @objc.python_method
+    def _peek_tick(self):
+        """Runs at the cursor rate while tucked and at the drag rate while sliding. Decides where the orb should be."""
+        if self._peek_edge is None:
+            self._peek_stop_timer()
+            return
+        panel = getattr(self, "mini_panel", None)
+        if panel is None or not panel.isVisible() or not getattr(self, "pillCollapsed", False) or self._peek_fading:
+            self._peek_last = None  # a pause must not count toward the retract timer
+            return
+        now = time.monotonic()
+        dt = 0.0 if self._peek_last is None else now - self._peek_last
+        self._peek_last = now
+        point, center = self._peek_cursor_and_center(panel)
+        if self._peek_is_busy():
+            want = True
+            self._peek_outside = 0.0
+        else:
+            hot = in_hot_zone(point, self._peek_edge, self._peek_screen, center[1])
+            far = not hot and math.hypot(point[0] - center[0], point[1] - center[1]) > PEEK_RETRACT_DISTANCE
+            self._peek_outside = self._peek_outside + dt if far else 0.0
+            if self._peek_showing:
+                want = not should_retract(point, center, self._peek_outside, False)
+            else:
+                if not hot:
+                    self._peek_latched = False
+                want = hot and not self._peek_latched
+        if want != self._peek_showing:
+            self._peek_move(want)
+        anim = self._peek_anim
+        if anim is not None:
+            x, v = spring(now - anim["t0"], anim["from"], anim["to"], anim["k"], anim["c"])
+            if spring_done(x, v, anim["to"]):
+                x = anim["to"]
+                self._peek_anim = None
+            panel.setFrameOrigin_(NSMakePoint(x, self._peek_inset[1]))
+        self._peek_ensure_timer(DRAG_TICK_SECONDS if self._peek_anim is not None else CURSOR_POLL_SECONDS)
+
+    def peekDockMenu_(self, sender):
+        """Window menu: Tuck Jev into the edge. On by default, remembered across launches."""
+        enabled = not self._peek_enabled()
+        NSUserDefaults.standardUserDefaults().setBool_forKey_(enabled, PEEK_PREF_KEY)
+        sender.setState_(1 if enabled else 0)
+        if enabled:
+            self._peek_consider()
+        else:
+            self._peek_disengage(move=True)
 
     @objc.python_method
     def _order_bar_front(self):
@@ -2249,6 +4598,7 @@ class AppDelegate(NSObject):
         if hasattr(self, "pill") and not self.pill.busy:
             self.pill.expanded = False
         self._apply_pill_presentation()
+        self._tuck_restore()  # PR 8: a tucked orb comes back tucked
         defaults.setObject_forKey_(format_size(size[0], size[1]), SIZE_KEY)
         motion = self._pill_flags().get("motion", True)
         if motion:
@@ -2258,6 +4608,7 @@ class AppDelegate(NSObject):
         self.mini_panel.orderFrontRegardless()
         if motion:
             self._fade_bar(1.0, None)
+        self._peek_consider()
 
     @objc.python_method
     def _show_bar_reply(self, text):
@@ -2268,6 +4619,7 @@ class AppDelegate(NSObject):
     def miniSubmit_(self, _sender):
         # Runs the line where it was typed. Does not deminiaturize or order the main window front.
         plan = submission(self.mini_field.stringValue(), self.bar.reply)
+        self._note_turn_text(self.mini_field.stringValue())
         if plan is None:
             return
         self.bar.reply = ""
@@ -2276,6 +4628,9 @@ class AppDelegate(NSObject):
 
     def miniChip_(self, sender):
         chip_id = getattr(sender, "chipId", "") or ""
+        if chip_id == TRANSLATE_CHIP_ID:
+            self._translate_clicked()
+            return
         plan = chip_command_plan(chip_id)
         if plan is None or plan.get("kind") != "run":
             return
@@ -2342,6 +4697,9 @@ class AppDelegate(NSObject):
         self._apply_pill_presentation()
 
     def control_textView_doCommandBySelector_(self, control, _view, selector):
+        surface = self._at_surface_for(control)
+        if surface is not None and self._at_command(surface, selector):
+            return True
         if control == getattr(self, "model_field", None) and str(selector) == "insertNewline:":
             self._save_model()
             return True
@@ -2351,25 +4709,63 @@ class AppDelegate(NSObject):
         return False
 
     def controlTextDidChange_(self, notification):
+        if notification is not None and notification.object() == getattr(self, "full_field", None):
+            self._at_update(self.full_field, "full")
+            return
+        if notification is not None and notification.object() == getattr(self, "home_field", None):
+            self._at_update(self.home_field, "home")
+            return
         if notification is not None and notification.object() == getattr(self, "mini_field", None):
             self._refresh_trailing_symbol()
 
     def controlTextDidEndEditing_(self, notification):
+        surface = self._at_surface_for(notification.object() if notification is not None else None)
+        if surface is not None and getattr(self, "_at", None) and self._at.get("surface") == surface:
+            self._at_hide()
         if notification is not None and notification.object() == getattr(self, "model_field", None):
             self._save_model()
+
+    def windowWillMiniaturize_(self, notification):
+        """Yellow minimize on the full window (PR 8): a docked orb is handed back by running the normal collapse."""
+        if notification.object() != getattr(self, "full_window", None):
+            return
+        if self._orb_window_state_now() != ORB_STATE_OPEN:
+            return  # not docked, so the floating orb is already there
+        print("orb window: miniaturize -> collapse", flush=True)
+        self._collapse_orb_from_full()
 
     def windowDidMiniaturize_(self, notification):
         if notification.object() == self.panel:
             self._sync_mini_bar()
+            return
+        full = getattr(self, "full_window", None)
+        if full is not None and notification.object() == full and self._orb_window_state_now() == ORB_STATE_IDLE:
+            # The collapse already put the orb back, so the window must not sit in the Dock as a miniature.
+            self._orb_suppress_redock = True
+            if full.isMiniaturized():
+                full.deminiaturize_(None)
+            full.orderOut_(None)
+            self._orb_suppress_redock = False
 
     def windowDidDeminiaturize_(self, notification):
         if notification.object() == self.panel:
             self._main_closing = False
             self._sync_mini_bar()
+            return
+        full = getattr(self, "full_window", None)
+        if full is not None and notification.object() == full:
+            if getattr(self, "_orb_suppress_redock", False):
+                return
+            if self._orb_window_state_now() == ORB_STATE_IDLE:
+                print("orb window: deminiaturize -> dock", flush=True)
+                self._expand_orb_to_full("")  # PR 8: a restored full window re-docks the orb
 
     def windowWillClose_(self, notification):
+        if notification is not None and self._at_host_is(notification.object()):
+            self._at_hide()
         if notification.object() == getattr(self, "full_window", None):
-            # Closing the full window hands back to the orb; nothing else changes.
+            # Closing the full window collapses the orb back out of the divider (PR 6a), then hands back to the orb.
+            self._collapse_orb_from_full()
             self._sync_mini_bar()
             return
         if notification.object() == self.panel:
@@ -2377,6 +4773,8 @@ class AppDelegate(NSObject):
             self._sync_mini_bar()
 
     def windowDidBecomeKey_(self, notification):
+        if notification is not None and notification.object() in (getattr(self, "full_window", None), self.panel):
+            threading.Thread(target=self._at_warm, daemon=True).start()
         if notification.object() == self.panel:
             self._main_closing = False
             self._sync_mini_bar()
@@ -2385,6 +4783,8 @@ class AppDelegate(NSObject):
         panel = getattr(self, "mini_panel", None)
         if panel is None or notification.object() != panel or not panel.isVisible():
             return
+        if self._orb_docked_now():
+            return  # PR 6a: the docked orb moves with the window, so it must not save its origin
         if getattr(self, "_suppress_size_save", False):
             return
         self._sync_expanded_from_window()
@@ -2401,6 +4801,8 @@ class AppDelegate(NSObject):
         panel = getattr(self, "mini_panel", None)
         if panel is None or notification.object() != panel:
             return
+        if self._orb_docked_now():
+            return  # PR 6a: the transition sets the orb's frame itself
         size = panel.frame().size
         self._layout_mini_bar(float(size.width), float(size.height))
         if getattr(self, "_suppress_size_save", False) or not panel.isVisible():
@@ -2412,6 +4814,8 @@ class AppDelegate(NSObject):
             format_size(float(size.width), float(size.height)), SIZE_KEY)
 
     def windowDidResignKey_(self, notification):
+        if notification is not None and self._at_host_is(notification.object()):
+            self._at_hide()
         panel = getattr(self, "mini_panel", None)
         if notification is None or panel is None or notification.object() != panel:
             return
@@ -2461,6 +4865,12 @@ class AppDelegate(NSObject):
         gx, gy, gw, gh = layout["greeting"]
         bubble = getattr(self, "greeting_bubble", None)
         label = getattr(self, "greeting_label", None)
+        # PR 8c: the bubble is kept inside the popover's own bounds, so an edge never clips it.
+        bounds = self.mini_panel.contentView().bounds() if getattr(self, "mini_panel", None) is not None else None
+        if bounds is not None:
+            gx, gy, gw, gh = greeting_bubble_frame(
+                (gx, gy, gw, gh), (bounds.origin.x, bounds.origin.y, bounds.size.width, bounds.size.height))
+        docked = self._orb_bubble_docked()
         if bubble is not None:
             bubble.setHidden_(True)
             _place(bubble, (gx, gy, gw, gh))
@@ -2468,9 +4878,10 @@ class AppDelegate(NSObject):
             bubble.solidFill = chrome.get("material") == "solid"
             bubble.setNeedsDisplay_(True)
         if label is not None:
-            label.setHidden_(False)
+            label.setHidden_(docked)  # PR 8c: a docked orb has no bubble; the full-window chat shows the message
             label.setStringValue_(greeting_text())
             _place(label, (gx + 8.0, gy + 6.0, max(40.0, gw - 16.0), max(16.0, gh - 12.0)))
+        self._log_orb_bubble(greeting_text(), docked)
         cx, cy, cw, ch = layout["composer"]
         self.mini_plus.setHidden_(False)
         self.mini_field.setHidden_(False)
@@ -2498,10 +4909,97 @@ class AppDelegate(NSObject):
         if hasattr(self, "zoe_label"):
             _place(self.zoe_label, (cx + field[0] + field[2] - 46.0, cy + field[1], 44.0, field[3]))
         self._layout_popover_footer(layout)
+        self._apply_dock_visibility()  # PR 8c: a layout pass never shows the popover's views beside a docked orb
         self._sync_capsule(width, height, popover=True, panel_rect=layout.get("panel"))
         self._sync_recording_ui()
         self._style_pill_field()
         self._refresh_trailing_symbol()
+
+    @objc.python_method
+    def _clear_dock_strays(self):
+        """On dock: log every window beside the orb, and close the ones that are not the orb or the full window."""
+        panel, full = getattr(self, "mini_panel", None), getattr(self, "full_window", None)
+        if panel is None or full is None:
+            return
+        orb = self._frame_tuple(panel.frame())
+        strip = dock_strip(orb)
+        print("dock: orb={0} strip={1}".format(tuple(round(v, 1) for v in orb), tuple(round(v, 1) for v in strip)),
+              flush=True)
+        for child in list(panel.childWindows() or []):
+            print("dock: child window {0} frame={1} visible={2}".format(
+                type(child).__name__, tuple(round(v, 1) for v in self._frame_tuple(child.frame())),
+                bool(child.isVisible())), flush=True)
+            if child is not full:
+                child.orderOut_(None)
+        for window in list(NSApp.windows() or []):
+            if window is panel or window is full or not window.isVisible():
+                continue
+            frame = self._frame_tuple(window.frame())
+            if not rects_overlap(frame, strip):
+                continue
+            print("dock: stray window {0} title={1!r} frame={2} level={3}".format(
+                type(window).__name__, str(window.title() or ""), tuple(round(v, 1) for v in frame),
+                int(window.level())), flush=True)
+            window.orderOut_(None)
+        for name, closer in (("hint", "_close_hint"), ("result", "_close_result_panel")):
+            fn = getattr(self, closer, None)
+            if callable(fn):
+                fn()
+        self._close_orb_spotlight("dock")
+
+    @objc.python_method
+    def _apply_dock_visibility(self):
+        """While docked, the orb is the only view in its panel. Every other view is hidden, and its state is saved and
+        restored on collapse. Each one hidden for the first time is logged, with its frame and any label."""
+        panel, orb = getattr(self, "mini_panel", None), getattr(self, "orb_view", None)
+        if panel is None or orb is None:
+            return
+        saved = getattr(self, "_dock_saved", None) or {}
+        if not self._orb_bubble_docked():
+            if saved:
+                for view, was_hidden in saved.values():
+                    view.setHidden_(was_hidden)
+                self._dock_saved = {}
+                print("dock: popover views restored", flush=True)
+                self._layout_mini_bar(float(panel.frame().size.width), float(panel.frame().size.height))
+            return
+        keep = set()
+        view = orb
+        while view is not None:
+            keep.add(id(view))
+            view = view.superview()
+        containers = {id(v): v for v in (orb.superview(), panel.contentView()) if v is not None}
+        for container in containers.values():
+            for view in list(container.subviews() or []):
+                if id(view) in keep:
+                    continue
+                if id(view) not in saved:
+                    saved[id(view)] = (view, bool(view.isHidden()))
+                    text = ""
+                    try:
+                        text = str(view.stringValue() or "") if hasattr(view, "stringValue") else ""
+                    except Exception:
+                        text = ""
+                    print("dock: hid {0} frame={1} label={2!r}".format(
+                        type(view).__name__, tuple(round(v, 1) for v in self._frame_tuple(view.frame())), text[:40]),
+                        flush=True)
+                view.setHidden_(True)
+        self._dock_saved = saved
+
+    @objc.python_method
+    def _orb_bubble_docked(self):
+        """True while the orb is docked, or the full window is open: the bubble is then held back."""
+        full = getattr(self, "full_window", None)
+        return bool(self._orb_docked_now() or (full is not None and full.isVisible()))
+
+    @objc.python_method
+    def _log_orb_bubble(self, text, docked):
+        """Logs the bubble's text and whether it was held back, once per change, not on every layout pass."""
+        key = (bool(docked), str(text))
+        if getattr(self, "_orb_bubble_log_key", None) == key:
+            return
+        self._orb_bubble_log_key = key
+        print(orb_bubble_log_line(text, docked), flush=True)
 
     @objc.python_method
     def _sync_orb(self):
@@ -2513,10 +5011,20 @@ class AppDelegate(NSObject):
         flags = getattr(self, "_pill_chrome", {})
         status = getattr(self, "status", None)
         state = str(status.stringValue()) if status is not None else "Ready"
-        visible = panel.isVisible() and self.bar.should_show()
+        full = getattr(self, "full_window", None)
+        docked = self._orb_docked_now() or (full is not None and bool(full.isVisible()))
+        # While the window is open the docked orb stays up, whatever the bar's show/hide rules say.
+        visible = (panel.isVisible() or docked) and (self.bar.should_show() or docked)
+        label = getattr(self, "greeting_label", None)
+        if label is not None:
+            label.setHidden_(docked or bool(getattr(self, "pillCollapsed", False)))
+            self._log_orb_bubble(greeting_text(), docked)
         orb.configure(state, bool(getattr(self, "option_down", False)),
                       getattr(self, "_meter_unit", 0.0), visible,
-                      flags.get("motion", True), flags.get("material") == "solid")
+                      flags.get("motion", True), flags.get("material") == "solid",
+                      docked=docked, popover=not collapsed)
+        # The orb layer draws its own shadow. A window shadow on the orb-only panel would add a second one.
+        panel.setHasShadow_(not collapsed)
         backing = getattr(self, "pill_backing", None)
         if backing is not None:
             backing.setHidden_(collapsed)
@@ -2532,6 +5040,7 @@ class AppDelegate(NSObject):
         stop = getattr(self, "rec_stop", None)
         recording = stop is not None and not stop.isHidden()
         self.mini_mic.setHidden_(collapsed or recording)
+        self._apply_dock_visibility()
 
     @objc.python_method
     def _place_mic_level(self, mic_frame):
@@ -2587,6 +5096,8 @@ class AppDelegate(NSObject):
         panel = getattr(self, "mini_panel", None)
         if panel is None:
             return
+        if self._peek_frame_is_not_inset():
+            return  # a tucked or sliding orb is not at the saved inset, so it must not overwrite it
         frame = panel.frame()
         box = (
             float(frame.origin.x),
@@ -2633,8 +5144,17 @@ class AppDelegate(NSObject):
         panel = getattr(self, "mini_panel", None)
         if panel is None or not hasattr(self, "pill"):
             return
+        if self._docked_frame_held():
+            return  # PR 8: docked on the window's left edge; a presentation pass must not move it back
+        if self._tuck_active():
+            self._place_orb_rect(self._tuck["target"])  # PR 8: a tucked orb stays tucked through presentation passes
+            return
         self.pillCollapsed = bool(self.pill.collapsed)
         target = self._target_pill_frame()
+        if self.pillCollapsed:
+            target = (self._peek_frame_x(target[0]), target[1], target[2], target[3])
+        else:
+            self._peek_disengage(move=False)  # the popover opens at the inset, so the peek ends here
         self._suppress_size_save = True
         self._pill_frame_collapsed = self.pillCollapsed
         flags = self._pill_flags()
@@ -2657,6 +5177,8 @@ class AppDelegate(NSObject):
             panel.setAlphaValue_(1.0)
         self._apply_mic_tint()
         self._sync_orb()
+        if self.pillCollapsed:
+            self._peek_consider()
 
     @objc.python_method
     def _place_expanded_on_main_screen(self):
@@ -2687,7 +5209,14 @@ class AppDelegate(NSObject):
 
     def expandMiniBar_(self, _sender):
         """A click on the idle capsule opens the typing pill and shows the caret."""
+        self._close_orb_spotlight("type box")
         if not hasattr(self, "pill"):
+            return
+        if self._tuck_active():
+            self._tuck_untuck("typing", instant=True)  # PR 8: the typing pill is never shown while tucked
+        if self._orb_docked_now():
+            # PR 6a: while the window is docked, the typing field is the window's own. A popover would resize the orb.
+            self._focus_docked_window()
             return
         if self.pill.expanded and not getattr(self, "pillCollapsed", False):
             self._focus_pill_field()
@@ -2695,6 +5224,390 @@ class AppDelegate(NSObject):
         self.pill.click()
         self._apply_pill_presentation(animate_open=True)
         self._focus_pill_field()
+
+    # PR 6a: expand from the orb, dock on the sidebar/chat divider, and collapse back. The state machine lives in
+    # orb_motion.orb_window_next: idle, expanding, open, collapsing. Clicks that arrive mid-transition are ignored.
+    @objc.python_method
+    def _orb_window_state_now(self):
+        return getattr(self, "_orb_window_state", ORB_STATE_IDLE)
+
+    @objc.python_method
+    def _orb_docked_now(self):
+        """True while the orb is moving to, sitting on, or leaving the divider. Its bob stays off the whole time."""
+        return self._orb_window_state_now() != ORB_STATE_IDLE
+
+    @objc.python_method
+    def _set_orb_window_state(self, event):
+        nxt = orb_window_next(self._orb_window_state_now(), event)
+        if nxt is None:
+            return False
+        self._orb_window_state = nxt
+        return True
+
+    def expandOrbToFull_(self, _sender):
+        """A single click on the orb (R2). On a docked orb it collapses instead, the same as a click on the orb."""
+        self._close_orb_spotlight("orb click")
+        if self._orb_docked_now():
+            self._collapse_orb_from_full()
+            return
+        self._expand_orb_to_full("")
+
+    def collapseOrbFromFull_(self, _sender):
+        self._collapse_orb_from_full()
+
+    @objc.python_method
+    def _frame_tuple(self, frame):
+        return (float(frame.origin.x), float(frame.origin.y), float(frame.size.width), float(frame.size.height))
+
+    @objc.python_method
+    def _snapshot_full_window(self):
+        """A bitmap of the full window's content, and the backing scale it was made at.
+
+        A window that was never ordered in has not rendered its layers yet, so it is ordered in at alpha 0
+        for the snapshot and taken back out. Nothing is visible while that happens.
+        """
+        win = self.full_window
+        was_visible = bool(win.isVisible())
+        if not was_visible:
+            win.setAlphaValue_(0.0)
+            win.orderFront_(None)
+            win.contentView().displayIfNeeded()
+        view = win.contentView()
+        bounds = view.bounds()
+        # Vibrancy draws blank into a bitmap, so the sidebar is a flat stand-in for the cache only.
+        effect_hidden = self.full_effect.isHidden()
+        solid_hidden = self.full_solid.isHidden()
+        self.full_effect.setHidden_(True)
+        self.full_solid.setHidden_(False)
+        try:
+            rep = view.bitmapImageRepForCachingDisplayInRect_(bounds)
+            if rep is not None:
+                view.cacheDisplayInRect_toBitmapImageRep_(bounds, rep)
+        finally:
+            self.full_effect.setHidden_(effect_hidden)
+            self.full_solid.setHidden_(solid_hidden)
+        if not was_visible:
+            win.orderOut_(None)
+            win.setAlphaValue_(1.0)
+        image = rep.CGImage() if rep is not None else None
+        return image, float(win.backingScaleFactor())
+
+    @objc.python_method
+    def _make_orb_ghost(self, frame, image, scale):
+        """Borderless, click-through panel at the bar level, holding the snapshot. Returns (panel, layer)."""
+        import orb_layers
+        x, y, w, h = frame
+        style = NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel
+        panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
+            NSMakeRect(x, y, w, h), style, NSBackingStoreBuffered, False)
+        panel.setLevel_(BAR_LEVEL)
+        panel.setOpaque_(False)
+        panel.setBackgroundColor_(NSColor.clearColor())
+        panel.setHasShadow_(False)
+        panel.setIgnoresMouseEvents_(True)
+        panel.setReleasedWhenClosed_(False)
+        panel.setCollectionBehavior_(BAR_COLLECTION)
+        view = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, w, h))
+        view.setWantsLayer_(True)
+        view.layer().setContentsScale_(float(scale))
+        panel.setContentView_(view)
+        layer = orb_layers.ghost_layer(image, (w, h), scale)
+        view.layer().addSublayer_(layer)
+        return panel, layer
+
+    @objc.python_method
+    def _focus_docked_window(self):
+        """Typing while the window is open goes to its field. A transition in progress has nothing to focus."""
+        full = getattr(self, "full_window", None)
+        if full is None or not full.isVisible():
+            return
+        NSApp.activateIgnoringOtherApps_(True)
+        full.makeKeyAndOrderFront_(None)
+        full.makeFirstResponder_(self.full_field)
+
+    @objc.python_method
+    def _remove_orb_ghost(self):
+        ghost = getattr(self, "_orb_ghost", None)
+        if ghost is not None:
+            ghost.orderOut_(None)
+        self._orb_ghost = None
+        self._orb_ghost_layer = None
+
+    @objc.python_method
+    def _place_orb_rect(self, rect):
+        """Frame the orb panel, its content and the orb view together. Its window's resize hook is skipped mid-motion."""
+        panel = getattr(self, "mini_panel", None)
+        orb = getattr(self, "orb_view", None)
+        if panel is None or orb is None:
+            return
+        x, y, w, h = (float(v) for v in rect)
+        panel.setFrame_display_(NSMakeRect(x, y, w, h), True)
+        view = panel.contentView()
+        if view is not None:
+            view.setFrame_(NSMakeRect(0, 0, w, h))
+        orb.setFrame_(NSMakeRect(0, 0, w, h))
+
+    @objc.python_method
+    def _start_orb_spring(self, target):
+        """Spring the orb panel's x, y, width and height to target (60 Hz, the same springs as the drag)."""
+        self._stop_orb_spring()
+        self._orb_spring = {"from": self._frame_tuple(self.mini_panel.frame()), "to": tuple(target),
+                            "started": time.monotonic()}
+        self._orb_ticks = 0
+        self._orb_spring_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            DRAG_TICK_SECONDS, self, "orbSpringTick:", None, True)
+
+    @orb_guarded
+    def orbSpringTick_(self, _timer):
+        state = getattr(self, "_orb_spring", None)
+        if state is None:
+            self._stop_orb_spring()
+            return
+        elapsed = time.monotonic() - state["started"]
+        self._orb_ticks = getattr(self, "_orb_ticks", 0) + 1
+        axes = [spring(elapsed, state["from"][i], state["to"][i], *SPRING_EXPAND) for i in range(4)]
+        done = all(spring_done(axes[i][0], axes[i][1], state["to"][i]) for i in range(4))
+        rect = state["to"] if done else tuple(axes[i][0] for i in range(4))
+        self._place_orb_rect(rect)
+        if done:
+            self._stop_orb_spring()
+
+    @objc.python_method
+    def _orb_recover(self):
+        """After a failed transition: stop the motion and settle the state on what is really on screen."""
+        self._stop_orb_spring()
+        self._remove_orb_ghost()
+        full = getattr(self, "full_window", None)
+        self._orb_window_state = ORB_STATE_OPEN if (full is not None and full.isVisible()) else ORB_STATE_IDLE
+        print("  orb recovered to {0}".format(self._orb_window_state))
+        self._sync_orb()
+
+    @objc.python_method
+    def _stop_orb_spring(self):
+        timer = getattr(self, "_orb_spring_timer", None)
+        if timer is not None:
+            timer.invalidate()
+        self._orb_spring_timer = None
+        self._orb_spring = None
+
+    @objc.python_method
+    def _schedule_orb_landing(self, seconds):
+        """One single-shot timer lands whichever transition is running. A stuck animation cannot hold the state."""
+        timer = getattr(self, "_orb_land_timer", None)
+        if timer is not None:
+            timer.invalidate()
+        self._orb_land_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            max(0.01, float(seconds)), self, "orbTransitionLanded:", None, False)
+
+    @orb_guarded
+    def orbTransitionLanded_(self, _timer):
+        self._orb_land_timer = None
+        state = self._orb_window_state_now()
+        if state == ORB_STATE_EXPANDING:
+            self._land_orb_expand()
+        elif state == ORB_STATE_COLLAPSING:
+            self._land_orb_collapse()
+
+    @objc.python_method
+    @orb_guarded
+    def _expand_orb_to_full(self, draft=""):
+        self._close_orb_spotlight("full window")
+        """The window grows out of the orb. The orb springs to the divider at half size and stops bobbing."""
+        panel = getattr(self, "mini_panel", None)
+        orb = getattr(self, "orb_view", None)
+        if panel is None or orb is None:
+            return
+        full = getattr(self, "full_window", None)
+        if full is not None and full.isVisible():
+            self._show_full_window(draft)
+            return
+        if not self._set_orb_window_state("expand"):
+            return
+        print("  orb expand: start")
+        self._peek_disengage(move=False)  # a click has already brought a tucked orb out
+        if getattr(self, "full_window", None) is None:
+            self._build_full_window()
+        self._apply_full_chrome()
+        self._layout_full_window()
+        self._refresh_full_window()
+        self._orb_expand_draft = draft
+        if draft:
+            self.full_field.setStringValue_(draft)
+        window_frame = self._frame_tuple(self.full_window.frame())
+        self._orb_window_target = window_frame  # the real window lands on exactly this frame
+        orb_rect = self._frame_tuple(panel.frame())
+        self._orb_undocked_frame = orb_rect
+        screen = screen_for_frame(orb_rect, self._visible_screens())
+        start, end = expand_rects(orb_rect, window_frame, screen)
+        reduce = bool(getattr(orb, "reduceMotion", False))
+        image, scale = self._snapshot_full_window()
+        ghost, layer = self._make_orb_ghost(end, image, scale)
+        self._orb_ghost = ghost
+        self._orb_ghost_layer = layer
+        ghost.orderWindow_relativeTo_(NSWindowBelow, panel.windowNumber())
+        ex, ey, ew, eh = end
+        local = lambda x, y: (x - ex, y - ey)
+        import orb_layers
+        duration = orb_layers.animate_ghost(
+            layer, (ew, eh),
+            start_center=local(start[0] + start[2] / 2.0, start[1] + start[3] / 2.0),
+            end_center=(ew / 2.0, eh / 2.0),
+            start_scale=start[2] / ew, end_scale=1.0,
+            fade_from=0.0, fade_to=1.0, reduce_motion=reduce)
+        print("  orb expand: path={0} image={1} ghost={2} visible={3} duration={4:.3f}s orb={5}".format(
+            "reduce-motion" if reduce else "spring", "yes" if image is not None else "NO",
+            tuple(round(v, 1) for v in end), bool(ghost.isVisible()), duration,
+            tuple(round(v, 1) for v in orb_rect)))
+        self._orb_started = time.monotonic()
+        self._sync_orb()  # docked now, so the bob stops before the orb moves
+        if reduce:
+            self._place_orb_rect(dock_point(window_frame))
+        else:
+            self._start_orb_spring(dock_point(window_frame))
+        self._schedule_orb_landing(duration)
+
+    @objc.python_method
+    def _log_orb_dock(self, tag):
+        """Diagnostics for a docked orb that draws nothing: panel, window and layer state. Never raises."""
+        try:
+            def rect(r):
+                return tuple(round(float(v), 2) for v in (r.origin.x, r.origin.y, r.size.width, r.size.height))
+            panel = self.mini_panel
+            orb = self.orb_view
+            print("  orb {0} panel: frame={1} level={2} alpha={3:.2f} visible={4} occlusion={5} child={6} "
+                  "viewHidden={7} viewFrame={8}".format(
+                      tag, rect(panel.frame()), panel.level(), float(panel.alphaValue()), bool(panel.isVisible()),
+                      int(panel.occlusionState()), panel.parentWindow() is self.full_window,
+                      bool(orb.isHidden()), rect(orb.frame())))
+            tree = orb.tree
+            t = tree.root.affineTransform()
+            print("  orb {0} root: hidden={1} opacity={2:.2f} bounds={3} scale={4:.3f} xf=({5:.3f},{6:.3f}) "
+                  "contentsScale={7} sublayers={8}".format(
+                      tag, bool(tree.root.isHidden()), float(tree.root.opacity()), rect(tree.root.bounds()),
+                      float(tree.scale or 0.0), t.a, t.d, float(tree.root.contentsScale()),
+                      len(tree.root.sublayers() or [])))
+            for name in ("body_group", "body", "base", "highlight", "ring", "shadow"):
+                layer = getattr(tree, name)
+                print("  orb {0} {1}: hidden={2} opacity={3:.2f} bounds={4} contentsScale={5} mask={6}".format(
+                    tag, name, bool(layer.isHidden()), float(layer.opacity()), rect(layer.bounds()),
+                    float(layer.contentsScale()), layer.mask() is not None))
+            eye = tree.eyes["L"]
+            print("  orb {0} eyeL: hidden={1} opacity={2:.2f} bounds={3} mask={4}".format(
+                tag, bool(eye.isHidden()), float(eye.opacity()), rect(eye.bounds()), eye.mask() is not None))
+            from Quartz import CGPathGetBoundingBox
+            pos, anchor = tree.root.position(), tree.root.anchorPoint()
+            print("  orb {0} root position=({1:.2f},{2:.2f}) anchor=({3:.2f},{4:.2f}) view=({5:.1f},{6:.1f})".format(
+                tag, pos.x, pos.y, anchor.x, anchor.y, float(orb.bounds().size.width),
+                float(orb.bounds().size.height)))
+            mask_box = CGPathGetBoundingBox(tree.body.mask().path())
+            print("  orb {0} body mask path bbox=({1:.1f},{2:.1f},{3:.1f},{4:.1f})".format(
+                tag, mask_box.origin.x, mask_box.origin.y, mask_box.size.width, mask_box.size.height))
+            base = tree.base
+            print("  orb {0} base type={1} start=({2:.2f},{3:.2f}) end=({4:.2f},{5:.2f}) locations={6} colors={7}".format(
+                tag, base.type(), base.startPoint().x, base.startPoint().y, base.endPoint().x, base.endPoint().y,
+                list(base.locations() or []), len(base.colors() or [])))
+            print("  orb {0} window opaque={1} alpha={2:.2f} shadow={3} full window visible={4} "
+                  "occlusion={5}".format(
+                      tag, bool(self.full_window.isOpaque()), float(self.full_window.alphaValue()),
+                      bool(self.full_window.hasShadow()), bool(self.full_window.isVisible()),
+                      int(self.full_window.occlusionState())))
+        except Exception as exc:
+            print("  orb {0} log failed: {1}".format(tag, exc))
+
+    @objc.python_method
+    @orb_guarded
+    def _land_orb_expand(self):
+        self._stop_orb_spring()
+        full = self.full_window
+        panel = self.mini_panel
+        target = getattr(self, "_orb_window_target", None)
+        if target is not None:
+            full.setFrame_display_(NSMakeRect(*target), False)  # land exactly where the ghost ended
+        landed = dock_point(self._frame_tuple(full.frame()))
+        self._place_orb_rect(landed)
+        print("  orb dock: landed, dock_point={0} window={1}".format(
+            tuple(round(v, 1) for v in landed), tuple(round(v, 1) for v in self._frame_tuple(full.frame()))),
+            flush=True)
+        NSApp.activateIgnoringOtherApps_(True)
+        full.makeKeyAndOrderFront_(None)
+        print("  orb expand: window frame={0} visible={1}".format(
+            tuple(round(v, 1) for v in self._frame_tuple(full.frame())), bool(full.isVisible())))
+        full.addChildWindow_ordered_(panel, NSWindowAbove)  # the orb follows the window from here on
+        panel.setLevel_(dock_panel_level(full.level()))  # PR 8: docked, the orb sits above its window (collapse restores BAR_LEVEL)
+        panel.orderFront_(None)  # docked orb stays on screen while the window is open
+        print("  orb dock level: panel={0} window={1}".format(panel.level(), full.level()), flush=True)
+        print("  orb expand: docked orb visible={0} child={1}".format(
+            bool(panel.isVisible()), panel.parentWindow() is full))
+        draft = getattr(self, "_orb_expand_draft", "")
+        if draft:
+            self.full_field.setStringValue_(draft)
+        full.makeFirstResponder_(self.full_field)
+        self._remove_orb_ghost()
+        self._set_orb_window_state("landed")
+        self._clear_dock_strays()  # PR 8c: log and close anything beside the orb that is not the orb
+        self._sync_orb()
+        self._apply_dock_visibility()
+        self._log_orb_dock("dock")
+        print("  orb expand: done after {0:.3f}s ticks={1}".format(
+            time.monotonic() - getattr(self, "_orb_started", time.monotonic()), getattr(self, "_orb_ticks", 0)))
+
+    @objc.python_method
+    @orb_guarded
+    def _collapse_orb_from_full(self):
+        """The exact reverse of the expand: snapshot, hide the window, shrink the ghost into the orb's origin."""
+        self._at_hide()
+        if not self._set_orb_window_state("collapse"):
+            return
+        full = self.full_window
+        panel = self.mini_panel
+        orb = self.orb_view
+        print("  orb collapse: start path={0}".format("reduce-motion" if bool(getattr(orb, "reduceMotion", False)) else "spring"))
+        window_frame = self._frame_tuple(full.frame())
+        saved = getattr(self, "_orb_undocked_frame", None) or self._frame_tuple(panel.frame())
+        origin = collapse_target((saved[0], saved[1]), self._visible_screens(), size=(saved[2], saved[3]))
+        target = (origin[0], origin[1], saved[2], saved[3])
+        self._orb_collapse_to = target
+        reduce = bool(getattr(orb, "reduceMotion", False))
+        image, scale = self._snapshot_full_window()
+        ghost, layer = self._make_orb_ghost(window_frame, image, scale)
+        self._orb_ghost = ghost
+        self._orb_ghost_layer = layer
+        wx, wy, ww, wh = window_frame
+        full.removeChildWindow_(panel)  # hand the orb back before the window goes
+        panel.setLevel_(BAR_LEVEL)
+        full.orderOut_(None)
+        ghost.orderWindow_relativeTo_(NSWindowBelow, panel.windowNumber())
+        import orb_layers
+        tx, ty, tw, th = target
+        duration = orb_layers.animate_ghost(
+            layer, (ww, wh),
+            start_center=(ww / 2.0, wh / 2.0),
+            end_center=(tx + tw / 2.0 - wx, ty + th / 2.0 - wy),
+            start_scale=1.0, end_scale=EXPAND_START_SCALE,
+            fade_from=1.0, fade_to=0.0, reduce_motion=reduce)
+        print("  orb collapse: ghost={0} visible={1} duration={2:.3f}s image={3}".format(
+            tuple(round(v, 1) for v in window_frame), bool(ghost.isVisible()), duration,
+            "yes" if image is not None else "NO"))
+        self._orb_started = time.monotonic()
+        if reduce:
+            self._place_orb_rect(target)
+        else:
+            self._start_orb_spring(target)
+        self._schedule_orb_landing(duration)
+
+    @objc.python_method
+    @orb_guarded
+    def _land_orb_collapse(self):
+        self._stop_orb_spring()
+        self._place_orb_rect(self._orb_collapse_to)
+        self._remove_orb_ghost()
+        self._orb_undocked_frame = None
+        self._set_orb_window_state("landed")
+        self._apply_dock_visibility()  # PR 8c: the popover's views come back before the orb settles
+        self._sync_orb()  # not docked any more, so the bob resumes
+        self._peek_consider()
+        print("  orb collapse: done after {0:.3f}s ticks={1}".format(
+            time.monotonic() - getattr(self, "_orb_started", time.monotonic()), getattr(self, "_orb_ticks", 0)))
 
     def miniExpandHome_(self, _sender):
         """Expand the popover into the full Jev window, keeping the draft."""
@@ -2726,6 +5639,15 @@ class AppDelegate(NSObject):
         return NSColor.colorWithSRGBRed_green_blue_alpha_(r, g, b, alpha)
 
     @objc.python_method
+    def _full_rows(self):
+        """(rows on screen since "+ New chat", every typed row for Recent)."""
+        if not hasattr(self, "typed"):
+            return [], []
+        allrows = list(self.typed.rows)
+        shown = fw.chat_rows(allrows, getattr(self.typed, "added", len(allrows)), getattr(self, "_full_chat_cut", 0))
+        return shown, allrows
+
+    @objc.python_method
     def _build_full_window(self):
         w, h = fw.FULL_DEFAULT
         style = (NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable
@@ -2745,6 +5667,7 @@ class AppDelegate(NSObject):
         self.full_window = win
         root = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, w, h))
         win.setContentView_(root)
+        self.full_root = root
         self.full_solid = SolidFullView.alloc().initWithFrame_(NSMakeRect(0, 0, w, h))
         root.addSubview_(self.full_solid)
         self.full_effect = NSVisualEffectView.alloc().initWithFrame_(NSMakeRect(0, 0, w, h))
@@ -2755,55 +5678,53 @@ class AppDelegate(NSObject):
         self.full_main = SolidFullView.alloc().initWithFrame_(NSMakeRect(fw.SIDEBAR_W, 0, w - fw.SIDEBAR_W, h))
         self.full_main.fill = "page"
         root.addSubview_(self.full_main)
-
-        def label(text, size, weight, color):
-            f = NSTextField.labelWithString_(text)
-            f.setFont_(NSFont.systemFontOfSize_weight_(size, weight))
-            f.setTextColor_(color)
-            root.addSubview_(f)
-            return f
-
-        self.full_side_title = label("History", 11, 0.4, NSColor.secondaryLabelColor())
-        self.full_header = label("Jev", 17, 0.4, NSColor.labelColor())
-        self.full_home_btn = NSButton.buttonWithTitle_target_action_("Jev Home", self, "fullOpenHome:")
-        self.full_home_btn.setBezelStyle_(14 if hasattr(self.full_home_btn, "setBezelStyle_") else 1)
-        self.full_home_btn.setBordered_(False)
-        self.full_home_btn.setContentTintColor_(NSColor.secondaryLabelColor())
-        self.full_home_btn.setFont_(NSFont.systemFontOfSize_(12))
-        root.addSubview_(self.full_home_btn)
-
-        def scrolled(font, card):
-            tv = NSTextView.alloc().initWithFrame_(NSMakeRect(0, 0, 100, 100))
-            tv.setEditable_(False)
-            tv.setSelectable_(True)
-            tv.setDrawsBackground_(False)
-            tv.setFont_(font)
-            tv.setTextContainerInset_(NSMakeSize(10, 10) if card else NSMakeSize(4, 6))
-            tv.setAutoresizingMask_(NSViewWidthSizable)
-            tv.setVerticallyResizable_(True)
-            tv.setHorizontallyResizable_(False)
-            tv.textContainer().setWidthTracksTextView_(True)
-            sc = NSScrollView.alloc().initWithFrame_(NSMakeRect(0, 0, 100, 100))
-            sc.setDrawsBackground_(False)
-            sc.setHasVerticalScroller_(True)
-            sc.setAutohidesScrollers_(True)
-            sc.setDocumentView_(tv)
-            root.addSubview_(sc)
-            return tv, sc
-
-        self.full_card = SolidFullView.alloc().initWithFrame_(NSMakeRect(0, 0, 10, 10))
-        self.full_card.fill = "soft"
-        self.full_card.radius = 12.0
-        self.full_card.stroke = "line"
-        root.addSubview_(self.full_card)
-        self.full_result_title = label("Result", 11, 0.4, NSColor.secondaryLabelColor())
-        self.full_divider = SolidFullView.alloc().initWithFrame_(NSMakeRect(0, 0, 1, 10))
+        self.full_divider = SolidFullView.alloc().initWithFrame_(NSMakeRect(fw.SIDEBAR_W, 0, 1, h))
         self.full_divider.fill = "line"
         root.addSubview_(self.full_divider)
-        self.full_history, self.full_history_scroll = scrolled(NSFont.systemFontOfSize_(12.5), False)
-        self.full_convo, self.full_convo_scroll = scrolled(NSFont.systemFontOfSize_(13.5), False)
-        self.full_result, self.full_result_scroll = scrolled(
-            NSFont.monospacedSystemFontOfSize_weight_(12, 0.0), True)
+
+        # Sidebar: "+ New chat" stays put; the list below it scrolls.
+        self.full_new_chat = FullRowButton.alloc().initWithFrame_(NSMakeRect(0, 0, 10, 10))
+        self.full_new_chat.configure("+ New chat", "pill", ("", ""), self, "fullNewChat:")
+        root.addSubview_(self.full_new_chat)
+        self.full_side_doc = FullSidebarDocView.alloc().initWithFrame_(NSMakeRect(0, 0, fw.SIDEBAR_W, 10))
+        self.full_side_scroll = NSScrollView.alloc().initWithFrame_(NSMakeRect(0, 0, 10, 10))
+        self.full_side_scroll.setDrawsBackground_(False)
+        self.full_side_scroll.setHasVerticalScroller_(True)
+        self.full_side_scroll.setAutohidesScrollers_(True)
+        self.full_side_scroll.setBorderType_(0)
+        self.full_side_scroll.setDocumentView_(self.full_side_doc)
+        root.addSubview_(self.full_side_scroll)
+        self.full_side_heads = []
+        self._full_side_height = 0.0
+        self.full_header_btn = FullRowButton.alloc().initWithFrame_(NSMakeRect(0, 0, 10, 10))
+        self.full_header_btn.configure("Jev Home", "pill", ("", ""), self, "fullOpenHome:")
+        root.addSubview_(self.full_header_btn)
+
+        # Main column: greeting (no conversation yet), or the conversation.
+        self.full_greeting = NSTextField.labelWithString_(greeting_text())
+        self.full_greeting.setFont_(NSFont.systemFontOfSize_weight_(24.0, 0.3))
+        self.full_greeting.setAlignment_(NSTextAlignmentCenter)
+        root.addSubview_(self.full_greeting)
+
+        tv = NSTextView.alloc().initWithFrame_(NSMakeRect(0, 0, 100, 100))
+        tv.setEditable_(False)
+        tv.setSelectable_(True)
+        tv.setDrawsBackground_(False)
+        tv.setFont_(NSFont.systemFontOfSize_(13.5))
+        tv.setTextContainerInset_(NSMakeSize(4, 6))
+        tv.setAutoresizingMask_(NSViewWidthSizable)
+        tv.setVerticallyResizable_(True)
+        tv.setHorizontallyResizable_(False)
+        tv.textContainer().setWidthTracksTextView_(True)
+        sc = NSScrollView.alloc().initWithFrame_(NSMakeRect(0, 0, 100, 100))
+        sc.setDrawsBackground_(False)
+        sc.setHasVerticalScroller_(True)
+        sc.setAutohidesScrollers_(True)
+        sc.setDocumentView_(tv)
+        root.addSubview_(sc)
+        self.full_convo, self.full_convo_scroll = tv, sc
+
+        # Input: a pill, the field inside it and the mic at its right end.
         self.full_input_bg = SolidFullView.alloc().initWithFrame_(NSMakeRect(0, 0, 10, 10))
         self.full_input_bg.fill = "soft"
         self.full_input_bg.radius = fw.INPUT_H / 2.0
@@ -2812,8 +5733,9 @@ class AppDelegate(NSObject):
         self.full_field.setBezeled_(False)
         self.full_field.setDrawsBackground_(False)
         self.full_field.setFocusRingType_(1)
-        self.full_field.setFont_(NSFont.systemFontOfSize_(14))
-        self.full_field.setPlaceholderString_("Ask Jev anything…")
+        self.full_field.setFont_(NSFont.systemFontOfSize_(15))
+        self.full_field.setPlaceholderString_(fw.PLACEHOLDER)
+        self.full_field.setDelegate_(self)
         self.full_field.setTarget_(self)
         self.full_field.setAction_("fullSubmit:")
         root.addSubview_(self.full_field)
@@ -2825,14 +5747,9 @@ class AppDelegate(NSObject):
         self._set_button_symbol(self.full_mic, "mic.fill", "Hold to talk")
         root.addSubview_(self.full_mic)
         self.full_chips = []
-        for chip_id in popover_chip_ids(0):
-            info = POPOVER_CHIPS.get(chip_id, {})
-            btn = PopoverChipButton.alloc().initWithFrame_(NSMakeRect(0, 0, 10, 10))
-            btn.configure(chip_id, info.get("title", chip_id), info.get("subtitle", ""))
-            btn.setTarget_(self)
-            root.addSubview_(btn)
-            self.full_chips.append(btn)
+        self._sync_full_chips()
         self._apply_full_chrome()
+        self._rebuild_full_sidebar()
         self._layout_full_window()
 
     @objc.python_method
@@ -2846,42 +5763,65 @@ class AppDelegate(NSObject):
         self.full_effect.setHidden_(chrome["backing"] == "solid")
         self.full_solid.fill = "soft"
         self.full_solid.setHidden_(chrome["backing"] != "solid")
-        for view in (self.full_solid, self.full_main, self.full_input_bg):
+        # Glass: the whole window is one NSVisualEffectView, so the flat page under the main column is hidden.
+        self.full_main.setHidden_(chrome["backing"] != "solid")
+        for view in (self.full_solid, self.full_main, self.full_input_bg, self.full_divider):
             view.setNeedsDisplay_(True)
-        self.full_card.setNeedsDisplay_(True)
-        self.full_result_title.setTextColor_(self._fw_color("muted"))
-        self.full_header.setTextColor_(self._fw_color("ink"))
-        self.full_side_title.setTextColor_(self._fw_color("muted"))
+        self.full_greeting.setTextColor_(self._fw_color("ink"))
+        self.full_field.setTextColor_(self._fw_color("ink"))
+        for head in getattr(self, "full_side_heads", []):
+            head.setTextColor_(self._fw_color("muted"))
+
+    @objc.python_method
+    def _sync_full_chips(self):
+        """Make the full-window chip buttons match popover_chip_ids(0). Only rebuilds when the set changes (PR 8b)."""
+        root = getattr(self, "full_root", None)
+        if root is None or getattr(self, "full_chips", None) is None:
+            return
+        ids = list(popover_chip_ids(0))
+        if [btn.chipId for btn in self.full_chips] == ids:
+            return
+        for btn in self.full_chips:
+            btn.removeFromSuperview()
+        self.full_chips = []
+        for chip_id in ids:
+            info = POPOVER_CHIPS.get(chip_id, {})
+            btn = PopoverChipButton.alloc().initWithFrame_(NSMakeRect(0, 0, 10, 10))
+            btn.configure(chip_id, info.get("title", chip_id), info.get("subtitle", ""))
+            btn.setTarget_(self)
+            root.addSubview_(btn)
+            self.full_chips.append(btn)
 
     @objc.python_method
     def _layout_full_window(self):
         win = getattr(self, "full_window", None)
         if win is None:
             return
+        self._sync_full_chips()
         size = win.contentView().frame().size
-        lay = fw.full_layout(size.width, size.height)
+        has_conversation = bool(self._full_rows()[0])
+        lay = fw.full_layout(size.width, size.height, has_conversation=has_conversation)
         R = lambda r: NSMakeRect(*r)
         cw, ch = lay["size"]
         self.full_solid.setFrame_(R((0, 0, cw, ch)))
-        self.full_effect.setFrame_(R(lay["sidebar"]))
+        self.full_effect.setFrame_(R((0, 0, cw, ch)))  # glass behind the whole window
         self.full_main.setFrame_(R((fw.SIDEBAR_W, 0, cw - fw.SIDEBAR_W, ch)))
-        self.full_side_title.setFrame_(R(lay["sidebar_title"]))
-        self.full_history_scroll.setFrame_(R(lay["history"]))
-        hx, hy, hw, hh = lay["header"]
-        self.full_header.setFrame_(R((hx, hy, hw - 90, hh)))
-        self.full_home_btn.setFrame_(R((hx + hw - 84, hy, 84, hh)))
-        self.full_convo_scroll.setFrame_(R(lay["conversation"]))
         self.full_divider.setFrame_(R((fw.SIDEBAR_W, 0, 1, ch)))
-        if lay["result"]:
-            rx, ry, rw, rh = lay["result"]
-            self.full_card.setFrame_(R((rx, ry, rw, rh - 18)))
-            self.full_result_scroll.setFrame_(R((rx + 1, ry + 1, rw - 2, rh - 20)))
-            self.full_result_title.setFrame_(R((rx + 2, ry + rh - 16, rw, 16)))
-        self.full_input_bg.setFrame_(R(lay["field"]))
+        self.full_new_chat.setFrame_(R(lay["new_chat"]))
+        list_x, list_y, list_w, list_h = lay["sidebar_list"]
+        self.full_side_scroll.setFrame_(R(lay["sidebar_list"]))
+        self.full_side_doc.setFrame_(NSMakeRect(0, 0, fw.SIDEBAR_W, max(getattr(self, "_full_side_height", 0.0), list_h)))
+        self.full_header_btn.setFrame_(R(lay["header"]))
+        self.full_greeting.setHidden_(lay["greeting"] is None)
+        if lay["greeting"]:
+            self.full_greeting.setFrame_(R(lay["greeting"]))
+        self.full_convo_scroll.setHidden_(lay["conversation"] is None)
+        if lay["conversation"]:
+            self.full_convo_scroll.setFrame_(R(lay["conversation"]))
+        self.full_input_bg.setFrame_(R(lay["input"]))
         fx, fy, fwid, fh = lay["field"]
-        self.full_field.setFrame_(R((fx + 16, fy + (fh - 20) / 2.0, fwid - 32, 20)))
-        mx, my, mw, mh = lay["mic"]
-        self.full_mic.setFrame_(R((mx + 8, my + 8, mw - 16, mh - 16)))
+        self.full_field.setFrame_(R((fx, fy + (fh - 20.0) / 2.0, fwid, 20.0)))
+        self.full_mic.setFrame_(R(lay["mic"]))
         widths = {b.chipId: chip_width(b.chipId) for b in self.full_chips}
         placed = {c["id"]: c["frame"] for c in fw.chip_frames([b.chipId for b in self.full_chips], widths, lay["chips"])}
         for b in self.full_chips:
@@ -2889,38 +5829,279 @@ class AppDelegate(NSObject):
             b.setHidden_(frame is None)
             if frame is not None:
                 b.setFrame_(R(frame))
+        if getattr(self, "_at", None):
+            self._at_render()
+
+    @objc.python_method
+    def _at_warm(self):
+        from commands.apps import app_index
+        self._at_apps = atp.app_rows(app_index())
+        atp.warm_files()
+
+    @objc.python_method
+    def _at_surface_for(self, control):
+        """Which picker surface a field is: the full window input, the Home box, or the right-click panel field."""
+        if control is None:
+            return None
+        if control == getattr(self, "full_field", None):
+            return "full"
+        if control == getattr(self, "home_field", None):
+            return "home"
+        state = getattr(self, "_spotlight", None)
+        if state is not None and control == state.get("field"):
+            return "spotlight"
+        return None
+
+    @objc.python_method
+    def _at_host_is(self, window):
+        state = getattr(self, "_at", None)
+        return bool(state) and window is not None and state["field"].window() == window
+
+    @objc.python_method
+    def _at_rows_for(self, query):
+        return atp.picker_rows(query, getattr(self, "_at_apps", []), atp.cached_files())
+
+    @objc.python_method
+    def _at_update(self, field, surface):
+        """Typing or a paste in one of the three fields. The ⌃⌥J mini pill has no picker."""
+        if field is None:
+            self._at_hide()
+            return
+        text = str(field.stringValue() or "")
+        prev = self._at_prev.get(surface, "")
+        self._at_prev[surface] = text
+        self._at_bypass[surface] = None  # any edit re-arms the Return gate
+        editor = field.currentEditor()
+        caret = atp.py_index(text, editor.selectedRange().location) if editor is not None else len(text)
+        hit = atp.at_query(text, caret)
+        token = None
+        if hit:
+            token = (hit[0], atp.token_end(text, hit[0]), hit[1])
+        elif atp.is_bulk_insert(prev, text):
+            tokens = atp.at_tokens(text)
+            token = tokens[0] if tokens else None
+        rows = self._at_rows_for(token[2]) if token else []
+        if not rows:
+            self._at_hide()
+            return
+        self._at_open(field, surface, token, rows, "pick")
+
+    @objc.python_method
+    def _at_open(self, field, surface, token, rows, mode):
+        if getattr(self, "_at", None) and self._at["field"] != field:
+            self._at_hide()
+        self._at = {"surface": surface, "field": field, "start": token[0], "end": token[1],
+                    "rows": rows, "selected": 0, "mode": mode, "query": token[2]}
+        if mode == "pick":
+            apps = sum(row["kind"] == "app" for row in rows)
+            print("at picker: rows apps={0} files={1} qlen={2} surface={3}".format(
+                apps, len(rows) - apps, len(token[2]), surface), flush=True)
+        self._at_render()
+
+    @objc.python_method
+    def _at_command(self, surface, selector):
+        """Keys while the picker is open, the same on every surface. True means the key was used."""
+        state = getattr(self, "_at", None)
+        if not state or state["surface"] != surface:
+            return False
+        key = str(selector)
+        if key in ("moveDown:", "moveUp:"):
+            if state["mode"] == "pick":
+                delta = 1 if key == "moveDown:" else -1
+                state["selected"] = (state["selected"] + delta) % len(state["rows"])
+                self._at_render()
+            return True  # never moves the right-click panel's own rows
+        if key in ("insertNewline:", "insertTab:"):
+            if state["mode"] == "pick":
+                self._at_pick(state["selected"])
+            elif key == "insertNewline:":
+                self._at_send_as_typed(surface)  # notice mode: the bypass is set, so this sends as typed
+            return True
+        if key == "cancelOperation:":
+            self._at_hide()  # backup for the Esc check in _local_key
+            return True
+        return False
+
+    @objc.python_method
+    def _at_send_as_typed(self, surface):
+        self._at_hide()
+        if surface == "full":
+            self.fullSubmit_(None)
+        elif surface == "home":
+            self.homeSubmit_(None)
+        elif surface == "spotlight":
+            self._spotlight_return()
+
+    @objc.python_method
+    def _at_gate(self, field, surface):
+        """Return never silently sends an unresolved @token. True means the caller must not send."""
+        if field is None:
+            return False
+        text = str(field.stringValue() or "")
+        decision, token = atp.submit_decision(text, self._at_rows_for, self._at_bypass.get(surface))
+        print("at picker: gate {0} surface={1}".format(decision, surface), flush=True)
+        if decision == "pick":
+            self._at_open(field, surface, token, self._at_rows_for(token[2]), "pick")
+            return True
+        if decision == "nomatch":
+            self._at_open(field, surface, token, [], "notice")
+            self._at_bypass[surface] = text
+            return True
+        self._at_bypass[surface] = None
+        return False
+
+    @objc.python_method
+    def _at_hide(self):
+        state = getattr(self, "_at", None)
+        self._at = None
+        panel = getattr(self, "at_panel", None)
+        if panel is None:
+            return
+        parent = panel.parentWindow()
+        if parent is not None:
+            parent.removeChildWindow_(panel)
+        panel.orderOut_(None)
+
+    @objc.python_method
+    def _at_anchor(self, state):
+        """(anchor rect in screen points, prefer) for the active surface."""
+        field = state["field"]
+        host = field.window()
+        if state["surface"] == "full":
+            size = self.full_window.contentView().frame().size
+            lay = fw.full_layout(size.width, size.height, has_conversation=bool(self._full_rows()[0]))
+            rect = host.convertRectToScreen_(NSMakeRect(*lay["input"]))
+            prefer = "above"
+        elif state["surface"] == "home":
+            rect = host.convertRectToScreen_(field.convertRect_toView_(field.bounds(), None))
+            prefer = "below"
+        else:
+            rect = host.frame()  # the list sits under the right-click panel, not over its rows
+            prefer = "below"
+        return (float(rect.origin.x), float(rect.origin.y), float(rect.size.width), float(rect.size.height)), prefer
+
+    @objc.python_method
+    def _at_render(self):
+        state = getattr(self, "_at", None)
+        if not state:
+            return
+        host = state["field"].window()
+        if host is None:
+            self._at_hide()
+            return
+        anchor, prefer = self._at_anchor(state)
+        screen = host.screen() or NSScreen.mainScreen()
+        vis = screen.visibleFrame()
+        visible = (float(vis.origin.x), float(vis.origin.y), float(vis.size.width), float(vis.size.height))
+        count = len(state["rows"]) if state["mode"] == "pick" else 1
+        x, y, w, h = atp.picker_screen_frame(anchor, count, visible, prefer)
+        panel = getattr(self, "at_panel", None)
+        if panel is None:
+            panel = AtPickerPanel.alloc().initWithContentRect_styleMask_backing_defer_(
+                NSMakeRect(x, y, w, h), NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel, 2, False)
+            panel.setOpaque_(False)
+            panel.setBackgroundColor_(NSColor.clearColor())
+            panel.setHasShadow_(True)
+            panel.setHidesOnDeactivate_(False)
+            panel.setReleasedWhenClosed_(False)
+            panel.setFloatingPanel_(False)
+            self.at_panel = panel
+        panel.setFrame_display_(NSMakeRect(x, y, w, h), False)
+        view = AtPickerView.alloc().initWithFrame_(NSMakeRect(0, 0, w, h))
+        view.fill, view.stroke, view.radius = "page", "line", atp.AT_RADIUS
+        if state["mode"] == "pick":
+            for index, row in enumerate(state["rows"]):
+                row_y = h - atp.AT_PAD - (index + 1) * atp.AT_ROW_H
+                button = AtPickerRow.alloc().initWithFrame_(NSMakeRect(atp.AT_PAD, row_y, w - 2 * atp.AT_PAD, atp.AT_ROW_H))
+                button.configure(row, index, self, index == state["selected"])
+                view.addSubview_(button)
+        else:
+            notice = label(atp.NOTICE_TEMPLATE.format(state["query"]),
+                           NSMakeRect(atp.AT_PAD + 8, atp.AT_PAD + 6, w - 2 * atp.AT_PAD - 16, 20), 12)
+            notice.setTextColor_(self._fw_color("muted"))
+            view.addSubview_(notice)
+        panel.setContentView_(view)
+        view.setNeedsDisplay_(True)
+        if panel.parentWindow() != host:
+            if panel.parentWindow() is not None:
+                panel.parentWindow().removeChildWindow_(panel)
+            panel.setLevel_(host.level() + 1)
+            host.addChildWindow_ordered_(panel, 1)  # NSWindowAbove: the list moves with its window
+        panel.orderFront_(None)
+
+    def atPick_(self, sender):
+        self._at_pick(sender.pickIndex)
+
+    @objc.python_method
+    def _at_pick(self, index):
+        state = getattr(self, "_at", None)
+        if state is None or state["mode"] != "pick" or not 0 <= index < len(state["rows"]):
+            return
+        field = state["field"]
+        text, caret = atp.insert_pick(str(field.stringValue() or ""), state["start"], state["end"], state["rows"][index])
+        field.setStringValue_(text)
+        self._at_prev[state["surface"]] = text
+        self._at_hide()
+        host = field.window()
+        if host is not None:
+            host.makeFirstResponder_(field)
+        editor = field.currentEditor()
+        if editor is not None:
+            editor.setSelectedRange_((atp.utf16_len(text[:caret]), 0))
+
+    @objc.python_method
+    def _rebuild_full_sidebar(self):
+        """Sidebar rows from the sections and the typed history. Recent lists everything typed, not only what is on screen."""
+        doc = getattr(self, "full_side_doc", None)
+        if doc is None:
+            return
+        for view in list(doc.subviews()):
+            view.removeFromSuperview()
+        _shown, allrows = self._full_rows()
+        items, height = fw.sidebar_items(fw.history_items(allrows))
+        self._full_side_height = float(height)
+        self.full_side_heads = []
+        for item in items:
+            x, y, w, h = item["frame"]
+            if item["kind"] == "row":
+                btn = FullRowButton.alloc().initWithFrame_(NSMakeRect(x, y, w, h))
+                btn.configure(item["label"], "row", item["action"], self)
+                doc.addSubview_(btn)
+                continue
+            label = NSTextField.labelWithString_(item["label"])
+            label.setFont_(NSFont.systemFontOfSize_weight_(11.0 if item["kind"] == "head" else 12.0, 0.4))
+            label.setFrame_(NSMakeRect(x + 2.0, y + 2.0, w - 2.0, h - 4.0))
+            label.setTextColor_(self._fw_color("muted"))
+            doc.addSubview_(label)
+            if item["kind"] == "head":
+                self.full_side_heads.append(label)
 
     @objc.python_method
     def _refresh_full_window(self):
         if getattr(self, "full_window", None) is None or not hasattr(self, "typed"):
             return
-        rows = list(self.typed.rows)
-        items = fw.history_items(rows)
-        self.full_history.setString_("\n\n".join(items) if items else "Nothing yet.")
-        self.full_history.setTextColor_(self._fw_color("ink"))
+        shown, _allrows = self._full_rows()
+        self._rebuild_full_sidebar()
         text = NSMutableAttributedString.alloc().init()
-        for who, line in fw.conversation_lines(rows):
+        for who, line in fw.conversation_lines(shown):
             name_attrs = {NSFontAttributeName: NSFont.systemFontOfSize_weight_(12, 0.4),
                           NSForegroundColorAttributeName: self._fw_color("accent" if who == "Jev" else "muted")}
             body_attrs = {NSFontAttributeName: NSFont.systemFontOfSize_(13.5),
                           NSForegroundColorAttributeName: self._fw_color("ink")}
             text.appendAttributedString_(NSAttributedString.alloc().initWithString_attributes_(who + "\n", name_attrs))
             text.appendAttributedString_(NSAttributedString.alloc().initWithString_attributes_(line + "\n\n", body_attrs))
-        if not rows:
-            text = NSAttributedString.alloc().initWithString_attributes_(
-                "Hi, I'm Jev. Type below, tap a chip, or hold the mic to talk.",
-                {NSFontAttributeName: NSFont.systemFontOfSize_(13.5),
-                 NSForegroundColorAttributeName: self._fw_color("muted")})
         self.full_convo.textStorage().setAttributedString_(text)
         self.full_convo.scrollToEndOfDocument_(None)
-        result = fw.last_result(rows) or "Results and tool output show here."
-        self.full_result.setString_(result)
-        self.full_result.setTextColor_(self._fw_color("ink" if fw.last_result(rows) else "muted"))
+        self._layout_full_window()
+        if getattr(self, "_brief_offer_showing", False):
+            self._place_full_offer_buttons()  # PR 8c: keep the offer's buttons above the input after a re-layout
 
     @objc.python_method
     def _show_full_window(self, draft=""):
+        self._close_orb_spotlight("full window")
         if getattr(self, "full_window", None) is None:
             self._build_full_window()
+        threading.Thread(target=self._at_warm, daemon=True).start()
         self._apply_full_chrome()
         self._layout_full_window()
         self._refresh_full_window()
@@ -2931,12 +6112,48 @@ class AppDelegate(NSObject):
         self.full_window.makeFirstResponder_(self.full_field)
 
     def fullSubmit_(self, _sender):
+        if self._at_gate(self.full_field, "full"):
+            return
+        self._at_hide()
         plan = submission(self.full_field.stringValue(), "")
+        self._note_turn_text(self.full_field.stringValue())
         if plan is None:
             return
         self.full_field.setStringValue_("")
         self._dispatch_text_plan(plan)
         self._refresh_full_window()
+
+    def fullNewChat_(self, _sender):
+        """+ New chat clears what is on screen only. The typed history, Recent and the popover keep their rows."""
+        self._at_hide()
+        if hasattr(self, "typed"):
+            self._full_chat_cut = int(getattr(self.typed, "added", 0))
+        self.full_field.setStringValue_("")
+        self._refresh_full_window()
+        self.full_window.makeFirstResponder_(self.full_field)
+
+    def fullRow_(self, sender):
+        """A sidebar row: a command (same path as a typed line), a main-window page, or a past request put back in the field."""
+        kind, payload = getattr(sender, "rowAction", ("", "")) or ("", "")
+        if kind == "page":
+            self._open_main_page(payload)
+            return
+        if kind == "fill":
+            self.full_field.setStringValue_(payload)
+            self.full_window.makeFirstResponder_(self.full_field)
+            return
+        if kind == "send":
+            plan = submission(payload, "")
+            self._note_turn_text(payload)
+            if plan is not None:
+                self._dispatch_text_plan(plan)
+            self._refresh_full_window()
+
+    @objc.python_method
+    def _open_main_page(self, key):
+        """The other pages (Dictionary, Apps, Dictation history, Privacy, Settings, Keys) live in the main window."""
+        self.showMain_(None)
+        self._select_tab(key)
 
     @objc.python_method
     def _pill_flags(self):
@@ -3225,6 +6442,7 @@ class AppDelegate(NSObject):
         orb = getattr(self, "orb_view", None)
         if orb is not None:
             orb.level = unit
+            orb.followLevel()
         amplitude = unit ** 0.7
         view = getattr(self, "mic_level_view", None)
         if view is not None:
@@ -3491,7 +6709,8 @@ class AppDelegate(NSObject):
         try:
             import commands
             sentence = commands.choose_video()
-            chosen = getattr(commands.BOOK, "video", None)
+            from commands.captures import BOOK
+            chosen = getattr(BOOK, "video", None)
         except Exception as exc:
             sentence = "I couldn't open the video picker."
             chosen = None
@@ -3537,7 +6756,8 @@ class AppDelegate(NSObject):
     def _show_capture_choices(self):
         """Floating thumbnail and actions. Shown even when the main window is up and the pill is hidden."""
         import commands
-        last = commands.BOOK.last or {}
+        from commands.captures import BOOK
+        last = BOOK.last or {}
         path = last.get("path") or ""
         if not path:
             return
@@ -3643,14 +6863,21 @@ class AppDelegate(NSObject):
     def captureChoice_(self, sender):
         ident = "" if sender is None else str(sender.identifier() or "")
         if ident == "ask_jev":
-            self.choice_question.setHidden_(False)
-            self.choice_ask.setHidden_(False)
-            panel = self.choice_panel
-            panel.makeKeyAndOrderFront_(None)
-            panel.makeFirstResponder_(self.choice_question)
-            self._choice_shown_at = time.time()
+            self._open_choice_question()
             return
         self._queue_choice(ident)
+
+    @objc.python_method
+    def _open_choice_question(self):
+        """Ask Jev on the post-capture panel: reveal the question field and focus it."""
+        if getattr(self, "choice_panel", None) is None or not hasattr(self, "choice_question"):
+            return
+        self.choice_question.setHidden_(False)
+        self.choice_ask.setHidden_(False)
+        panel = self.choice_panel
+        panel.makeKeyAndOrderFront_(None)
+        panel.makeFirstResponder_(self.choice_question)
+        self._choice_shown_at = time.time()
 
     def choiceAsk_(self, _sender):
         question = self.choice_question.stringValue() if hasattr(self, "choice_question") else ""
@@ -3696,10 +6923,14 @@ class AppDelegate(NSObject):
         )
 
     def homeSubmit_(self, _sender):
+        if self._at_gate(getattr(self, "home_field", None), "home"):
+            return
         field = getattr(self, "home_field", None)
         if field is None:
             return
+        self._at_hide()
         plan = submission(field.stringValue(), "")
+        self._note_turn_text(field.stringValue())
         if plan is None:
             return
         field.setStringValue_("")
@@ -3783,18 +7014,34 @@ class AppDelegate(NSObject):
         keys.release(NSApp, getattr(self, "mini_panel", None))
 
     def focusTypeField_(self, _sender):
-        panel = getattr(self, "mini_panel", None)
-        if self.bar.should_show() and panel is not None and panel.isVisible():
-            if getattr(self, "pillCollapsed", False):
-                self.expandMiniBar_(None)
-                return
-            self._focus_pill_field()
+        """Control-Option-J (PR 8 follow-up). Shows the floating orb if it is hidden, untucks it, and opens the input
+        pill with its field focused. Pressed again while the pill is open, it hides the pill.
+
+        It never opens or focuses the full window. That happens only from the orb click, Open Jev, or Settings.
+        """
+        self._close_orb_spotlight("hotkey")
+        if not hasattr(self, "pill"):
             return
-        self.showMain_(None)
-        self._select_tab("home")
-        field = getattr(self, "home_field", None)
-        if field is not None:
-            self.panel.makeFirstResponder_(field)
+        docked = self._orb_docked_now()
+        tucked = self._tuck_active()
+        hidden = not self.bar.should_show()
+        print("orb hotkey: show orb (tucked={0}, hidden={1})".format(tucked, hidden), flush=True)
+        if docked:
+            return  # the full window is already open with its own field, and this hotkey leaves it alone
+        if self.pill.expanded and not getattr(self, "pillCollapsed", False):
+            print("orb hotkey: hide pill", flush=True)
+            self.pill.escape()
+            self._restore_front_app()
+            self._apply_pill_presentation()
+            return
+        if hidden:
+            self.bar.reveal()
+            self._apply_bar_visibility()
+        if not self.bar.should_show():
+            return  # the main window is on screen, so the orb stays hidden by design
+        if tucked:
+            self._tuck_untuck("hotkey", instant=True)
+        self.expandMiniBar_(None)
 
     @objc.python_method
     def _refresh_home_history(self):
@@ -3845,7 +7092,8 @@ class AppDelegate(NSObject):
             spec = chips[index]
             chip_id = spec.get("id")
             info = POPOVER_CHIPS.get(chip_id, {})
-            chip_btn.configure(chip_id, info.get("title", ""), info.get("subtitle", ""))
+            chip_btn.configure(chip_id, chip_title(chip_id, info.get("title", ""), getattr(self, "mac_health_alert", False)),
+                               info.get("subtitle", ""))
             fx, fy, fw, fh = spec["frame"]
             chip_btn.setHidden_(False)
             _place(chip_btn, (content_x + fx, fy, fw, fh))
@@ -4026,8 +7274,59 @@ class AppDelegate(NSObject):
                 self.pill.keep_typing()
         self._sync_recording_ui()
         self._sync_choice_dismiss()
+        self._sync_action_menu_dismiss()
+        self._sync_hint_dismiss()
         self._sync_zoe_ui()
         self._sync_orb()
+        self._translate_tick()
+
+    @objc.python_method
+    def _translate_refresh(self, now_on):
+        """Show or hide the Translate chip everywhere it appears, only when the state changes (PR 8b)."""
+        if bool(now_on) == translate_chip_on():
+            return
+        set_translate_chip(now_on)
+        self._apply_pill_presentation()
+        self._layout_full_window()
+
+    @objc.python_method
+    def _translate_tick(self):
+        """PR 8b: read the newest clipboard observation on the main thread and move the Translate chip.
+
+        This only changes chip state. Nothing runs until a click, which is _translate_clicked. Clipboard history
+        already drops paused copies and password-manager copies, so they never reach the offer.
+        """
+        import commands
+
+        chip = getattr(self, "translate_chip", None)
+        if chip is None:
+            chip = self.translate_chip = TranslateChip()
+        paused = commands.clipboard_is_paused()
+        now = time.monotonic()
+        seq, status, text = commands.CLIPBOARD.last_observation()
+        for result in (chip.on_observation(seq, status, text or "", paused=paused, now=now),
+                       chip.expire_if_due(now, paused=paused)):
+            line = log_line(result)
+            if line:
+                print(line, flush=True)
+        self._translate_refresh(chip.visible(now, paused=paused))
+
+    @objc.python_method
+    def _translate_clicked(self):
+        """The only way a translate turn starts: the chip's click, run as a normal typed turn (PR 8b)."""
+        import commands
+
+        chip = getattr(self, "translate_chip", None)
+        if chip is None:
+            return
+        command, outcome, reason = chip.click(time.monotonic(), paused=commands.clipboard_is_paused())
+        print(log_line((outcome, reason)), flush=True)
+        self._translate_refresh(chip.visible(time.monotonic(), paused=commands.clipboard_is_paused()))
+        if not command:
+            return
+        plan = submission(command, "")
+        if plan is not None and plan.get("kind") == "run":
+            self._dispatch_text_plan(plan)
 
     @objc.python_method
     def _sync_choice_dismiss(self):
@@ -4041,7 +7340,15 @@ class AppDelegate(NSObject):
     def updateStatus_(self, payload):
         state = str(payload["state"])
         detail = str(payload.get("detail", ""))
+        previous = str(self.status.stringValue()) if getattr(self, "status", None) is not None else ""
         self.status.setStringValue_(state)
+        if detail.rstrip().endswith(BRIEF_OFFER_LINE):
+            self._show_brief_offer_buttons(True)  # PR 8c: the brief's offer, with its two buttons
+        else:
+            self._show_brief_offer_buttons(False)
+        reaction = reaction_for_status(previous, state, detail)  # PR 7b: success or failure
+        if reaction is not None and getattr(self, "orb_view", None) is not None:
+            self.orb_view.offerReaction(reaction)
         self.detail.setStringValue_(_hold_option_detail(self, state, detail))
         self.dot.setTextColor_(STATUS_COLORS.get(state, NSColor.labelColor()))
         if state in ("Dictating", "Finishing"):
@@ -4121,6 +7428,10 @@ class AppDelegate(NSObject):
             NSEvent.removeMonitor_(self.key_monitor)
         if getattr(self, "type_monitor", None) is not None:
             NSEvent.removeMonitor_(self.type_monitor)
+        if getattr(self, "area_hotkey", None) is not None:
+            self.area_hotkey.unregister()
+        if getattr(self, "type_hotkey", None) is not None:
+            self.type_hotkey.unregister()
 
 
     def checkForUpdates_(self, _sender):
@@ -4253,3 +7564,65 @@ def run_app():
     delegate = AppDelegate.alloc().init()
     app.setDelegate_(delegate)
     app.run()
+
+
+# PR 8: the orb's Spotlight-style panel classes. Kept at the end so earlier helpers keep the first match.
+class OrbSpotlightPanel(NSPanel):
+    """The orb's Spotlight-style panel. Borderless, and key, so it takes the keyboard. Keys go to keyHandler first."""
+
+    def canBecomeKeyWindow(self):
+        return True
+
+    def canBecomeMainWindow(self):
+        return False
+
+    def keyDown_(self, event):
+        handler = getattr(self, "keyHandler", None)
+        if handler is not None and handler(int(event.keyCode())):
+            return
+        objc.super(OrbSpotlightPanel, self).keyDown_(event)
+
+
+class OrbSpotlightRow(NSView):
+    """One line of the panel. A click calls onPick. The highlight is drawn by the controller."""
+
+    def acceptsFirstMouse_(self, _event):
+        return True
+
+    def mouseDown_(self, _event):
+        handler = getattr(self, "onPick", None)
+        if handler is not None:
+            handler()
+
+
+class OrbSpotlightMic(NSButton):
+    """The mic in the field: hold to talk, like the mini bar's mic. Press calls micDown, release calls micUp."""
+
+    def mouseDown_(self, _event):
+        handler = getattr(self, "micDown", None)
+        if handler is not None:
+            handler()
+
+    def mouseUp_(self, _event):
+        handler = getattr(self, "micUp", None)
+        if handler is not None:
+            handler()
+
+
+class OrbSpotlightDelegate(NSObject):
+    """Field and panel delegate. Field commands (arrows, Return, Escape) and resign-key go to one Python handler."""
+
+    def initWithHandler_(self, handler):
+        self = objc.super(OrbSpotlightDelegate, self).init()
+        if self is not None:
+            self.handler = handler
+        return self
+
+    def control_textView_doCommandBySelector_(self, _control, _text_view, selector):
+        return bool(self.handler("command", str(NSStringFromSelector(selector))))
+
+    def controlTextDidChange_(self, _notification):
+        self.handler("typed", "")
+
+    def windowDidResignKey_(self, _notification):
+        self.handler("resign", "")

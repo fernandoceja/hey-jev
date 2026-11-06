@@ -16,6 +16,8 @@ recorder stores.
 """
 import math
 
+from orb_motion import PEEK_EDGE_TOLERANCE, peek_edge_allowed, peek_frame
+
 BAR_W = 420.0
 BAR_H = 44.0
 # Wide enough for +, a short command, and the mic. Tall enough that the
@@ -48,19 +50,47 @@ POPOVER_PANEL_RADIUS = 16.0
 GREETING_NAME = "Fernando"
 
 # Quick-action chips below the composer. Refresh rotates pages locally only.
+MAC_HEALTH_CHIP = "mac_health"
+TRANSLATE_CHIP_ID = "translate_clip"  # PR 8b
+_translate_chip_on = False  # set by the app while a translate offer is open (see set_translate_chip)
+
+
+def set_translate_chip(on):
+    """Show or hide the Translate chip. It takes the first slot of the current page and drops the page's last chip,
+    so the chip count, the popover height and the full-window row stay the same."""
+    global _translate_chip_on
+    _translate_chip_on = bool(on)
+    return _translate_chip_on
+
+
+def translate_chip_on():
+    return _translate_chip_on
+
+
+def chip_title(chip_id, title, alert=False):
+    """A chip's title, with a dot in front when a Mac-health alert is on. Only the Mac health chip is marked (PR 7b)."""
+    if alert and chip_id == MAC_HEALTH_CHIP and title:
+        return "\u2022 " + title
+    return title
+
+
 POPOVER_CHIPS = {
     "eta_home": {"title": "ETA home", "subtitle": "", "phrase": "eta home"},
     "hazard_check": {"title": "Hazard Check", "subtitle": "", "phrase": "hazard check"},
     "plan_day": {"title": "Plan my day", "subtitle": "Today's brief", "phrase": "brief me"},
+    "start_day": {"title": "Start my day", "subtitle": "Today's brief", "phrase": "start my day"},  # PR 8c
     "mac_health": {"title": "Mac health", "subtitle": "CleanMyMac scan only.", "phrase": "cleanmymac scan"},
     "weather": {"title": "Weather", "subtitle": "Local forecast", "phrase": "what's the weather"},
     "time": {"title": "Time", "subtitle": "Clock check", "phrase": "what time is it"},
     "joke": {"title": "Joke", "subtitle": "Quick laugh", "phrase": "tell me a joke"},
     "games": {"title": "Games", "subtitle": "NXNative ports", "phrase": "list games"},
     "eta_work": {"title": "ETA work", "subtitle": "Commute", "phrase": "what's my ETA to work"},
+    # PR 8b: shown for 20 s after a non-English copy. Its click builds the command from the copied text in the UI
+    # (commands/translate_chip.py), so it has no fixed phrase here.
+    TRANSLATE_CHIP_ID: {"title": "Translate", "subtitle": "", "phrase": ""},
 }
 POPOVER_CHIP_PAGES = (
-    ("eta_home", "hazard_check", "plan_day", "mac_health"),
+    ("eta_home", "hazard_check", "start_day", "mac_health"),  # PR 8c: replaces Plan my day in the popover
     ("weather", "time", "games", "eta_work"),
 )
 # Template-image tint while right Option is held for push-to-talk, and after.
@@ -77,6 +107,7 @@ CHOICE_SECONDS = 20.0
 REPLY_SECONDS = 4.0
 PREF_KEY = "mini_bar_enabled"
 ORIGIN_KEY = "mini_bar_origin"
+PEEK_PREF_KEY = "orb_peek_dock"  # PR 3b: tuck the orb into a free screen edge. Missing means on.
 SIZE_KEY = "mini_bar_size"
 
 # Status lines worth putting in the field. Idle "ready" lines are not a reply.
@@ -106,6 +137,40 @@ def enabled_from_pref(value):
         return bool(int(value))
     except (TypeError, ValueError):
         return True
+
+
+def peek_enabled_from_pref(value):
+    """Same parse as enabled_from_pref: missing is on, an explicit 0 is off."""
+    return enabled_from_pref(value)
+
+
+def peek_plan(origin, size, screen, screens):
+    """(edge, rest_origin) when a snapped orb can tuck on its edge, else None.
+
+    The origin must already sit on the inset (a snap). A tuck needs a left or right
+    edge that no other visible display touches. The saved origin stays the inset.
+    """
+    width, height = _placement_size(size)
+    if screen is None:
+        return None
+    sx, sy, sw, sh = (float(v) for v in screen)
+    x = float(origin[0])
+    if abs(x - (sx + ORB_EDGE_INSET)) <= PEEK_EDGE_TOLERANCE:
+        edge = "left"
+    elif abs(x - (sx + sw - width - ORB_EDGE_INSET)) <= PEEK_EDGE_TOLERANCE:
+        edge = "right"
+    else:
+        return None
+    if not peek_edge_allowed(edge, screen, _as_screens(screens)):
+        return None
+    rest = peek_frame((x, float(origin[1])), (width, height), screen, edge)
+    return (edge, (rest[0], rest[1]))
+
+
+def peek_rest_origin(origin, size, screen, screens):
+    """Rest origin (x, y) for a snapped origin, or None when it cannot tuck. See peek_plan."""
+    plan = peek_plan(origin, size, screen, screens)
+    return None if plan is None else plan[1]
 
 
 def parse_origin(text):
@@ -631,7 +696,21 @@ def _hazard_alerts_item(enabled):
 def capture_saved(sentence):
     """True for a new screenshot or recording, not for a later Notes save."""
     text = " ".join(str(sentence or "").split())
-    return text.startswith("Saved a ") or text.startswith("Saved the recording")
+    return text.startswith(("Saved a ", "Saved an ")) or text.startswith("Saved the recording")
+
+
+# Shown after Find Image copies the capture and opens Lens. The command key is U+2318.
+FIND_IMAGE_HINT = "Image copied. Press \u2318V in Lens to search."
+
+
+def capture_outcome(sentence):
+    """What a menu capture ended with, for the log: "saved", "cancelled" (Esc or a zero-size selection), or "failed"."""
+    text = " ".join(str(sentence or "").split())
+    if text == "Cancelled.":
+        return "cancelled"
+    if capture_saved(text):
+        return "saved"
+    return "failed"
 
 
 def choice_due(shown_at, now, hovered):
@@ -702,6 +781,27 @@ def capture_choice_actions(ask_jev=True, video=False):
     return rows
 
 
+def orb_action_menu():
+    """The rows of the action menu that fans out after a drop (PR 5a), in order top to bottom.
+
+    Ask, Copy Image and Find Image reuse the ids of the post-capture panel. Summarize and Translate answer in
+    the result panel beside the orb. Mark up has no panel row yet (PR 5b).
+    """
+    return [
+        {"id": "ask_jev", "title": "Ask", "symbol": "bubble.left"},
+        {"id": "summarize", "title": "Summarize", "symbol": "text.alignleft"},
+        {"id": "translate", "title": "Translate", "symbol": "character.bubble"},
+        {"id": "share_copy", "title": "Copy Image", "symbol": "doc.on.doc"},
+        {"id": "ask_google", "title": "Find Image", "symbol": "magnifyingglass"},
+        {"id": "markup", "title": "Mark up", "symbol": "pencil.tip"},
+    ]
+
+
+def menu_on_drop(moved):
+    """The action menu opens only after a real drag (past the click threshold). A click never opens it."""
+    return moved
+
+
 def choice_button_frames(actions, width=300.0, margin=12.0):
     """(action, x, top, w, h) from the top of the button stack. Ask Jev is full width."""
     frames = []
@@ -750,6 +850,16 @@ def choice_panel_box(actions, width=300.0):
     }
 
 
+def control_option_command_held(flags):
+    """True when Control, Option and Command are all held. Used only to log the global key monitor."""
+    try:
+        bits = int(flags)
+    except (TypeError, ValueError):
+        return False
+    needed = TYPE_FLAG_CONTROL | TYPE_FLAG_OPTION | TYPE_FLAG_COMMAND
+    return bits & needed == needed
+
+
 def type_focus_hotkey(key_code, flags):
     """Control-Option-J, without Command, focuses the type field."""
     try:
@@ -773,6 +883,7 @@ class TypedHistory:
         self.limit = int(limit)
         self.rows = []
         self.pending = ""
+        self.added = 0  # rows ever added, so a view can start "from here" even after old rows are trimmed
 
     def note_request(self, text):
         cleaned = " ".join(str(text or "").split())
@@ -780,6 +891,7 @@ class TypedHistory:
             return ""
         self.pending = cleaned
         self.rows.append(("you", cleaned))
+        self.added += 1
         self._trim()
         return cleaned
 
@@ -793,6 +905,7 @@ class TypedHistory:
         if cleaned.strip(" .?!'\"").lower() == self.pending.strip(" .?!'\"").lower():
             return ""  # the heard echo of the request is not the reply
         self.rows.append(("jev", cleaned))
+        self.added += 1
         self.pending = ""
         self._trim()
         return cleaned
@@ -1278,6 +1391,26 @@ def greeting_bubble_size(text=None):
     return (width, height)
 
 
+def greeting_bubble_frame(frame, bounds, inset=ORB_EDGE_INSET):
+    """The greeting bubble's frame kept wholly inside the popover's own bounds, so an edge never clips it.
+
+    frame and bounds are (x, y, w, h) in the same view's coordinates. A bubble wider than the bounds keeps its
+    width and sits at the inset; the window is clamped on screen separately.
+    """
+    x, y, w, h = (float(v) for v in frame)
+    bx, by, bw, bh = (float(v) for v in bounds)
+    x = min(max(x, bx + inset), max(bx + inset, bx + bw - inset - w))
+    y = min(max(y, by + inset), max(by + inset, by + bh - inset - h))
+    return (x, y, w, h)
+
+
+def orb_bubble_log_line(text, docked):
+    """What the orb's speech bubble would show, and whether it was held back because the orb is docked."""
+    if docked:
+        return "orb bubble: suppressed while docked, would show: {0!r}".format(str(text))
+    return "orb bubble: shown: {0!r}".format(str(text))
+
+
 def popover_content_width(composer_size=None):
     cw, _ch = clamp_size(*(composer_size or default_size()))
     gw, _gh = greeting_bubble_size()
@@ -1290,7 +1423,10 @@ def popover_chip_ids(refresh_index=0):
     if not pages:
         return ()
     idx = int(refresh_index) % len(pages)
-    return pages[idx]
+    page = pages[idx]
+    if _translate_chip_on and page:
+        return (TRANSLATE_CHIP_ID,) + tuple(page[:-1])  # PR 8b: same count, translate first
+    return page
 
 
 def refresh_chip_suggestions(refresh_index):
@@ -1861,6 +1997,11 @@ class BarController:
         self.enabled = bool(enabled)
         if self.enabled:
             self.dismissed = False
+        return self.should_show()
+
+    def reveal(self):
+        """Control-Option-J shows a hidden orb again. Clears the hide. The main window still hides it while on screen."""
+        self.dismissed = False
         return self.should_show()
 
     def dismiss(self):

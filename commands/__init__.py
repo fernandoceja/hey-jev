@@ -416,6 +416,7 @@ from .system import (
     _open_in_chrome,
     open_site_from_text,
     open_folder_from_text,
+    open_picked_file,
     open_videos_folder,
     videos_folder_path,
     OPENING_VIDEOS,
@@ -635,6 +636,8 @@ from .bridge import (
     start_bridge_thread,
 )
 
+from .start_my_day import START_MY_DAY_KEY, start_my_day_action  # PR 8c: aliases for the brief, Mac path only
+from .tidy_downloads import tidy_folder_key, tidy_scan_from_text  # PR 8d: scan only, Mac path only
 from .brief import (
     speak_today,
     _count_today_events,

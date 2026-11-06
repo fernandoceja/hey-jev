@@ -1,10 +1,21 @@
 """Original Jev vector orb. Pure presentation rules are usable without AppKit."""
 import math
+import random
+import sys
 import time
 
-ORB_SIZE = 56.0
-PANEL_SIZE = 72.0
-ORB_DESIGN_EXTENT = 70.0  # orb + listening ring, with a hair of margin
+from orb_character import (CLIPS, REACTIONS, STATE_CLIPS, ReactionQueue, clip_switch_delay, ease_look, look_intensity,
+                           next_accent_delay, next_clip, orb_state, pick_accent, resolve)
+from orb_motion import BODY_SIZE as ORB_SIZE
+from orb_motion import CURSOR_POLL_SECONDS, DESIGN_CENTER, EYE_CENTER_Y, EYE_SPACING
+from orb_motion import DESIGN_EXTENT as ORB_DESIGN_EXTENT
+from orb_motion import DESIGN_SIZE as PANEL_SIZE
+from orb_motion import cursor_moved, idle_active, pupil_offset, tracking_active, voice_pose, wav_envelope
+
+LOOK_EASE = 0.25  # lookIntensity eases over this many seconds when the character state changes
+TRACK_PUPILS = False  # PR 8: the eyes are white pills with no pupils, so the cursor-tracking poll stays off
+SPEECH_WATCH_SECONDS = 0.2  # while the reply's WAV is not known yet, check for it this often
+SPEECH_WATCH_LIMIT = 30.0  # give up on the WAV after this long and keep the pulse
 
 
 def orb_frame(expanded):
@@ -13,27 +24,23 @@ def orb_frame(expanded):
     return (x + w - PANEL_SIZE, y + (h - PANEL_SIZE) / 2, PANEL_SIZE, PANEL_SIZE)
 
 
-def orb_state(status, held=False):
-    if held or status in ("Listening", "Dictating"):
-        return "listening"
-    if status in ("Transcribing", "Thinking", "Doing it", "Finishing"):
-        return "thinking"
-    if status == "Speaking":
-        return "speaking"
-    if status in ("Something went wrong", "Time's up"):
-        return "error"
-    return "idle"
+def current_reply_wav():
+    """The Fish reply WAV that siri last played, or None. Read the same way the level meter reads siri."""
+    siri = sys.modules.get("siri")
+    return getattr(siri, "LAST_REPLY_WAV", None) if siri is not None else None
 
 
 def orb_pose(state, seconds, level=0.0, reduce_motion=False):
-    """Motion never carries the only state cue. Audio uses the existing meter."""
+    """Pose for the solid path and the listening ring. Motion never carries the only state cue.
+
+    Bob and breath run in the render server (orb_layers), and blinks are random accents (orb_character),
+    so this pose only needs the static values and the listening ring width.
+    """
     level = min(1.0, max(0.0, float(level))) if math.isfinite(float(level)) else 0.0
     if reduce_motion:
         return (0.0, 1.0, 0.0, 2.0)
-    bob = 1.5 * math.sin(seconds * math.tau / 4) if state == "idle" else 0.0
-    blink = 0.15 if state == "idle" and seconds % 7.0 > 6.85 else 1.0
     sweep = math.sin(seconds * math.tau / 3) * 8 if state == "thinking" else 0.0
-    return (bob, blink, sweep, 2.0 + 2.0 * level if state == "listening" else 2.0)
+    return (0.0, 1.0, sweep, 2.0 + 2.0 * level if state == "listening" else 2.0)
 
 
 class OrbTicker:
@@ -48,6 +55,10 @@ class OrbTicker:
             self.timer.invalidate()
             self.timer = None
 
+    def fired(self):
+        """A single-shot timer ran. Forget it without invalidating, so the next sync schedules a new one."""
+        self.timer = None
+
 
 _ORB_CLASS = None
 
@@ -57,22 +68,61 @@ def make_orb_view(frame):
     global _ORB_CLASS
     if _ORB_CLASS is None:
         import objc
-        from AppKit import NSView, NSColor, NSBezierPath, NSGradient, NSMakeRect, NSMakePoint, NSAffineTransform, NSGraphicsContext
+        from AppKit import (NSView, NSColor, NSBezierPath, NSMakeRect, NSMakePoint, NSAffineTransform, NSEvent,
+                            NSWorkspace, NSViewLayerContentsRedrawNever, NSViewLayerContentsRedrawOnSetNeedsDisplay)
         from Foundation import NSTimer
+        import orb_layers
 
         class JevOrbView(NSView):
             def initWithFrame_(self, rect):
                 self = objc.super(JevOrbView, self).initWithFrame_(rect)
                 if self is not None:
-                    self.ticker = OrbTicker()
+                    self.ticker = OrbTicker()  # 20 Hz pupil poll
+                    self.accentTicker = OrbTicker()  # one single-shot idle accent at a time
                     self.state = "idle"
                     self.level = 0.0
                     self.reduceMotion = False
                     self.solid = False
-                    self.started = time.monotonic()
+                    self.cfg = (False, True, False, False)  # visible, motion, docked, popover
+                    self.halted = False  # stop() sets this; a later configure with visible clears it
+                    self.alive = False  # bob, breath and accents are running
+                    self.tracking = False  # the pupil poll is running (it keeps going while docked)
+                    self.asleep = False
+                    self.lastCursor = None
+                    self.clipName = None
+                    self.clipEnd = 0.0
+                    self.previousAccent = None
+                    self.rng = random.Random()
+                    # Layer-backed: Core Animation draws the orb, so drawRect_ runs only for the solid case.
+                    self.setWantsLayer_(True)
+                    self.setLayerContentsRedrawPolicy_(NSViewLayerContentsRedrawNever)
+                    self.tree = orb_layers.OrbLayers(self.layer(), self.rng)
+                    # PR 7: the character state, and the clip and speech timers that run inside it.
+                    self.statusText = "Ready"
+                    self.held = False
+                    self.character = "idle"
+                    self.key = None  # (character, orb_state) of the last applied pose
+                    self.clipTicker = OrbTicker()  # one single-shot clip switch at a time
+                    self.speechTicker = OrbTicker()  # one single-shot watch for the reply WAV at a time
+                    self.clipDelay = 0.0
+                    self.speechEntry = None  # the WAV path that was already there when speaking began
+                    self.speechBuilt = False
+                    self.speechDeadline = 0.0
+                    self.reactions = ReactionQueue(time.monotonic)  # PR 7b: one-shot reactions with cooldowns
+                    self.reactionTicker = OrbTicker()  # one single-shot timer: when the playing reaction ends
+                    self.reactionName = None
+                    self.reactionDelay = 0.0
+                    self.lookFrom = 1.0
+                    self.lookTo = 1.0
+                    self.lookStart = 0.0
                     self.setAccessibilityElement_(True)
                     self.setAccessibilityRole_("AXButton")
                     self.setAccessibilityLabel_("Jev — Ready. Click to type; hold right Option to speak.")
+                    center = NSWorkspace.sharedWorkspace().notificationCenter()
+                    center.addObserver_selector_name_object_(
+                        self, "screensDidSleep:", "NSWorkspaceScreensDidSleepNotification", None)
+                    center.addObserver_selector_name_object_(
+                        self, "screensDidWake:", "NSWorkspaceScreensDidWakeNotification", None)
                 return self
 
             def hitTest_(self, _point):
@@ -82,37 +132,351 @@ def make_orb_view(frame):
                 window = self.window()
                 if window is None:
                     return False
-                window.delegate().expandMiniBar_(self)
+                window.delegate().expandOrbToFull_(self)  # PR 6a: a press is a click, and a click opens the window
                 return True
 
-            @objc.python_method
-            def configure(self, status, held, level, visible, motion, solid):
-                self.state = orb_state(status, held)
-                self.level = level
-                self.reduceMotion = not motion
-                self.solid = solid
-                label = "Listening" if held else status or "Ready"
-                self.setAccessibilityLabel_("Jev — " + label + ". Click to type; hold right Option to speak.")
-                self.setToolTip_("Jev — " + label)
-                self.setHidden_(not visible)
-                self.ticker.sync(visible and motion, lambda: NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-                    1 / 30, self, "animateOrb:", None, True))
-                self.setNeedsDisplay_(True)
+            def setFrameSize_(self, size):
+                objc.super(JevOrbView, self).setFrameSize_(size)
+                self.fitLayers()
 
-            @objc.python_method
-            def stop(self):
-                self.ticker.sync(False, None)
+            def viewDidMoveToWindow(self):
+                self.refreshLook()
+
+            def viewDidChangeBackingProperties(self):
+                self.refreshLook()
+
+            def viewDidChangeEffectiveAppearance(self):
+                self.refreshLook()
 
             def viewWillMoveToWindow_(self, window):
                 if window is None:
                     self.stop()
 
-            def animateOrb_(self, _timer):
-                self.setNeedsDisplay_(True)
+            def screensDidSleep_(self, _notification):
+                self.asleep = True
+                self.refreshCharacter()  # sleeping holds the orb still
+                self.syncMotion()
+
+            def screensDidWake_(self, _notification):
+                self.asleep = False
+                self.refreshCharacter()
+                self.syncMotion()
+
+            def trackCursor_(self, _timer):
+                self.followCursor()
+
+            def playAccent_(self, _timer):
+                self.accentTicker.fired()
+                if not self.alive or self.character != "idle" or self.cfg[3] or self.reactions.current() is not None:
+                    return  # PR 7b: idle accents wait while a reaction plays
+                name = pick_accent(self.rng, self.previousAccent)
+                self.previousAccent = name
+                seconds = self.tree.play_accent(name)
+                self.clipName = name
+                self.clipEnd = time.monotonic() + seconds
+                self.accentTicker.sync(True, self.scheduleAccent)
+
+            @objc.python_method
+            def scheduleAccent(self):
+                return NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                    next_accent_delay(self.rng), self, "playAccent:", None, False)
+
+            def switchClip_(self, _timer):
+                """The single-shot clip timer for the current state fired: move to another clip of that state."""
+                self.clipTicker.fired()
+                character = self.character
+                if self.reduceMotion or self.asleep or not STATE_CLIPS.get(character):
+                    return
+                self.applyClip(next_clip(character, self.rng, self.clipName))
+                self.scheduleClipSwitch()
+
+            @objc.python_method
+            def scheduleClipSwitch(self):
+                """One single-shot timer per state, from clip_switch_delay. A state change invalidates it."""
+                delay = clip_switch_delay(self.character, self.rng)
+                if delay is None:
+                    self.clipTicker.sync(False, None)
+                    return
+                self.clipDelay = delay
+                self.clipTicker.sync(True, self.scheduleClip)
+
+            @objc.python_method
+            def scheduleClip(self):
+                return NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                    self.clipDelay, self, "switchClip:", None, False)
+
+            def watchSpeech_(self, _timer):
+                """Speaking starts before the reply WAV is fetched. Watch for the WAV, then build the mouth from it."""
+                self.speechTicker.fired()
+                if self.character != "speaking" or self.speechBuilt:
+                    return
+                wav = current_reply_wav()
+                if wav and wav != self.speechEntry:
+                    self.speechBuilt = True
+                    levels = wav_envelope(wav)
+                    self.tree.start_speech(levels)  # an empty list keeps the pulse
+                    print("orb speech: %s" % ("envelope" if levels else "pulse fallback"), flush=True)
+                    return
+                if time.monotonic() >= self.speechDeadline:
+                    self.speechBuilt = True
+                    print("orb speech: pulse fallback", flush=True)
+                    return
+                self.speechTicker.sync(True, self.scheduleSpeech)
+
+            @objc.python_method
+            def scheduleSpeech(self):
+                return NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                    SPEECH_WATCH_SECONDS, self, "watchSpeech:", None, False)
+
+            def reactionEnded_(self, _timer):
+                """The reaction's time is up: take its animations off and return to the current state's clip."""
+                self.reactionTicker.fired()
+                self.reactionName = None
+                self.tree.stop_reaction()
+                restore = self.clipName if (self.character != "idle" and self.clipName in CLIPS) else None
+                self.applyClip(restore)
+
+            @objc.python_method
+            def scheduleReaction(self):
+                return NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                    self.reactionDelay, self, "reactionEnded:", None, False)
+
+            @objc.python_method
+            def offerReaction(self, name):
+                """Play a one-shot reaction if the queue allows it. True if it started. The name is logged when it plays.
+
+                Nothing plays while the orb is hidden or the solid fill is in use. Reduce Motion changes the eye shape only.
+                """
+                if self.solid or self.halted or not self.cfg[0]:
+                    return False
+                if not self.reactions.offer(name):
+                    return False
+                reduce = bool(self.reduceMotion or self.asleep)
+                if name == "wave" and not reduce:
+                    self.tree.play_accent("wave")  # the wave is the idle accent's nub, for its full length
+                else:
+                    self.tree.play_reaction(name, reduce)
+                self.reactionName = name
+                self.reactionDelay = REACTIONS[name].seconds
+                self.reactionTicker.sync(False, None)
+                self.reactionTicker.sync(True, self.scheduleReaction)
+                print("orb reaction: %s" % name, flush=True)
+                return True
+
+            @objc.python_method
+            def scheduleCursor(self):
+                return NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                    CURSOR_POLL_SECONDS, self, "trackCursor:", None, True)
+
+            @objc.python_method
+            def fitLayers(self):
+                tree = getattr(self, "tree", None)
+                if tree is not None:
+                    bounds = self.bounds()
+                    tree.fit(float(bounds.size.width), float(bounds.size.height))
+                self.lastCursor = None  # the eyes may have moved, so the next poll must recompute
+
+            @objc.python_method
+            def refreshLook(self):
+                tree = getattr(self, "tree", None)
+                if tree is None:
+                    return
+                window = self.window()
+                scale = float(window.backingScaleFactor()) if window is not None else 1.0
+                tree.rescale(scale, orb_layers.is_dark(self.effectiveAppearance()))
+                self.fitLayers()
+
+            @objc.python_method
+            def configure(self, status, held, level, visible, motion, solid, docked=False, popover=False):
+                self.state = orb_state(status, held)
+                self.level = level
+                self.reduceMotion = not motion
+                self.solid = solid
+                self.cfg = (bool(visible), bool(motion), bool(docked), bool(popover))
+                if visible:
+                    self.halted = False
+                label = "Listening" if held else status or "Ready"
+                self.setAccessibilityLabel_("Jev — " + label + ". Click to type; hold right Option to speak.")
+                self.setToolTip_("Jev — " + label)
+                self.setHidden_(not visible)
+                self.setLayerContentsRedrawPolicy_(
+                    NSViewLayerContentsRedrawOnSetNeedsDisplay if solid else NSViewLayerContentsRedrawNever)
+                if not solid:
+                    self.layer().setContents_(None)  # Clear any solid frame from a previous draw.
+                self.statusText = status or "Ready"
+                self.held = bool(held)
+                if visible:
+                    self.offerReaction("wave")  # PR 7b: the first show after launch; the queue makes it once per launch
+                self.tree.apply(self.state, solid, orb_pose(self.state, 0, self.level, self.reduceMotion)[3])
+                self.fitLayers()
+                self.refreshCharacter()  # PR 7: before syncMotion, which gates the idle motion on the character
+                self.syncMotion()
+                if solid:
+                    self.setNeedsDisplay_(True)
+
+            @objc.python_method
+            def refreshCharacter(self):
+                """Resolve the character from the status, hold, Reduce Motion, sleep and popover, and apply a change."""
+                if not self.cfg[0] or self.halted:
+                    # Hidden: no timers run. The next time it is shown, the state is entered again.
+                    self.key = None
+                    self.clipTicker.sync(False, None)
+                    self.speechTicker.sync(False, None)
+                    return
+                reduce = self.reduceMotion or self.asleep
+                character = resolve(self.statusText, self.held, reduce, self.cfg[3])
+                key = (character, self.state)
+                if key == self.key:
+                    return
+                self.key = key
+                self.enterCharacter(character)
+
+            @objc.python_method
+            def enterCharacter(self, character):
+                """A new character state: cancel the old clip and speech timers, then set the first pose."""
+                self.character = character
+                self.clipTicker.sync(False, None)
+                self.speechTicker.sync(False, None)
+                self.lastCursor = None  # the pupils must recompute, even if the cursor has not moved
+                if character == "speaking":
+                    self.speechEntry = current_reply_wav()
+                    self.speechBuilt = False
+                    self.speechDeadline = time.monotonic() + SPEECH_WATCH_LIMIT
+                    self.tree.start_speech([])  # the pulse until the reply's WAV is known
+                    self.speechTicker.sync(True, self.scheduleSpeech)
+                else:
+                    self.tree.stop_speech()
+                name = next_clip(character, self.rng) if STATE_CLIPS.get(character) else None
+                self.applyClip(name)
+                if name is not None:
+                    self.scheduleClipSwitch()
+                if character == "listening":
+                    self.offerReaction("get_ready")  # PR 7b: right Option down, or the wake word, bounces the orb
+
+            @objc.python_method
+            def applyClip(self, name):
+                """Set the pose for the current character and the given clip, and log it. Still uses the status's own pose."""
+                clip = CLIPS.get(name) if name else None
+                base = self.state if self.character == "still" else self.character
+                self.clipName = name
+                self.clipEnd = float("inf") if name else 0.0
+                self.tree.apply_pose(voice_pose(base, 0.0, self.level), clip, static=self.character == "still")
+                self.tree.set_sweep(clip.sweep if clip is not None else 0.0)
+                print("orb state: %s clip=%s" % (self.character, name or "-"), flush=True)
+
+            @objc.python_method
+            def syncMotion(self):
+                """Start or stop everything that moves, from the last configure and the sleep state."""
+                visible, motion, docked, popover = self.cfg
+                alive = not self.halted and idle_active(visible, motion, docked, self.asleep)
+                if self.alive and not alive:
+                    self.tree.reset_motion()
+                    self.lastCursor = None  # the pupils were just centred, so the next poll must place them
+                self.alive = alive
+                # PR 6a: docking stops the bob, but the pupils keep following the cursor.
+                self.tracking = tracking_active(visible, motion, self.asleep) and not self.halted and TRACK_PUPILS
+                idle = alive and self.character == "idle"  # PR 7: every other character state suspends the idle motion
+                self.tree.set_passives(idle and not self.solid)
+                self.ticker.sync(self.tracking and not self.solid, self.scheduleCursor)
+                self.accentTicker.sync(idle and not popover and not self.solid, self.scheduleAccent)
+
+            @objc.python_method
+            def followCursor(self):
+                """Pupils follow the mouse anywhere on any display. Exits early when the cursor hasn't moved."""
+                if self.window() is None or not self.tracking or self.solid:
+                    return
+                mouse = NSEvent.mouseLocation()
+                cursor = (float(mouse.x), float(mouse.y))
+                now = time.monotonic()
+                target = look_intensity(self.character, self.currentClip())
+                easing = target != self.lookTo or now - self.lookStart < LOOK_EASE
+                if not cursor_moved(self.lastCursor, cursor) and not easing:
+                    return
+                self.lastCursor = cursor
+                intensity = self.lookNow(now, target)
+                scale = self.tree.scale or 1.0
+                offsets = {}
+                for side, sign in (("L", -1.0), ("R", 1.0)):
+                    dx, dy = pupil_offset(self.eyeOnScreen(sign), cursor)
+                    offsets[side] = (dx * intensity / scale, dy * intensity / scale)
+                self.tree.set_pupils(offsets)
+
+            @objc.python_method
+            def eyeOnScreen(self, sign):
+                """Screen position of one eye centre. sign is -1 for the left eye and 1 for the right."""
+                bounds = self.bounds()
+                scale = self.tree.scale or 1.0
+                view_x = float(bounds.size.width) / 2.0 + sign * EYE_SPACING * scale
+                view_y = float(bounds.size.height) / 2.0 + (EYE_CENTER_Y - DESIGN_CENTER) * scale
+                in_window = self.convertPoint_toView_(NSMakePoint(view_x, view_y), None)
+                on_screen = self.window().convertRectToScreen_(NSMakeRect(in_window.x, in_window.y, 0, 0))
+                return (on_screen.origin.x, on_screen.origin.y)
+
+            @objc.python_method
+            def currentClip(self):
+                if self.clipName is not None and time.monotonic() < self.clipEnd:
+                    return self.clipName
+                return None
+
+            @objc.python_method
+            def lookNow(self, now, target):
+                """lookIntensity right now. A change of target eases from the value it had, over LOOK_EASE seconds."""
+                if target != self.lookTo:
+                    self.lookFrom = ease_look(self.lookFrom, self.lookTo, now - self.lookStart, LOOK_EASE)
+                    self.lookTo = target
+                    self.lookStart = now
+                return ease_look(self.lookFrom, self.lookTo, now - self.lookStart, LOOK_EASE)
+
+            @objc.python_method
+            def followLevel(self):
+                """The listening ring width and body follow the mic level. The old 30 fps loop did this."""
+                if self.solid or self.character != "listening":
+                    return
+                self.tree.set_ring_width(orb_pose(self.state, 0, self.level, self.reduceMotion)[3])
+                self.tree.set_listen_level(voice_pose("listening", 0.0, self.level)["body_scale"])
+
+            @objc.python_method
+            def pressSquash(self):
+                """Mouse down on the orb. Skipped with Reduce Motion or the solid fill, where the layers are hidden."""
+                if self.solid or self.reduceMotion:
+                    return 0.0
+                return self.tree.press_squash()
+
+            @objc.python_method
+            def releaseSquash(self):
+                """A click lets go without moving. Returns the spring's settling time, or 0 when it did nothing."""
+                if self.solid or self.reduceMotion:
+                    return 0.0
+                return self.tree.release_spring()
+
+            @objc.python_method
+            def dragStretch(self, sx, sy, angle):
+                """Stretch the orb along its direction of travel while dragging."""
+                if self.solid or self.reduceMotion:
+                    return
+                self.tree.set_stretch(sx, sy, angle)
+
+            @objc.python_method
+            def dropJiggle(self):
+                """A drag ends. Returns the jiggle's settling time, or 0 when it did nothing."""
+                if self.solid or self.reduceMotion:
+                    return 0.0
+                return self.tree.drop_jiggle()
+
+            @objc.python_method
+            def stop(self):
+                self.halted = True
+                self.clipTicker.sync(False, None)  # PR 7: a hidden orb runs no clip or speech timers
+                self.reactionTicker.sync(False, None)  # PR 7b: and no reaction timer
+                self.reactions.cancel_all()
+                self.speechTicker.sync(False, None)
+                self.key = None  # the next configure enters the character state again, and restarts its timers
+                self.syncMotion()
 
             def drawRect_(self, _rect):
-                bob, blink, sweep, ring_width = orb_pose(
-                    self.state, time.monotonic() - self.started, self.level, self.reduceMotion)
+                if not self.solid:
+                    return  # Layers draw everything else.
+                bob, blink, sweep, ring_width = orb_pose(self.state, 0.0, self.level, self.reduceMotion)
                 def color(r, g, b, a=1):
                     return NSColor.colorWithCalibratedRed_green_blue_alpha_(r, g, b, a)
                 def oval(x, y, w, h):
@@ -129,29 +493,8 @@ def make_orb_view(frame):
                 xf.translateXBy_yBy_(-36.0, -36.0)
                 xf.concat()
                 body = oval(8, 8 + bob, ORB_SIZE, ORB_SIZE)
-                if self.solid:
-                    color(0.12, 0.27, 0.65).setFill()
-                    body.fill()
-                else:
-                    base = NSGradient.alloc().initWithColors_([
-                        color(0.36, 0.95, 0.92), color(0.16, 0.42, 0.95), color(0.08, 0.07, 0.36)])
-                    base.drawInBezierPath_relativeCenterPosition_(body, NSMakePoint(-0.35, 0.45))
-                    ctx = NSGraphicsContext.currentContext()
-                    ctx.saveGraphicsState()
-                    body.addClip()
-                    shade = NSGradient.alloc().initWithStartingColor_endingColor_(
-                        color(0.02, 0.02, 0.2, 0.0), color(0.02, 0.02, 0.2, 0.45))
-                    shade.drawInBezierPath_angle_(oval(4, 2 + bob, 64, 40), -90)
-                    gloss = NSGradient.alloc().initWithStartingColor_endingColor_(
-                        color(1, 1, 1, 0.85), color(1, 1, 1, 0.0))
-                    gloss.drawInBezierPath_angle_(oval(18 + sweep * 0.3, 40 + bob, 36, 21), -90)
-                    rim = NSGradient.alloc().initWithStartingColor_endingColor_(
-                        color(0.45, 0.85, 1, 0.0), color(0.45, 0.85, 1, 0.35))
-                    rim.drawInBezierPath_relativeCenterPosition_(body, NSMakePoint(0, 0))
-                    ctx.restoreGraphicsState()
-                    color(1, 1, 1, 0.18).setStroke()
-                    body.setLineWidth_(0.75)
-                    body.stroke()
+                color(0.12, 0.27, 0.65).setFill()
+                body.fill()
                 if self.state == "listening":
                     color(0.18, 0.65, 1).setStroke()
                     ring = oval(5, 5 + bob, 62, 62)

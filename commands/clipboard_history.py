@@ -262,10 +262,25 @@ class ClipboardHistory(object):
         self.items = []
         self.paused = False
         self.last_change = None
-        self._lock = threading.Lock()
+        self._seq = 0
+        self._last = (0, None, None)
+        self._lock = threading.RLock()
 
     def observe(self, snapshot):
         """Record one pasteboard change. The return value is a status, never the text."""
+        with self._lock:
+            status = self._observe(snapshot)
+            self._seq += 1
+            stored = self.items[0] if status == "stored" and self.items else None
+            self._last = (self._seq, status, stored)
+            return status
+
+    def last_observation(self):
+        """(seq, status, text). `text` is set only when that observation stored an item (PR 8b translate chip)."""
+        with self._lock:
+            return self._last
+
+    def _observe(self, snapshot):
         with self._lock:
             count = int(snapshot.change_count)
             if self.last_change is not None and count == self.last_change:

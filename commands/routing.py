@@ -21,6 +21,9 @@ from .dashboard import is_test_results_phrase
 from .agent_jobs import is_agent_job_phrase, is_agent_status_phrase
 from .shortcuts import jev_shortcut_catalog, parse_shortcut_name, resolve_shortcut
 
+_PICKED_FILE_RE = re.compile(rf'^{_PLEASE}(?:{_OPEN_VERBS})\s+"(~/[^"\n]+)"\s*$', re.I)
+
+
 def route_before_api(text):
     """Action key for one local command, or None.
 
@@ -32,6 +35,8 @@ def route_before_api(text):
     raw = _clean(text).strip()
     if not raw:
         return None
+    if _PICKED_FILE_RE.match(raw):
+        return "file_open"
     if _NOTE_CMD_RE.match(raw):
         return "note_take"
     if _IHSS_CMD_RE.search(raw):

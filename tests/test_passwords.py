@@ -112,7 +112,11 @@ class TestPasswordRouting(unittest.TestCase):
         self.assertIn("def miniSubmit_", ui)
         self.assertIn("def homeSubmit_", ui)
         self.assertIn("def fullSubmit_", ui)
-        self.assertEqual(ui.count("plan = submission("), 3)
+        # Five routes: typed popover, home, full window, the full window's sidebar commands (PR 6b), and the orb's
+        # Spotlight-style panel (PR 8). Every route calls submission(), so the password rules apply to each.
+        # The sixth is the Translate chip's click (PR 8b): it runs the copied text as a typed turn, and the chip only
+        # exists for copies clipboard history already accepted (never a password-manager copy).
+        self.assertEqual(ui.count("plan = submission("), 6)
         for raw in (
             "Password for Netflix",
             "  what's my password for Chase? ",
@@ -330,7 +334,7 @@ class TestPasswordHandler(unittest.TestCase):
         decide = source.split("def decide(", 1)[1].split("\ndef ", 1)[0]
         self.assertLess(decide.index("route_before_api"), decide.index("jev(") if "jev(" in decide else len(decide))
         self.assertIn("route_before_api", decide)
-        handle = source.split("def handle(", 1)[1].split("\ndef ", 1)[0]
+        handle = source.split("def _handle_turn(", 1)[1].split("\ndef ", 1)[0]
         runner = source.split("def _run_local(", 1)[1].split("\ndef ", 1)[0]
         self.assertLess(handle.index("is_password_lookup"), handle.index("zoe_claims"))
         self.assertLess(handle.index("decide(None, text)"), handle.index("jev(text)"))

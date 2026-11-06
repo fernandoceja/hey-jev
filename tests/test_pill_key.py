@@ -215,7 +215,9 @@ class TestPillKeyWindow(unittest.TestCase):
             self.assertNotIn(banned, submit)
             self.assertNotIn(banned, dispatch)
         self.assertIn("_restore_front_app", _func(ui, "miniDismiss_"))
-        self.assertIn("_focus_pill_field", _func(ui, "focusTypeField_"))
+        # Control-Option-J now shows the orb and calls expandMiniBar_, which focuses the pill (PR 8 follow-up).
+        self.assertIn("self.expandMiniBar_(None)", _func(ui, "focusTypeField_"))
+        self.assertIn("_focus_pill_field", _func(ui, "expandMiniBar_"))
         self.assertIn("focusTypeField_", ui)
         self.assertIn("_show_bar_reply", _func(ui, "updateStatus_"))
         background = _func(ui, "mouseDown_")

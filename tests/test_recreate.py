@@ -116,3 +116,10 @@ def test_no_sockets(monkeypatch, tmp_path):
 
 def test_exports():
     assert commands.recreate_target and commands.recreate_write_job and commands.recreate_status
+
+
+def test_default_dir_stays_in_the_developer_tree():
+    """Job cards use the Developer AI-Projects handoff. Do not patch that constant."""
+    assert recreate.DEFAULT_RECREATE_DIR == os.path.expanduser(
+        "~/Documents/Fernando Ceja/Developer/AI-Projects/Jarvis/handoff/recreate"
+    )

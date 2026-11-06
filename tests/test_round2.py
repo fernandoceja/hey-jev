@@ -446,9 +446,12 @@ class TestWorkSchoolMoney(unittest.TestCase):
         self.assertNotIn("default schedule", anchored)
 
     def test_info_payday_uses_the_real_money_path(self):
-        """The live route reads ~/Documents/Jev/money.md. Do not patch that constant."""
+        """The live route reads ~/Documents/Fernando Ceja/Developer/AI-Projects/Jev/money.md. Do not patch that constant."""
         self.assertEqual(commands.route_before_api("how long until payday"), "info_payday")
-        self.assertEqual(commands.MONEY_PATH, os.path.expanduser("~/Documents/Jev/money.md"))
+        self.assertEqual(
+            commands.MONEY_PATH,
+            os.path.expanduser("~/Documents/Fernando Ceja/Developer/AI-Projects/Jev/money.md"),
+        )
         self.assertFalse(hasattr(commands, "MONEY_PATH") and commands.MONEY_PATH is None)
         spoken = commands.speak_payday(today=datetime(2026, 9, 29).date())
         self.assertIn("Apple payday", spoken)

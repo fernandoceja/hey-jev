@@ -382,7 +382,7 @@ class TestZoeMode(unittest.TestCase):
             ui,
         )
         siri = open(os.path.join(ROOT, "siri.py"), encoding="utf-8").read()
-        start = siri.index("def handle(")
+        start = siri.index("def _handle_turn(")
         end = siri.index("\ndef ", start + 10)
         body = siri[start:end]
         self.assertLess(body.index("zoe_claims"), body.index("confirmation_status"))
