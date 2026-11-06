@@ -97,7 +97,7 @@ def test_refusals_all_modes(rea_request, platform, zoe):
 def test_menu():
     from mini_bar import quick_commands, quick_command_leaves
     rea = next(row for row in quick_commands() if row['id'] == 'rea')
-    assert [r['title'] for r in rea['items']] == ['Research', 'Review', 'Replicate Plan', 'Send to Builder']
+    assert [r['title'] for r in rea['items']] == ['Add to Wishlist', 'Wishlist', 'Research', 'Review', 'Replicate Plan', 'Send to Builder']
     assert any(r['title'] == 'REA / Research' for r in quick_command_leaves())
 
 
@@ -123,6 +123,10 @@ def test_modes(study, mode):
     assert done.wait(3)
     assert results[0]['success']
     assert load(results[0]['output'])['mode'] == mode
+    if mode == 'review':
+        prompt = runner.popen.call_args.args[0][2]
+        assert 'Compare the target against the earlier study' in prompt
+        assert 'Review the last change' not in prompt
 
 
 def test_invalid_and_linked_spec(rea_request, tmp_path):
@@ -167,3 +171,29 @@ def test_nonzero_is_failure(study):
     assert done.wait(3)
     assert not results[0]['success']
     assert not (results[0]['output'] / 'spec/handoff.json').exists()
+
+
+def test_last_change_review_context(study):
+    import threading
+    runner, target, proc = study
+    def run(argv, **kwargs):
+        if argv[0] == 'git':
+            from types import SimpleNamespace
+            return SimpleNamespace(returncode=0, stdout='Git evidence: ' + ' '.join(argv[3:]))
+        return help_result
+    # The fixture uses a fixed help result; retain it for non-git commands.
+    help_result = runner.run.return_value
+    runner.run.side_effect = run
+    def launch(*args, **kwargs):
+        folder = next(runner.root.iterdir())
+        for name in ('findings.md', 'build-plan.md', 'review.md'):
+            (folder / name).write_text('Review evidence')
+        return proc
+    runner.popen.side_effect = launch
+    done = threading.Event()
+    runner.start(target, 'Review last change', lambda result: done.set(), platform='darwin', mode='review')
+    assert done.wait(3)
+    prompt = runner.popen.call_args.args[0][2]
+    assert 'Review the last change using the Git context' in prompt
+    for context in ('diff HEAD~1 --stat', 'diff HEAD~1', 'log -5 --oneline'):
+        assert 'Git evidence: ' + context in prompt

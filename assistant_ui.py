@@ -4690,6 +4690,9 @@ class AppDelegate(NSObject):
     def _dispatch_text_plan(self, plan):
         local_reply = False
         if plan["kind"] == "run":
+            from commands.rea_study_ui import kickoff
+            if kickoff(self, plan["control"][1]):
+                return
             phrase = plan["control"][1]
             if hasattr(self, "typed"):
                 self.typed.note_request(phrase)
@@ -7407,6 +7410,10 @@ class AppDelegate(NSObject):
 
     def updateStatus_(self, payload):
         state = str(payload["state"])
+        if state == "REA Kickoff":
+            from commands.rea_study_ui import kickoff
+            kickoff(self, str(payload["detail"]))
+            return
         detail = str(payload.get("detail", ""))
         previous = str(self.status.stringValue()) if getattr(self, "status", None) is not None else ""
         self.status.setStringValue_(state)

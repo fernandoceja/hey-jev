@@ -196,6 +196,7 @@ ZOE_BLOCKED = {
         "test_results_open",
         # REA analyze. Still absent from BRIDGE_ALLOW.
         "rea_analyze",
+        "rea_kickoff",
     ),
     "llm": (),
 }
