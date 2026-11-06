@@ -518,3 +518,39 @@ failure offers the last 20 log lines and **Ask Claude Code to fix**, which copie
 and saves a prompt and opens Terminal without running Claude or pushing code.
 Logs live in `~/Library/Logs/Hey Jev NXNative/`. The first build may take
 30–60 minutes; reserve twice the dump size plus 10 GB of free space.
+
+### Study a Feature with REA (Mac)
+
+Click **Study a Feature with REA** in Quick Commands (mini-bar +, Spotlight, or
+Home sidebar), choose an app or any file/folder, describe a feature, and click
+Start. This is click-only: no voice trigger or watcher. Zoe mode and the iPhone
+bridge cannot start it. The mini-bar shows elapsed time; **Cancel REA Study**
+stops the process group. Completion offers **Open Folder**; failure shows the
+last 20 log lines and **Open Log**. No audio plays.
+
+Set up Claude Code yourself (`~/.local/bin/claude` or PATH), Node 22+ (including
+Homebrew node@24), and `~/Developer/rea`. Configure the trusted REA MCP server
+under the name `rea` in Claude Code before using this command. Nothing is
+installed automatically. REA/Hopper dependencies must already be present.
+
+Requests, `request.md`, `claude.log`, `findings.md`, and the original
+`build-plan.md` live under
+`~/Documents/Fernando Ceja/Developer/AI-Projects/REA/Requests/<YYYY-MM-DD-HHMM>-<slug>/`
+(with a numeric suffix for collisions). A second log lives at
+`~/Library/Logs/Hey Jev REA/<request-folder-name>.log`.
+
+The runner probes `claude --help` and starts, in `~/Developer/rea`:
+
+```text
+<claude> -p <prompt> --permission-mode default --tools Read,Glob,Grep,Write,Edit --allowedTools Read Glob Grep 'Write(//absolute/request/folder/**)' 'Edit(//absolute/request/folder/**)' 'mcp__rea__*'
+```
+
+These flags disable shell access and preapprove builtin writes only within the
+request folder. Headless default mode denies other permission requests. The
+actual flags are recorded in `request.md`. Unsupported flags cause a clear
+precheck refusal; there is no permissive fallback. REA is accessed through MCP,
+not an unrestricted shell/CLI. MCP tools execute in their own server and are
+not a filesystem sandbox: use a trusted REA configuration that honors the
+request's read-only target and request-local output rules. All studies require
+lawful research, no proprietary extraction, no target modification or license /
+DRM / signing bypass, no Ryujinx/games/keys, and no installs or model downloads.
