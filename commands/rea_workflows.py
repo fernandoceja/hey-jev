@@ -61,7 +61,7 @@ def presets(developer=None, run=subprocess.run):
 
 def diff_context(repo, run=subprocess.run):
     chunks = []
-    for args in (('diff', 'HEAD~1', '--stat'), ('log', '-5', '--oneline')):
+    for args in (('diff', 'HEAD~1', '--stat'), ('diff', 'HEAD~1'), ('log', '-5', '--oneline')):
         try:
             chunks.append(git(repo, *args, run=run))
         except ValueError:

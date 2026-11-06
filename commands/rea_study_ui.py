@@ -97,7 +97,7 @@ def builder_form():
     return ('new_app', request, str(field.stringValue())) if alert.runModal() == 1001 else None
 
 
-def click(ui, kind, prefill=None):
+def click(ui, kind, prefill=None, *, wishlist_authorized=False):
     import commands
     if sys.platform != 'darwin' or commands.zoe_mode_active():
         ui._show_bar_reply('REA studies are grown-up work on this Mac only.')
@@ -121,12 +121,28 @@ def click(ui, kind, prefill=None):
             if mode is None:
                 raise ValueError('Unknown REA command.')
             if mode == 'review':
-                target = repo_picker()
-                if not target:
+                choice = review_choice()
+                if choice is None:
                     return
-                selection = form('REA Review last change', target=target, feature='Review last change')
-            if mode != 'review':
-                selection = form('REA ' + {'research': 'Research', 'replicate': 'Replicate Plan'}[mode], **{k: v for k, v in (prefill or {}).items() if k in ('target', 'feature')})
+                if choice == 'prior':
+                    from .rea_study import ROOT
+                    request = pick_folder('Choose existing REA request with spec or findings/build plan', ROOT)
+                    if not request:
+                        return
+                    selection = form('REA Review against earlier study/spec')
+                else:
+                    target = repo_picker()
+                    if not target:
+                        return
+                    selection = form('REA Review last change', target=target, feature='Review last change')
+            else:
+                values = {k: v for k, v in (prefill or {}).items() if k in ('target', 'feature')}
+                target = values.get('target')
+                if (wishlist_authorized and mode == 'replicate' and target is not None
+                        and Path(target).exists() and values.get('feature', '').strip()):
+                    selection = (target, values['feature'])
+                else:
+                    selection = form('REA ' + {'research': 'Research', 'replicate': 'Replicate Plan'}[mode], **values)
         if not selection:
             return
         def work():
@@ -215,14 +231,47 @@ def repo_picker():
     return rows[index][1] if index < len(rows) else pick_folder('Choose repository', Path('~/Developer').expanduser())
 
 
+def review_choice():
+    from AppKit import NSAlert
+    alert = NSAlert.alloc().init()
+    alert.setMessageText_('REA Review')
+    for title in ('Cancel', 'Review against earlier study/spec', 'Review last change'):
+        alert.addButtonWithTitle_(title)
+    return {1001: 'prior', 1002: 'last'}.get(alert.runModal())
+
+
+def wishlist_form(prefill):
+    from AppKit import NSAlert, NSTextField, NSView
+    alert = NSAlert.alloc().init()
+    alert.setMessageText_('Add to REA Wishlist')
+    alert.setInformativeText_('Enter a feature, source app name or path, and optional notes.')
+    view = NSView.alloc().initWithFrame_(((0, 0), (420, 130)))
+    fields = []
+    for y, placeholder, value in (
+            (90, 'Feature', prefill.get('feature', '')),
+            (50, 'Source app name or path', str(prefill.get('target') or prefill.get('app', ''))),
+            (10, 'Notes (optional)', prefill.get('notes', ''))):
+        field = NSTextField.alloc().initWithFrame_(((0, y), (420, 28)))
+        field.setPlaceholderString_(placeholder)
+        field.setStringValue_(value)
+        view.addSubview_(field)
+        fields.append(field)
+    alert.setAccessoryView_(view)
+    alert.addButtonWithTitle_('Cancel')
+    alert.addButtonWithTitle_('Save')
+    if alert.runModal() != 1001:
+        return None
+    feature, source_app, notes = (str(f.stringValue()).strip() for f in fields)
+    if not feature:
+        raise ValueError('Enter a feature.')
+    return dict(feature=feature, source_app=source_app, notes=notes)
+
+
 def wishlist_add(prefill=None):
     from .rea_workflows import Wishlist
-    prefill = prefill or {}
-    value = form('Add to REA Wishlist', target=prefill.get('target'), feature=prefill.get('feature', ''), confirm=True)
+    value = wishlist_form(prefill or {})
     if value:
-        notes = text_prompt('Wishlist notes (optional)')
-        if notes is not None:
-            Wishlist().change('add', feature=value[1], source_app=str(value[0] or prefill.get('app', '')), notes=notes)
+        Wishlist().change('add', **value)
 
 
 def wishlist_list(ui):
@@ -243,7 +292,9 @@ def wishlist_list(ui):
     choice = alert.runModal()
     row = rows[picker.indexOfSelectedItem()]
     if choice == 1001:
-        click(ui, 'rea_replicate', dict(target=resolve_app(Path(row['source_app']).stem), feature=row['feature'], wishlist_id=row['id']))
+        source = Path(row['source_app']).expanduser()
+        target = source if source.is_absolute() and source.exists() else resolve_app(source.stem)
+        click(ui, 'rea_replicate', dict(target=target, feature=row['feature'], wishlist_id=row['id']), wishlist_authorized=True)
     elif choice == 1002:
         store.change('update', row['id'], status='built')
     elif choice == 1003 and confirm_action('Remove wishlist entry?'):

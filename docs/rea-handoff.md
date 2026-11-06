@@ -61,19 +61,27 @@ are unavailable through the iPhone bridge.
    feature and a fuzzy match from `/Applications` or `~/Applications`. An unknown
    app leaves the target unselected. **Start** must be clicked; acknowledgement
    is text only. No study or audio starts from the utterance.
-2. **REA / Add to Wishlist** opens a confirm form; Save and the notes confirmation
-   persist it. `add tabs from Safari to the REA wishlist` prefills that same
-   form. **REA / Wishlist** offers Replicate Plan → Start, Mark Built, and
-   Remove → Confirm. Starting a plan links its new request folder and marks it
-   planned. Removal deletes only the list entry, never request files.
-3. **REA / Review** → Jev, NXNative, Zoe Princess Academy (only when discovered),
-   or Other → **Start** reviews the last change. Jev and NXNative resolve under
-   `~/Developer/hey-jev` and `~/Developer/nxnative`. Zoe discovery checks local
-   git origins under `~/Developer` for Fernando's Princess Academy repository.
-   Python collects `git diff HEAD~1 --stat` and `git log -5 --oneline` into
-   request.md; new/shallow repositories get an explicit unavailable message.
-   The target remains read only; Claude writes into the new request folder.
-   Programmatic review of an existing request remains supported.
+2. **REA / Add to Wishlist** → enter feature, source app name/path, and optional
+   notes in one form → **Save**. `add tabs from Safari to the REA wishlist`
+   prefills that form; unknown source names are preserved for later resolution.
+   **REA / Wishlist** → select item → **Replicate Plan** starts that item's plan
+   directly when its source resolves to an existing target. This button authorizes
+   the start; no second Start form appears. Missing targets instead open target/
+   feature selection → **Start**. Starting links the request folder and marks the
+   item planned. **Mark Built** updates status; **Remove** → **Confirm** removes
+   only the list entry, never request files.
+3. **REA / Review** → **Review against earlier study/spec** → choose prior REA
+   request with spec or findings/build plan → choose your own target and feature
+   → **Start** compares against that earlier study and writes into its request
+   folder (retaining the previous review).
+   Alternatively, **REA / Review** → **Review last change** → Jev, NXNative,
+   Zoe Princess Academy (only when discovered), or Other → **Choose** → **Start**.
+   Jev and NXNative resolve under `~/Developer/hey-jev` and `~/Developer/nxnative`.
+   Zoe discovery checks local git origins under `~/Developer` for Fernando's
+   Princess Academy repository. Python collects `git diff HEAD~1 --stat`,
+   `git diff HEAD~1`, and `git log -5 --oneline` into request.md; new/shallow
+   repositories get an explicit unavailable message. Last-change review writes
+   into a new request folder. Both choices keep the target read only.
 4. **REA / Send to Builder** → request → **Existing Repo** → preset/Other → new
    slug → **Continue**. Only an actual repository root with a clean worktree and
    a strict Fernando GitHub origin is accepted. It creates a separate worktree

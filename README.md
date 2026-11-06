@@ -523,8 +523,9 @@ Logs live in `~/Library/Logs/Hey Jev NXNative/`. The first build may take
 
 Open the **REA** folder in Quick Commands (mini-bar +, Spotlight, or Home):
 
-- **Research** studies a target and feature with the existing REA researcher.
-- **Review** compares one of your own apps/repos/builds against an existing request.
+- **Add to Wishlist** → feature, source, notes → **Save** uses one form. **Wishlist** → item → **Replicate Plan** starts directly and links status/folder for a resolved source; missing targets require selection → **Start**.
+- **Research** studies a target and feature with the existing REA researcher. Voice Research/Replicate kickoff always requires **Start**.
+- **Review** → **Review against earlier study/spec** → prior request → target/feature → **Start** compares your app/repo/build against that spec. **Review last change** → repository preset/Other → **Choose** → **Start** uses git diff/log context.
 - **Replicate Plan** writes findings and a detailed original build plan with acceptance criteria.
 - **Send to Builder** sends only a validated clean-room `spec/`: NXNative copies it to a selected existing Inbox game without starting a build; New App creates a local `~/Developer/<slug>` repo and scaffolds from `docs/spec/` only. Existing app directories are refused.
 
