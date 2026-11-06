@@ -86,6 +86,105 @@ def test_presets_context(tmp_path):
     assert run.call_args_list[0].args[0][-3:] == ['diff', 'HEAD~1', '--stat']
 
 
+@pytest.fixture(autouse=True)
+def clear_zpa_override(monkeypatch):
+    monkeypatch.delenv('JEV_ZPA_REPO', raising=False)
+
+
+def preset_runner(remotes=None):
+    remotes = remotes or {}
+    return Mock(side_effect=lambda argv, **kw: SimpleNamespace(
+        returncode=0 if Path(argv[2]) in remotes else 1,
+        stdout=remotes.get(Path(argv[2]), '')))
+
+
+@pytest.mark.parametrize('nested', [False, True])
+@pytest.mark.parametrize('url', [
+    'https://github.com/fernandoceja/Zoe-s-Princess-Academy.git',
+    'GIT@GITHUB.COM:FERNANDOCEJA/ZOE-S-PRINCESS-ACADEMY',
+    "https://github.com/fernandoceja/Zoe's-Princess-Academy",
+    'git@github.com:fernandoceja/Zoes_Princess_Academy.git',
+    'https://github.com/fernandoceja/Zoe-Princess-Academy'])
+def test_presets_projects(tmp_path, monkeypatch, nested, url):
+    monkeypatch.setenv('HOME', str(tmp_path))
+    developer, projects = tmp_path / 'Developer', tmp_path / 'Projects'
+    developer.mkdir()
+    repo = projects / 'games' / 'repo' if nested else projects / 'repo'
+    repo.mkdir(parents=True)
+    (projects / 'hey-jev').mkdir()
+    (projects / 'nxnative').mkdir()
+    run = preset_runner({repo: url})
+    assert presets(run=run) == [('Zoe Princess Academy', repo)]
+    assert presets(developer=developer, run=run) == []
+    assert presets(developer=developer, roots=(developer, projects), run=run) == [('Zoe Princess Academy', repo)]
+
+
+def test_presets_origin_beats_name(tmp_path):
+    fallback = tmp_path / 'A-Princess-Academy'
+    origin = tmp_path / 'games' / 'repo'
+    fallback.mkdir()
+    origin.mkdir(parents=True)
+    assert presets(tmp_path, preset_runner()) == [('Zoe Princess Academy', fallback)]
+    run = preset_runner({origin: 'git@github.com:fernandoceja/Zoe-s-Princess-Academy'})
+    assert presets(tmp_path, run) == [('Zoe Princess Academy', origin)]
+
+
+def test_presets_fallback_order(tmp_path):
+    deep = tmp_path / 'a' / 'Princess-Academy'
+    first = tmp_path / 'B-princess-academy'
+    last = tmp_path / 'C-Princess-Academy'
+    for path in (deep, last, first):
+        path.mkdir(parents=True)
+    run = preset_runner({first: 'https://github.com/other/unrelated'})
+    assert presets(tmp_path, run) == [('Zoe Princess Academy', first)]
+
+
+@pytest.mark.parametrize('invalid', ['', 'missing', 'file', 'link'])
+def test_presets_invalid_override(tmp_path, monkeypatch, invalid):
+    repo = tmp_path / 'Princess-Academy'
+    repo.mkdir()
+    (tmp_path / 'file').write_text('file')
+    (tmp_path / 'link').symlink_to(repo, target_is_directory=True)
+    monkeypatch.setenv('JEV_ZPA_REPO', str(tmp_path / invalid) if invalid else '')
+    assert presets(tmp_path, preset_runner()) == [('Zoe Princess Academy', repo)]
+
+
+def test_presets_override(tmp_path, monkeypatch):
+    repo = tmp_path / 'override'
+    repo.mkdir()
+    monkeypatch.setenv('HOME', str(tmp_path))
+    monkeypatch.setenv('JEV_ZPA_REPO', '~/override')
+    run = preset_runner()
+    assert presets(tmp_path, run) == [('Zoe Princess Academy', repo)]
+    run.assert_not_called()
+
+
+def test_presets_skip_links_and_deeper_paths(tmp_path):
+    outside = tmp_path / 'outside' / 'Princess-Academy'
+    outside.mkdir(parents=True)
+    root = tmp_path / 'scan'
+    root.mkdir()
+    (root / 'Princess-Academy').symlink_to(outside, target_is_directory=True)
+    (root / 'linked-root').symlink_to(outside.parent, target_is_directory=True)
+    deep = root / 'one' / 'two' / 'Princess-Academy'
+    deep.mkdir(parents=True)
+    linked_root = tmp_path / 'root-link'
+    linked_root.symlink_to(outside.parent, target_is_directory=True)
+    run = preset_runner({outside: 'https://github.com/fernandoceja/Zoe-s-Princess-Academy'})
+    assert presets(developer=root, roots=(root, linked_root), run=run) == []
+    assert all(Path(call.args[0][2]) in (root / 'one', root / 'one' / 'two') for call in run.call_args_list)
+
+
+@pytest.mark.parametrize('url', [
+    'https://github.com/other/Zoe-s-Princess-Academy',
+    'https://github.com/fernandoceja/Zoe-s-Princess-Academy-unrelated',
+    'https://evil/github.com/fernandoceja/Zoe-s-Princess-Academy'])
+def test_presets_unrelated_origin(tmp_path, url):
+    repo = tmp_path / 'repo'
+    repo.mkdir()
+    assert presets(tmp_path, preset_runner({repo: url})) == []
+
+
 def test_remote_slug_url():
     for url in ('https://evil/github.com/fernandoceja/a', 'https://github.com/other/a', 'git@github.com:fernandoceja/../a', 'https://github.com/fernandoceja/a?x'):
         with pytest.raises(ValueError):
