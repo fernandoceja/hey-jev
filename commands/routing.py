@@ -32,6 +32,9 @@ def route_before_api(text):
     note or an IHSS line, whose words may contain "and". Message reads always
     match, joiner or not, so that phrase is never sent out.
     """
+    from .rea_workflows import intent as rea_intent
+    if rea_intent(text):
+        return "rea_kickoff"
     raw = _clean(text).strip()
     if not raw:
         return None

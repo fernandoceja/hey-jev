@@ -1,5 +1,7 @@
 """Click-only REA mode registry shared by all Quick Command surfaces."""
 MODES = (
+    ('rea_add_wishlist', 'Add to Wishlist', 'plus'),
+    ('rea_wishlist', 'Wishlist', 'list.bullet'),
     ('rea_research', 'Research', 'magnifyingglass'),
     ('rea_review', 'Review', 'doc.text.magnifyingglass'),
     ('rea_replicate', 'Replicate Plan', 'list.bullet.rectangle'),

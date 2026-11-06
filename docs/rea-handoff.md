@@ -53,3 +53,122 @@ model downloads. Research writes only inside its request; scaffolding writes
 only inside its new repo. Scoped builtin permissions do not sandbox the trusted
 REA MCP server. All actions require an explicit Mac click outside Zoe mode and
 are unavailable through the iPhone bridge.
+
+## Four local workflows
+
+1. Say or type `study how Safari does tabs`, `research tabs in Safari`, or
+   `replicate tabs from Safari`. Jev opens Research or Replicate Plan with the
+   feature and a fuzzy match from `/Applications` or `~/Applications`. An unknown
+   app leaves the target unselected. **Start** must be clicked; acknowledgement
+   is text only. No study or audio starts from the utterance.
+2. **REA / Add to Wishlist** opens a confirm form; Save and the notes confirmation
+   persist it. `add tabs from Safari to the REA wishlist` prefills that same
+   form. **REA / Wishlist** offers Replicate Plan → Start, Mark Built, and
+   Remove → Confirm. Starting a plan links its new request folder and marks it
+   planned. Removal deletes only the list entry, never request files.
+3. **REA / Review** → Jev, NXNative, Zoe Princess Academy (only when discovered),
+   or Other → **Start** reviews the last change. Jev and NXNative resolve under
+   `~/Developer/hey-jev` and `~/Developer/nxnative`. Zoe discovery checks local
+   git origins under `~/Developer` for Fernando's Princess Academy repository.
+   Python collects `git diff HEAD~1 --stat` and `git log -5 --oneline` into
+   request.md; new/shallow repositories get an explicit unavailable message.
+   The target remains read only; Claude writes into the new request folder.
+   Programmatic review of an existing request remains supported.
+4. **REA / Send to Builder** → request → **Existing Repo** → preset/Other → new
+   slug → **Continue**. Only an actual repository root with a clean worktree and
+   a strict Fernando GitHub origin is accepted. It creates a separate worktree
+   at `~/Developer/.rea-worktrees/<repo>-<slug>` on `rea/<slug>`, from origin's
+   resolved default branch. Existing folders, registered worktrees, local and
+   fetched remote branches are refused. Only validated spec files are copied
+   into `docs/rea-spec/<slug>/`. Original target paths, request.md, evidence and
+   research logs are never supplied to the builder.
+
+The wishlist is
+`~/Documents/Fernando Ceja/Developer/AI-Projects/REA/wishlist.json`, a JSON list
+with exactly `id`, `feature`, `source_app`, `notes`, `added`, `status`, and
+`request_folder`. Status is idea/planned/built. Linked requests must be direct
+children of REA Requests. Updates use an exclusive sibling file, fsync and
+atomic replace. Invalid JSON/schema is backed up to a unique `.corrupt-*`
+sibling and the operation fails without overwriting the original. Symlinks and
+unsafe request paths are refused. A user must repair the original before retrying.
+
+## Existing Repo command contract
+
+All commands below use subprocess argument lists (no shell). `R` is the chosen
+repo, `W` the new worktree, `D` origin's default branch and `S` a validated slug
+of at most 60 lowercase letters, numbers or hyphens, starting with a letter or
+number. Origin must be exactly HTTPS or git@github.com SSH for
+`fernandoceja/<repo>` with optional `.git`; push URLs must match the fetch URL.
+
+```text
+git -C R rev-parse --show-toplevel
+git -C R remote get-url origin
+git -C R remote get-url --push --all origin
+git -C R status --porcelain
+git -C R fetch origin
+git -C R remote set-head origin --auto
+git -C R symbolic-ref refs/remotes/origin/HEAD
+git -C R check-ref-format --branch D
+git -C R branch --list rea/S
+git -C R branch -r --list origin/rea/S
+git -C R worktree list --porcelain
+git -C R worktree add -b rea/S W origin/D
+```
+
+Claude is invoked with cwd=W, Node 22+ prepended to PATH, and this exact argv
+shape (`PROMPT` is the clean-room instruction in commands/rea_existing.py;
+`//absolute/W/**` is generated from the canonical absolute worktree path):
+
+```text
+[claude, '-p', PROMPT,
+ '--permission-mode', 'default',
+ '--tools', 'Read,Glob,Grep,Write,Edit',
+ '--allowedTools', 'Read', 'Glob', 'Grep',
+ 'Write(//absolute/W/**)', 'Edit(//absolute/W/**)',
+ '--disallowedTools', 'Bash', 'mcp__rea__*',
+ '--setting-sources', '', '--strict-mcp-config',
+ '--mcp-config', '{"mcpServers":{}}']
+```
+
+Empty setting sources prevent inherited generic Write/Edit grants from bypassing
+scope. Strict empty MCP configuration prevents exposing REA to the builder.
+Missing required CLI flags fail closed before worktree creation. Claude has no
+shell tools. After successful, uncancelled exit, Jev validates the live root,
+branch and origin, then runs `git -C W add --all` and
+`git -C W commit -m 'Implement REA S'` only if there are changes. No push occurs.
+Cancellation terminates the process group and retains the worktree for inspection.
+Failures retain files and logs; nothing is force-cleaned.
+
+Completion offers **Open Folder**, **Show Diff**, **Push & Open PR**, and
+**Discard Worktree**. Open Folder and Show Diff return to the action chooser.
+Push is a separate explicit click: Jev revalidates origin/root/branch, fetches
+and resolves the live default, requires a clean worktree, hard-refuses main,
+master or the default, and runs only:
+
+```text
+git -C W push -u origin rea/S
+```
+
+Then it opens
+`https://github.com/fernandoceja/<repo>/compare/<D>...rea%2F<S>?expand=1`
+with each branch URL encoded. Fernando submits the PR himself; Jev never creates
+one. Discard requires confirmation, live validation, a fetch, and a clean,
+unpushed branch; it runs `git -C R worktree remove W` without force, followed by
+`git -C R update-ref -d refs/heads/rea/S EXPECTED_HEAD`. The expected object ID
+makes branch deletion conditional on its tip remaining unchanged. Pushed,
+dirty or changed worktrees are retained, including cancelled work with edits.
+
+Setup: use this Mac outside Zoe mode, existing Git/Node 22+/Claude Code CLI,
+configured REA MCP for research, Git author identity, and existing GitHub access.
+No setup command installs software or downloads models. All workflows refuse
+Zoe mode and the iPhone bridge. No autoplay audio is added.
+
+Offline validation (no installs):
+
+```sh
+mkdir -p ~/Documents/.cos-tmp
+.venv/bin/python -m pytest -q --basetemp="$HOME/Documents/.cos-tmp/rea-tests"
+.venv/bin/python -m compileall -q commands assistant_ui.py siri.py tests/test_rea_workflows.py
+git diff --check
+gh run list --repo fernandoceja/hey-jev --branch feat/rea-workflows
+```

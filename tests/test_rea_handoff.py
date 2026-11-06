@@ -97,7 +97,7 @@ def test_refusals_all_modes(rea_request, platform, zoe):
 def test_menu():
     from mini_bar import quick_commands, quick_command_leaves
     rea = next(row for row in quick_commands() if row['id'] == 'rea')
-    assert [r['title'] for r in rea['items']] == ['Research', 'Review', 'Replicate Plan', 'Send to Builder']
+    assert [r['title'] for r in rea['items']] == ['Add to Wishlist', 'Wishlist', 'Research', 'Review', 'Replicate Plan', 'Send to Builder']
     assert any(r['title'] == 'REA / Research' for r in quick_command_leaves())
 
 

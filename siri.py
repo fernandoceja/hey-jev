@@ -1150,6 +1150,10 @@ def handle(text, stt_ms=None, notify=None, reply_sink=None, quiet=False):
 
 def _handle_turn(text, stt_ms=None, notify=None, reply_sink=None, quiet=False):
     global misses
+    from commands.rea_workflows import intent as rea_intent
+    if rea_intent(text):
+        emit(notify, "REA Kickoff", text)
+        return
     fixed = fix_names(text)
     # The site name stays in the reply. The raw line can also contain a dictated
     # password, so that line is not written to the log.
