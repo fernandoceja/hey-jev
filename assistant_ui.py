@@ -6622,6 +6622,10 @@ class AppDelegate(NSObject):
         if kind == "text":
             self._queue_bar_phrase(spec.get("phrase") or "")
             return
+        if kind in ("rea_study", "rea_cancel"):
+            from commands.rea_study_ui import click
+            click(self, kind)
+            return
         if kind in ("nx_build", "nx_cancel"):
             from commands.nxnative_build_ui import click
             click(self, kind)
@@ -6738,6 +6742,10 @@ class AppDelegate(NSObject):
             sentence = "Couldn't do that."
             print(f"  mini bar capture failed: {exc}")
         self.performSelectorOnMainThread_withObject_waitUntilDone_("showCaptureResult:", str(sentence or ""), False)
+
+    def reaStudyFinished_(self, result):
+        from commands.rea_study_ui import finished
+        finished(self, result)
 
     def nxBuildFinished_(self, result):
         from commands.nxnative_build_ui import finished

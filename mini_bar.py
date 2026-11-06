@@ -1181,6 +1181,10 @@ def quick_commands(hazard_alerts=False, game_library=None, nx_ports=None):
     build_rows = [{"id": "nx_build", "title": "Start NXNative Build", "kind": "nx_build", "phrase": "", "key": "", "symbol": "hammer"}]
     if BUILD.status():
         build_rows.append({"id": "nx_cancel", "title": "Cancel NXNative Build", "kind": "nx_cancel", "phrase": "", "key": "", "symbol": "stop.circle"})
+    from commands.rea_study import STUDY
+    study_rows = [{"id": "rea_study", "title": "Study a Feature with REA", "kind": "rea_study", "phrase": "", "key": "", "symbol": "magnifyingglass"}]
+    if STUDY.status():
+        study_rows.append({"id": "rea_cancel", "title": "Cancel REA Study", "kind": "rea_cancel", "phrase": "", "key": "", "symbol": "stop.circle"})
     return (
         websites_menu(),
         _menu_text("tutor", "Tutor", "tutor me", "graduationcap"),
@@ -1189,6 +1193,7 @@ def quick_commands(hazard_alerts=False, game_library=None, nx_ports=None):
         *console_menus(game_library, installed=installed),
         nxnative_menu(nx_ports),
         *build_rows,
+        *study_rows,
         _menu_text("cleanmymac_scan", "CleanMyMac Scan", "cleanmymac scan", "sparkles"),
         _menu_text("offline_brain_on", "Start Offline Brain", "start offline brain", "brain"),
         _menu_text("offline_brain_off", "Stop Offline Brain", "stop offline brain", "brain.head.profile"),
@@ -1232,7 +1237,7 @@ def quick_command_leaves(items=None, parents=()):
     for item in quick_commands() if items is None else items:
         if item["kind"] == "submenu":
             yield from quick_command_leaves(item["items"], parents + (item["title"],))
-        elif item["kind"] in ("text", "game_launch", "nx_build", "nx_cancel"):
+        elif item["kind"] in ("text", "game_launch", "nx_build", "nx_cancel", "rea_study", "rea_cancel"):
             yield dict(item, title=" / ".join(parents + (item["title"],)))
 
 
