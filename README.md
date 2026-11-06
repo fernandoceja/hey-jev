@@ -501,3 +501,20 @@ with the library cache (30 seconds), so reinstalling an emulator brings its
 commands back automatically. Missing emulator voice requests get a short reply.
 The Zelda port shortcut also requires soh.app. NXNative Games and List games
 continue to discover native port apps such as High On Life.
+
+NXNative IPA builds: click **Start NXNative Build** in the mini-bar +,
+Spotlight Quick Commands, or Home sidebar, then confirm an Inbox game.
+Builds start only through this click flow; there is no watcher or voice start.
+Put one game's NSP/XCI files (plus optional update/DLC NSPs) in
+`~/Documents/Fernando Ceja/Emulation/NXNATIVE/Inbox/<Game>/`.
+Results and their `.idx` files stay in the sibling `Builds/<Game>/` folder.
+Jev creates missing Inbox/Builds folders and never moves or deletes dumps.
+Python 3.12+ and `~/Developer/nxnative` must already be installed.
+The default keys path is `~/Library/Application Support/Ryujinx/system/prod.keys`;
+set `JEV_NXNATIVE_KEYS` in Jev's launch environment to change it. Jev checks
+existence and passes the path to the pipeline; it never reads the keys.
+While running, click **Cancel NXNative Build** to stop it. Success offers Finder;
+failure offers the last 20 log lines and **Ask Claude Code to fix**, which copies
+and saves a prompt and opens Terminal without running Claude or pushing code.
+Logs live in `~/Library/Logs/Hey Jev NXNative/`. The first build may take
+30–60 minutes; reserve twice the dump size plus 10 GB of free space.
