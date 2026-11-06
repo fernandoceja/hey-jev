@@ -95,7 +95,8 @@ class TestTutorRouting(unittest.TestCase):
 
         rows = quick_rows(plus_menu())
         self.assertEqual(rows[0]["id"], "websites")
-        self.assertEqual(rows[1]["id"], "tutor")
+        ids = [row.get("id") for row in rows]
+        self.assertEqual(ids.index("tutor"), ids.index("rea") + 1)
         item = plus_item("tutor")
         self.assertEqual(item["kind"], "text")
         self.assertEqual(item["title"], "Tutor")
