@@ -43,19 +43,43 @@ def git(repo, *args, run=subprocess.run):
     return result.stdout.strip()
 
 
-def presets(developer=None, run=subprocess.run):
-    developer = Path(developer or '~/Developer').expanduser()
-    found = [(label, developer / name) for label, name in (('Jev', 'hey-jev'), ('NXNative', 'nxnative')) if (developer / name).is_dir()]
-    for path in sorted(developer.glob('*')):
-        if not path.is_dir() or path.is_symlink():
+def _zoe_preset(roots, run):
+    # A valid override bypasses discovery; invalid overrides fall back to scanning.
+    override = os.environ.get('JEV_ZPA_REPO')
+    if override:
+        path = Path(override).expanduser()
+        if not path.is_symlink() and path.is_dir():
+            return path
+    candidates = set()
+    for root in roots:
+        root = Path(root).expanduser()
+        if root.is_symlink() or not root.is_dir():
             continue
+        children = [p for p in root.iterdir() if not p.is_symlink() and p.is_dir()]
+        candidates.update((1, p) for p in children)
+        for child in children:
+            candidates.update((2, p) for p in child.iterdir()
+                              if not p.is_symlink() and p.is_dir())
+    paths = [p for _, p in sorted(candidates, key=lambda item: (item[0], str(item[1])))]
+    for path in paths:
         try:
             remote = git(path, 'remote', 'get-url', 'origin', run=run)
         except (ValueError, OSError):
             continue
-        if re.fullmatch(r'(?:https://github.com/|git@github.com:)fernandoceja/Zoe[-s]*Princess[-_]Academy(?:\.git)?', remote, re.I):
-            found.append(('Zoe Princess Academy', path))
-            break
+        if re.fullmatch(r"(?:https://github.com/|git@github.com:)fernandoceja/Zoe(?:[-_]?s|'s)?[-_]Princess[-_]Academy(?:\.git)?", remote, re.I):
+            return path
+    return next((p for p in paths if 'princess' in p.name.lower() and 'academy' in p.name.lower()), None)
+
+
+def presets(developer=None, run=subprocess.run, roots=None):
+    single_root = developer is not None
+    developer = Path(developer or '~/Developer').expanduser()
+    found = [(label, developer / name) for label, name in (('Jev', 'hey-jev'), ('NXNative', 'nxnative')) if (developer / name).is_dir()]
+    if roots is None:
+        roots = (developer,) if single_root else (developer, Path('~/Projects').expanduser())
+    zoe = _zoe_preset(roots, run)
+    if zoe is not None:
+        found.append(('Zoe Princess Academy', zoe))
     return found
 
 
