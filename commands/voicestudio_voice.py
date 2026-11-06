@@ -4,6 +4,7 @@ import io
 import os
 import tempfile
 import time
+import threading
 import wave
 
 import requests
@@ -19,7 +20,35 @@ def provider():
     return os.environ.get("JEV_TTS_PROVIDER", "FISH").strip().upper()
 
 
+_session_lock = threading.Lock()
+_session_disabled = False
+
+
+def reset_session():
+    """Allow another VoiceStudio attempt (normally only needed by tests)."""
+    global _session_disabled
+    with _session_lock:
+        _session_disabled = False
+
+
 def fetch_speech(text, cache_dir):
+    """Return audio, or None to use Fish after this session's first failure.
+
+    Serialize attempts so cache warmup and live speech cannot repeatedly hit a
+    failed service. The first failure still raises for the caller to log.
+    """
+    global _session_disabled
+    with _session_lock:
+        if _session_disabled:
+            return None
+        try:
+            return _fetch_speech(text, cache_dir)
+        except Exception:
+            _session_disabled = True
+            raise
+
+
+def _fetch_speech(text, cache_dir):
     """Return (WAV path, synthesis milliseconds, cached), without installing models.
 
     A model/consent failure raises to the caller, which retains Fish fallback.
@@ -35,7 +64,7 @@ def fetch_speech(text, cache_dir):
         return path, 0, True
     with requests.Session() as session:
         session.trust_env = False  # Loopback speech never goes through a proxy.
-        response = session.get(BASE_URL + "/models", timeout=10)
+        response = session.get(BASE_URL + "/models", timeout=(1, 3))
         response.raise_for_status()
         model = next((m for m in response.json()["models"]
                       if m["repo_id"] == MODEL_REPO), {})
@@ -45,7 +74,7 @@ def fetch_speech(text, cache_dir):
         if consent.get("required") and not consent.get("accepted"):
             raise RuntimeError("VoiceStudio model consent requires Fernando")
         started = time.monotonic()
-        response = session.post(BASE_URL + "/v1/audio/speech", json=body, timeout=(5, 180))
+        response = session.post(BASE_URL + "/v1/audio/speech", json=body, timeout=(1, 180))
         response.raise_for_status()
         content = response.content
         elapsed = int((time.monotonic() - started) * 1000)
