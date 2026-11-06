@@ -32,11 +32,12 @@ def test_request_argv_logs_and_result(study, findings):
     def launch(*args, **kwargs):
         if findings:
             next(runner.root.iterdir()).joinpath('findings.md').write_text('Evidence')
+            next(runner.root.iterdir()).joinpath('build-plan.md').write_text('Original plan')
         return proc
     runner.popen.side_effect = launch
     done, results = threading.Event(), []
     line = runner.start(target, 'Window search', lambda r: (results.append(r), done.set()), platform='darwin')
-    assert 'Studying Window search' in line
+    assert 'REA Research: Window search' in line
     assert done.wait(3)
     result = results[0]
     request = (result['output'] / 'request.md').read_text()
@@ -57,6 +58,10 @@ def test_request_argv_logs_and_result(study, findings):
     assert result['success'] == findings
     assert 'ready' in result['message'] if findings else 'failed' in result['message']
     assert 'evidence' in result['tail']
+    if findings:
+        from commands.rea_handoff import load
+        assert load(result['output'])['clean_room'] is True
+        assert str(target) not in (result['output'] / 'spec/handoff.json').read_text()
     assert not runner.status()
 
 
@@ -87,7 +92,7 @@ def test_discovery():
 def test_lock_cancel_commands_and_bridge(study):
     runner, target, proc = study
     runner.active = dict(feature='Search', at=0, proc=proc, cancelled=False)
-    assert 'Studying Search' in runner.start(target, 'Other', Mock(), platform='darwin')
+    assert 'REA Research: Search' in runner.start(target, 'Other', Mock(), platform='darwin')
     runner.popen.assert_not_called()
     assert 'Cancelling' in runner.cancel()
     runner.killpg.assert_called_with(321, signal.SIGTERM)
@@ -98,12 +103,12 @@ def test_lock_cancel_commands_and_bridge(study):
     from mini_bar import quick_command_leaves
     with patch('commands.rea_study.STUDY', runner):
         ids = {row['id'] for row in quick_command_leaves()}
-        assert {'rea_study', 'rea_cancel'} <= ids
+        assert {'rea_research', 'rea_cancel'} <= ids
         runner.active = None
         assert 'rea_cancel' not in {row['id'] for row in quick_command_leaves()}
-        assert 'No REA study' in runner.cancel()
+        assert 'No REA job' in runner.cancel()
     from commands.config import BRIDGE_ALLOW
-    assert not {'rea_study', 'rea_cancel'} & BRIDGE_ALLOW
+    assert not {'rea_research', 'rea_cancel'} & BRIDGE_ALLOW
 
 
 @pytest.mark.parametrize('platform,zoe', [('linux', False), ('darwin', True)])
@@ -114,7 +119,7 @@ def test_refusal(study, platform, zoe):
     from commands import rea_study_ui as ui
     host = Mock()
     with patch.object(ui.sys, 'platform', platform), patch('commands.zoe_mode_active', return_value=zoe), patch.object(ui, 'form') as form:
-        ui.click(host, 'rea_study')
+        ui.click(host, 'rea_research')
         form.assert_not_called()
         host._show_bar_reply.assert_called_once()
 
@@ -137,13 +142,13 @@ def test_second_click_shows_status(study):
     runner.active = dict(feature='Search', at=0, proc=proc)
     with patch.object(ui, 'STUDY', runner), patch.object(ui.sys, 'platform', 'darwin'), patch('commands.zoe_mode_active', return_value=False), patch.object(ui, 'form') as form:
         host = Mock()
-        ui.click(host, 'rea_study')
+        ui.click(host, 'rea_research')
         form.assert_not_called()
-        assert 'Studying Search' in host._show_bar_reply.call_args.args[0]
+        assert 'REA Research: Search' in host._show_bar_reply.call_args.args[0]
 
 
 def test_no_shell_or_listeners():
-    for name in ('rea_study.py', 'rea_study_ui.py'):
+    for name in ('rea_study.py', 'rea_study_ui.py', 'rea_builder.py', 'rea_handoff.py', 'rea_modes.py'):
         tree = ast.parse((Path(__file__).parents[1] / 'commands' / name).read_text())
         for node in ast.walk(tree):
             if isinstance(node, ast.Call):
@@ -159,13 +164,13 @@ def test_cancelled_findings_are_not_success(study):
     results = []
     runner._watch(state, [io.StringIO()], results.append)
     assert not results[0]['success']
-    assert results[0]['message'] == 'Study cancelled.'
+    assert results[0]['message'] == 'REA cancelled.'
 
 
 def test_shared_surfaces():
     from orb_spotlight import search_rows
     from full_window import sidebar_items
-    assert any(row[1] == 'menu:rea_study' for row in search_rows('Study a Feature', quick=True))
+    assert any(row[1] == 'menu:rea_research' for row in search_rows('Research', quick=True))
     # The Home sidebar shares the same non-phrase action as the mini-bar.
     rows, _ = sidebar_items()
-    assert any(row.get('action') == ('quick', 'rea_study') for row in rows)
+    assert any(row.get('action') == ('quick', 'rea_research') for row in rows)

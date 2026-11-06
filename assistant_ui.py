@@ -6622,7 +6622,8 @@ class AppDelegate(NSObject):
         if kind == "text":
             self._queue_bar_phrase(spec.get("phrase") or "")
             return
-        if kind in ("rea_study", "rea_cancel"):
+        from commands.rea_modes import KINDS as REA_KINDS
+        if kind in REA_KINDS:
             from commands.rea_study_ui import click
             click(self, kind)
             return
