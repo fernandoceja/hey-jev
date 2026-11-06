@@ -519,14 +519,31 @@ and saves a prompt and opens Terminal without running Claude or pushing code.
 Logs live in `~/Library/Logs/Hey Jev NXNative/`. The first build may take
 30–60 minutes; reserve twice the dump size plus 10 GB of free space.
 
-### Study a Feature with REA (Mac)
+### REA Quick Commands (Mac)
 
-Click **Study a Feature with REA** in Quick Commands (mini-bar +, Spotlight, or
-Home sidebar), choose an app or any file/folder, describe a feature, and click
-Start. This is click-only: no voice trigger or watcher. Zoe mode and the iPhone
-bridge cannot start it. The mini-bar shows elapsed time; **Cancel REA Study**
-stops the process group. Completion offers **Open Folder**; failure shows the
-last 20 log lines and **Open Log**. No audio plays.
+Open the **REA** folder in Quick Commands (mini-bar +, Spotlight, or Home):
+
+- **Research** studies a target and feature with the existing REA researcher.
+- **Review** compares one of your own apps/repos/builds against an existing request.
+- **Replicate Plan** writes findings and a detailed original build plan with acceptance criteria.
+- **Send to Builder** sends only a validated clean-room `spec/`: NXNative copies it to a selected existing Inbox game without starting a build; New App creates a local `~/Developer/<slug>` repo and scaffolds from `docs/spec/` only. Existing app directories are refused.
+
+Builders never see the original target path, request.md, or research logs.
+See [the handoff format](docs/rea-handoff.md) for the schema and clean-room rules.
+REA researches only; it does not build apps or NXNative IPAs. These modes are
+click-only, Mac-only, refused in Zoe mode and on the iPhone bridge. The mini-bar
+shows status; **Cancel REA** stops the shared research/scaffolding process group.
+Completion offers **Open Folder**; failure offers **Open Log**. No audio plays.
+New App writes README.md and NEXT_STEPS.md, with missing dependencies listed
+rather than installed. Its CLI template (cwd the new repo) is:
+
+```text
+<claude> -p <scaffold prompt> --permission-mode default --tools Read,Glob,Grep,Write,Edit --allowedTools Read Glob Grep 'Write(//absolute/new/repo/**)' 'Edit(//absolute/new/repo/**)'
+```
+
+There is no REA MCP permission for builders, no installs, no push or remotes.
+The builder flags are recorded in builder-note.md; logs go to the repo's
+claude.log and `~/Library/Logs/Hey Jev REA/builder-<slug>.log`.
 
 Set up Claude Code yourself (`~/.local/bin/claude` or PATH), Node 22+ (including
 Homebrew node@24), and `~/Developer/rea`. Configure the trusted REA MCP server
