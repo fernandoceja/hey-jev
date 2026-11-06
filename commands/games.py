@@ -101,17 +101,18 @@ EMULATORS = (
         "switch", "the Switch", "/Applications/Ryujinx.app",
         "org.ryujinx.Ryujinx", "Ryujinx",
         ("switch", "the switch", "my switch", "nintendo switch", "the nintendo switch",
-         "switch games", "swich", "swiss", "twitch switch"),
+         "ryujinx", "switch games", "swich", "swiss", "twitch switch"),
     ),
     emulator(
         "wiiu", "the Wii U", "/Applications/Cemu.app", "info.cemu.Cemu", "Cemu",
-        ("wii u", "wiiu", "the wii u", "nintendo wii u", "we you", "wee you", "we u",
+        ("cemu", "wii u", "wiiu", "the wii u", "nintendo wii u", "we you", "wee you", "we u",
          "wii you", "we yu", "wee u", "the we you", "wi u", "why you"),
     ),
     emulator(
         "gamecube", "the GameCube", "/Applications/Dolphin.app",
         DOLPHIN_BUNDLE_ID, "Dolphin",
-        ("gamecube", "game cube", "the gamecube", "the game cube", "nintendo gamecube",
+        ("dolphin", "melee", "super smash bros melee", "gamecube", "game cube",
+         "the gamecube", "the game cube", "nintendo gamecube",
          "nintendo game cube", "game q", "gamecubes", "game cubes"),
     ),
 )
@@ -177,6 +178,18 @@ def game_app_path(game, exists=os.path.exists):
         if path.startswith("/") and exists(path):
             return path
     return ""
+
+
+def emulator_installed(console_or_id, exists=os.path.exists):
+    """Detect a known emulator or port using its declared app bundle paths."""
+    console_or_id = console_or_id.lower()
+    entry = next((g for g in GAMES if console_or_id in
+                  (g["id"], g.get("process", "").lower())), None)
+    return bool(entry and game_app_path(entry, exists))
+
+
+def installed_emulators(exists=os.path.exists):
+    return tuple(g["id"] for g in EMULATORS if emulator_installed(g["id"], exists))
 
 
 def open_game(game, platform=None, exists=os.path.exists):

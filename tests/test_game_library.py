@@ -92,6 +92,12 @@ class ScanTests(unittest.TestCase):
 
 
 class MenuTests(unittest.TestCase):
+    def setUp(self):
+        patcher = mock.patch("commands.game_library.installed_apps",
+                             return_value=("switch", "wiiu", "gamecube", "ocarina"))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     GAMES = {"switch": [{"id": "game_switch_abc", "title": "High On Life", "path": "/r/hol.nsp"}],
              "wiiu": [], "gamecube": []}
 
@@ -154,6 +160,70 @@ class LaunchTests(unittest.TestCase):
         run = mock.Mock(side_effect=RuntimeError("x"))
         self.assertEqual(games.launch_rom("switch", "/a.nsp", "X", platform="darwin", exists=lambda p: True, run=run),
                          "I couldn't open X.")
+
+
+class InstalledAppTests(unittest.TestCase):
+    def setUp(self):
+        self.addCleanup(gl._CACHE.update, at=0.0, games=None, installed=())
+        gl._CACHE.update(at=0.0, games=None, installed=())
+
+    def test_each_known_app_in_either_applications_directory(self):
+        for entry in games.GAMES:
+            for raw in entry["apps"]:
+                path = os.path.abspath(os.path.expanduser(raw))
+                with self.subTest(app=path):
+                    self.assertTrue(games.emulator_installed(entry["id"], exists=lambda p: p == path))
+            self.assertFalse(games.emulator_installed(entry["id"], exists=lambda p: False))
+        self.assertFalse(games.emulator_installed("unknown", exists=lambda p: True))
+        self.assertEqual(games.installed_emulators(exists=lambda p: True), gl.CONSOLES)
+        self.assertEqual(games.installed_emulators(exists=lambda p: False), ())
+
+    def test_missing_emulator_voice_requests_stay_local(self):
+        import commands
+        for phrase in ("play gamecube", "play wii u", "play dolphin", "play cemu",
+                       "play ryujinx", "play melee"):
+            with self.subTest(phrase=phrase), mock.patch.object(games, "_run") as run:
+                self.assertEqual(commands.route_before_api(phrase), "game_open")
+                reply = games.open_game_from_text(phrase, platform="darwin", exists=lambda p: False)
+                self.assertIn("isn't installed", reply)
+                run.assert_not_called()
+
+    def test_library_and_menus_share_detection_cache_and_reinstall(self):
+        scanned = {c: [{"id": "game_" + c, "title": c, "path": "/rom/" + c}]
+                   for c in gl.CONSOLES}
+        present = {"/Applications/Ryujinx.app"}
+        exists = mock.Mock(side_effect=lambda p: p in present)
+        scanner = mock.Mock(return_value=scanned)
+        lib = gl.library(refresh=True, now=lambda: 100, scanner=scanner, exists=exists)
+        self.assertEqual(lib["gamecube"], [])
+        self.assertEqual(lib["wiiu"], [])
+        self.assertIsNone(gl.find_game("game_gamecube", lib))
+        with mock.patch.object(gl, "library", return_value=lib):
+            menus = mini_bar.console_menus(lib)
+        self.assertEqual([m["id"] for m in menus], ["console_switch"])
+        checks = exists.call_count
+        present.add("/Applications/Dolphin.app")
+        self.assertEqual(gl.library(now=lambda: 110, scanner=scanner, exists=exists)["gamecube"], [])
+        self.assertEqual(exists.call_count, checks)
+        lib = gl.library(now=lambda: 131, scanner=scanner, exists=exists)
+        self.assertEqual(lib["gamecube"], scanned["gamecube"])
+        self.assertEqual(scanner.call_count, 2)
+        present.clear()
+        self.assertFalse(any(gl.library(refresh=True, now=lambda: 132,
+                                       scanner=scanner, exists=exists).values()))
+
+    def test_quick_commands_and_spotlight_leaves_keep_switch_and_native_port(self):
+        port = {"id": "nx_hol", "title": "High On Life", "path": "/Applications/High On Life.app"}
+        with mock.patch.object(gl, "installed_apps", return_value=("switch",)):
+            quick = mini_bar.quick_commands(game_library=MenuTests.GAMES, nx_ports=[port])
+        leaves = {row.get("id") for row in mini_bar.walk_menu(quick)}
+        self.assertIn("play_switch", leaves)
+        self.assertIn("switch_off", leaves)
+        self.assertIn("game_switch_abc", leaves)
+        self.assertIn("nx_hol", leaves)
+        for absent in ("play_wiiu", "play_gamecube", "wiiu_off", "gamecube_off", "play_zelda"):
+            self.assertNotIn(absent, leaves)
+        self.assertEqual(mini_bar.console_menus(MenuTests.GAMES, installed=()), ())
 
 
 if __name__ == "__main__":

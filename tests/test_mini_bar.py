@@ -1,6 +1,7 @@
 """Mini command bar. No AppKit, so this runs in CI."""
 import os
 import unittest
+from unittest import mock
 
 import commands
 from assistant_layout import DEFAULT_H, DEFAULT_W, MIN_H, MIN_W, layout_window, rects_inside
@@ -611,7 +612,9 @@ class TestGlass(unittest.TestCase):
         self.assertEqual(trailing_symbol(False, "It's 3:45.", "It's 3:45."), "mic.fill")
         self.assertEqual(trailing_symbol(True, "It's 3:45.", "It's 3:45."), "waveform")
 
-    def test_plus_menu_routes_to_commands_that_already_exist(self):
+    @mock.patch("commands.game_library.installed_apps",
+                return_value=("switch", "wiiu", "gamecube", "ocarina"))
+    def test_plus_menu_routes_to_commands_that_already_exist(self, installed):
         self.assertFalse(attachments_supported())
         items = walk_menu()
         ids = [item["id"] for item in items]

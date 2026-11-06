@@ -1119,15 +1119,19 @@ def websites_menu():
             "items": tuple(rows)}
 
 
-def console_menus(games=None):
+def console_menus(games=None, installed=None):
     """One submenu per console: Open <emulator>, games found on disk, Turn Off.
 
     Open and Turn Off type the voice phrases. A game row is kind game_launch
     and carries its path; the app opens it with commands.games.launch_rom.
     """
+    from commands.game_library import installed_apps
+    installed = installed_apps() if installed is None else installed
     games = _game_library(games)
     menus = []
     for console, title, emu, open_phrase, off_phrase in CONSOLE_MENUS:
+        if console not in installed:
+            continue
         rows = [_menu_text("play_" + console, "Open " + emu, open_phrase, "play.fill"),
                 {"kind": "separator"}]
         found = list(games.get(console) or ())
@@ -1171,11 +1175,14 @@ def nxnative_menu(ports=None):
 
 def quick_commands(hazard_alerts=False, game_library=None, nx_ports=None):
     """The shared Quick Commands tree for every surface."""
+    from commands.game_library import installed_apps
+    installed = installed_apps()
     return (
         websites_menu(),
         _menu_text("tutor", "Tutor", "tutor me", "graduationcap"),
-        _menu_text("play_zelda", "Play Zelda", "play zelda", "gamecontroller"),
-        *console_menus(game_library),
+        *([_menu_text("play_zelda", "Play Zelda", "play zelda", "gamecontroller")]
+          if "ocarina" in installed else []),
+        *console_menus(game_library, installed=installed),
         nxnative_menu(nx_ports),
         _menu_text("cleanmymac_scan", "CleanMyMac Scan", "cleanmymac scan", "sparkles"),
         _menu_text("offline_brain_on", "Start Offline Brain", "start offline brain", "brain"),
