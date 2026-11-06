@@ -144,8 +144,8 @@ def speak_brea_start(now=None, path=None, events=None):
     if parts:
         return " ".join(parts)
     if isinstance(loaded, str) and due_line is None and not os.path.isfile(_live("DUE_PATH")):
-        return "I don't see a Brea start. Add a dated line to Documents, Jev, due.md."
-    return "I don't see a Brea start in your due list. Add a dated line to Documents, Jev, due.md."
+        return "I don't see a Brea start. Add a dated line to Documents, Fernando Ceja, Developer, AI-Projects, Jev, due.md."
+    return "I don't see a Brea start in your due list. Add a dated line to Documents, Fernando Ceja, Developer, AI-Projects, Jev, due.md."
 
 
 def _filtered_due(pattern, horizon_days, path=None, today=None):
@@ -161,7 +161,7 @@ def _filtered_due(pattern, horizon_days, path=None, today=None):
 
 def _speak_item_list(items, empty, label):
     if items is None:
-        return "You don't have a due list yet. Add dated lines to Documents, Jev, due.md."
+        return "You don't have a due list yet. Add dated lines to Documents, Fernando Ceja, Developer, AI-Projects, Jev, due.md."
     if not items:
         return empty
     shown = items[:5]
@@ -183,11 +183,11 @@ def speak_school_due(today=None, path=None):
 def speak_rent(today=None, path=None):
     lines = _dated_lines(path)
     if lines is None:
-        return "You don't have a due list yet. Add a dated rent line to Documents, Jev, due.md."
+        return "You don't have a due list yet. Add a dated rent line to Documents, Fernando Ceja, Developer, AI-Projects, Jev, due.md."
     today = today or datetime.now().astimezone().date()
     rent = [(day, title) for day, title in lines if day >= today and re.search(r"\brent\b", title, re.I)]
     if not rent:
-        return "I don't see an upcoming rent date. Add a dated line to Documents, Jev, due.md."
+        return "I don't see an upcoming rent date. Add a dated line to Documents, Fernando Ceja, Developer, AI-Projects, Jev, due.md."
     day, title = rent[0]
     return f"{title} is due {_month_day(day)}, {_until_day(day, today)}."
 
@@ -278,7 +278,7 @@ def speak_payday(today=None, path=None):
         first, second = ihss_line, apple_line
     note = ""
     if schedule["default"]:
-        note = " That's the default schedule. Edit Documents, Jev, money.md to change the Apple Friday."
+        note = " That's the default schedule. Edit Documents, Fernando Ceja, Developer, AI-Projects, Jev, money.md to change the Apple Friday."
     return f"{first} {second}{note}"
 
 

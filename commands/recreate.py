@@ -18,7 +18,11 @@ import uuid
 from .textutil import _clean
 
 RECREATE_DIR_ENV = "JEV_RECREATE_DIR"
-DEFAULT_RECREATE_DIR = os.path.expanduser("~/Documents/AI-Projects/Jarvis/handoff/recreate")
+# iCloud Drive, under Developer/AI-Projects. ~/Documents/AI-Projects is gone;
+# writing there would recreate a stray folder outside the new layout.
+DEFAULT_RECREATE_DIR = os.path.expanduser(
+    "~/Documents/Fernando Ceja/Developer/AI-Projects/Jarvis/handoff/recreate"
+)
 MAX_REQUEST_CHARS = 500
 MAX_STATUS_CHARS = 300
 

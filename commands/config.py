@@ -117,7 +117,9 @@ ZOE_EVENT_RE = re.compile(r"\b(?:Zoe|school|Cabrillo)\b", re.I)
 MY_LOVE_HANDLES = ("+15623616724", "cgarcilazo6724@icloud.com")
 MESSAGES_DB = os.path.expanduser("~/Library/Messages/chat.db")
 
-JEV_DOCS = os.path.expanduser("~/Documents/Jev")
+# Notes, due list, money.md, and IHSS hours. iCloud Drive, under Developer/AI-Projects.
+# ~/Documents/Jev is gone; writing there would recreate a stray folder.
+JEV_DOCS = os.path.expanduser("~/Documents/Fernando Ceja/Developer/AI-Projects/Jev")
 # Fernando's Videos folder. `open` receives this as one argument, so the spaces
 # stay in the path. expanduser runs again when the folder is opened, which
 # turns a leading ~ into the home directory without a shell. The folder is

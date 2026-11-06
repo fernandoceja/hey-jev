@@ -1,4 +1,4 @@
-"""Notes and the dated due list in ~/Documents/Jev."""
+"""Notes and the dated due list in ~/Documents/Fernando Ceja/Developer/AI-Projects/Jev."""
 from datetime import datetime, timedelta
 import os
 import re
@@ -7,7 +7,7 @@ from .textutil import _clean, _join_names, _month_day
 from .live import _live
 
 def take_note(text):
-    """Append one timestamped line to ~/Documents/Jev/notes.md."""
+    """Append one timestamped line to ~/Documents/Fernando Ceja/Developer/AI-Projects/Jev/notes.md."""
     match = _NOTE_CMD_RE.match(_clean(text).strip())
     body = match.group(1).strip() if match else ""
     body = re.sub(r"\s+", " ", body).strip(" .,!?")
@@ -69,7 +69,7 @@ def speak_due(limit=7):
     except OSError:
         return "I couldn't read the due list."
     if items is None:
-        return "You don't have a due list yet. Add dated lines to Documents, Jev, due.md."
+        return "You don't have a due list yet. Add dated lines to Documents, Fernando Ceja, Developer, AI-Projects, Jev, due.md."
     if not items:
         return "Nothing is due in the next 7 days."
     shown = items[:limit]
