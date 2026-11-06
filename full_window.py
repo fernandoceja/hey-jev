@@ -154,7 +154,7 @@ def short_label(text, limit=LABEL_MAX):
     return cleaned if len(cleaned) <= limit else cleaned[: limit - 1].rstrip() + "…"
 
 
-def sidebar_items(recent=()):
+def sidebar_items(recent=(), hazard_alerts=False):
     """The scrolling sidebar list, top to bottom, with frames in list space (y grows down).
 
     Returns (items, height). Each item has a kind (head, row or empty), a label and, for rows,
@@ -185,6 +185,11 @@ def sidebar_items(recent=()):
         for _cid, label, phrase in rows:
             row(label, ("send", phrase))
         y += SECTION_GAP
+    from mini_bar import quick_command_leaves, quick_commands
+    head("Quick Commands")
+    for item in quick_command_leaves(quick_commands(hazard_alerts=hazard_alerts)):
+        row(item["title"], ("send", item["phrase"]) if item["kind"] == "text" else ("quick", item["id"]))
+    y += SECTION_GAP
     head("Pages")
     for key, label in PAGES:
         row(label, ("page", key))

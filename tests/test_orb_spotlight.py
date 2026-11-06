@@ -7,7 +7,7 @@ import orb_spotlight as sp
 class RowTests(unittest.TestCase):
     def test_rows_are_the_menu_items_in_order_with_their_hints(self):
         titles = [row[0] for row in sp.SPOTLIGHT_ROWS]
-        self.assertEqual(titles, ["Open Jev", "New Chat", "Capture Area", "Mark Up", "Type to Jev", "Settings", "Quit"])
+        self.assertEqual(titles, ["Open Jev", "New Chat", "Capture Area", "Mark Up", "Type to Jev", "Quick Commands", "Settings", "Quit"])
         hints = {row[0]: row[3] for row in sp.SPOTLIGHT_ROWS}
         self.assertEqual(hints["Capture Area"], "⌘W")
         self.assertEqual(hints["Type to Jev"], "⌃⌥J")
@@ -19,7 +19,7 @@ class RowTests(unittest.TestCase):
         self.assertTrue(all(row[2] for row in sp.SPOTLIGHT_ROWS))
 
     def test_panel_height_fits_the_field_and_every_row(self):
-        expected = sp.SPOTLIGHT_PAD + sp.SPOTLIGHT_FIELD_H + sp.SPOTLIGHT_PAD + 7 * sp.SPOTLIGHT_ROW_H + sp.SPOTLIGHT_PAD
+        expected = sp.SPOTLIGHT_PAD + sp.SPOTLIGHT_FIELD_H + sp.SPOTLIGHT_PAD + 8 * sp.SPOTLIGHT_ROW_H + sp.SPOTLIGHT_PAD
         self.assertEqual(sp.panel_height(), expected)
 
 

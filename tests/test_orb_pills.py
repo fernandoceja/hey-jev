@@ -86,8 +86,11 @@ class DragAndMenuWiringTests(unittest.TestCase):
         from orb_spotlight import SPOTLIGHT_ROWS
         ui = _source("assistant_ui.py")
         titles = [row[0] for row in SPOTLIGHT_ROWS]
-        self.assertEqual(titles, ["Open Jev", "New Chat", "Capture Area", "Mark Up", "Type to Jev", "Settings", "Quit"])
+        self.assertEqual(titles, ["Open Jev", "New Chat", "Capture Area", "Mark Up", "Type to Jev", "Quick Commands", "Settings", "Quit"])
         for _title, selector, _symbol, _hint in SPOTLIGHT_ROWS:
+            if selector == "quickCommands:":
+                self.assertIn('if selector == "quickCommands:":', ui)
+                continue  # switches the palette into shared-command browse mode
             if selector == "terminate:":
                 continue  # NSApp's own action
             self.assertIn("def " + selector.replace(":", "_") + "(", ui, selector)

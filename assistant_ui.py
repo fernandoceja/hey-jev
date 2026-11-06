@@ -214,8 +214,8 @@ from commands.brief_offer import BRIEF_OFFER_LINE, OFFER_WINDOW_SECONDS
 from commands.translate_chip import TranslateChip, log_line  # PR 8b
 from area_hotkey import CARBON_CONTROL, CARBON_OPTION, AreaCaptureHotKey, CarbonHotKey
 from orb_motion import (
-    MENU_CORNER_RADIUS, MENU_FILL_HOVER, MENU_FILL_REST, MENU_FAN_START_SCALE, MENU_HOVER_SECONDS,
-    HINT_SECONDS, HINT_TEXT_INSET, RESULT_FADE_SECONDS, RESULT_SCALE_FROM, SPRING_MENU_FAN, TEXT_ACTIONS,
+    MENU_CORNER_RADIUS, MENU_FILL_HOVER, MENU_FILL_REST, MENU_HOVER_SECONDS,
+    HINT_SECONDS, HINT_TEXT_INSET, RESULT_FADE_SECONDS, RESULT_SCALE_FROM, TEXT_ACTIONS,
     hint_layout, menu_layout, result_frames, result_layout,
 )
 from mini_bar import FIND_IMAGE_HINT, TYPE_KEY_CODE, capture_outcome, menu_on_drop, orb_action_menu
@@ -736,6 +736,8 @@ class MiniBarBackground(NSView):
                 return  # the settle spring finalizes the drag when it lands
         else:
             moved = self._drag_exactly(window, start, origin)
+            if moved and getattr(delegate, "_action_menu_open", False):
+                return
             if moved and delegate is not None and hasattr(delegate, "_finalize_mini_bar_drag"):
                 delegate._finalize_mini_bar_drag(window)
                 return
@@ -769,6 +771,27 @@ class MiniBarBackground(NSView):
         objc.super(MiniBarBackground, self).rightMouseDown_(event)
 
     @objc.python_method
+    def _recognize_drag_shake(self, window, samples):
+        from orb_motion import shake_recognized
+        if not shake_recognized(samples):
+            return False
+        delegate = window.delegate()
+        if delegate is None:
+            return False
+        self._stop_drag_settle()
+        _notify_pill_drag(delegate, began=False)
+        delegate._orb_dragging = False
+        delegate.last_drag_roughness = None
+        delegate._sync_expanded_from_window()
+        orb = getattr(delegate, "orb_view", None)
+        if orb is not None:
+            orb.releaseSquash()
+            if not orb.reduceMotion:
+                orb.dropJiggle()  # immediate acknowledgement, before the panel opens
+        delegate._open_action_menu()
+        return True
+
+    @objc.python_method
     def _drag_exactly(self, window, start, origin):
         """Reduce Motion: the window follows the cursor exactly, as before PR 3a. Returns True once it moved."""
         mask = NSEventMaskLeftMouseDragged | NSEventMaskLeftMouseUp
@@ -788,6 +811,8 @@ class MiniBarBackground(NSView):
                 x, y = drag_origin(origin, start, point)
                 window.setFrameOrigin_(NSMakePoint(x, y))
                 samples.append((_drag_clock(), point[0], point[1]))  # PR 7b: RAW cursor samples, for dizzy
+                if self._recognize_drag_shake(window, samples):
+                    return True  # gesture consumed; caller skips finalization
         if moved:
             _notify_pill_drag(window.delegate(), began=False)  # PR 8: the pill slides back out from the orb's side
             delegate = window.delegate()
@@ -828,6 +853,8 @@ class MiniBarBackground(NSView):
             window.setFrameOrigin_(NSMakePoint(pos[0], pos[1]))
             orb.dragStretch(*drag_stretch(smoothed[0], smoothed[1]))
             samples.append((_drag_clock(), point[0], point[1]))  # PR 7b: RAW cursor samples, not the spring path
+            if self._recognize_drag_shake(window, samples):
+                return True  # no landing spring after recognition
         if not moved:
             return False
         _notify_pill_drag(delegate, began=False)  # PR 8: the pill slides back out from the orb's side
@@ -2737,29 +2764,13 @@ class AppDelegate(NSObject):
         mic.micUp = lambda: self._spotlight_mic(False)
         glass.addSubview_(mic)
 
-        for index, (title, selector, symbol, hint) in enumerate(SPOTLIGHT_ROWS):
-            row_y = h - SPOTLIGHT_PAD - SPOTLIGHT_FIELD_H - SPOTLIGHT_PAD - (index + 1) * SPOTLIGHT_ROW_H
-            row = OrbSpotlightRow.alloc().initWithFrame_(
-                NSMakeRect(SPOTLIGHT_PAD, row_y, w - 2 * SPOTLIGHT_PAD, SPOTLIGHT_ROW_H))
-            row.setWantsLayer_(True)
-            row.layer().setCornerRadius_(10)
-            icon = NSImageView.alloc().initWithFrame_(NSMakeRect(10, 9, 18, 18))
-            icon.setImage_(NSImage.imageWithSystemSymbolName_accessibilityDescription_(symbol, title))
-            row.addSubview_(icon)
-            label = NSTextField.labelWithString_(title)
-            label.setFont_(NSFont.systemFontOfSize_(14))
-            label.setFrame_(NSMakeRect(38, 8, w - 2 * SPOTLIGHT_PAD - 120, 20))
-            row.addSubview_(label)
-            if hint:
-                shortcut = NSTextField.labelWithString_(hint)
-                shortcut.setFont_(NSFont.systemFontOfSize_(13))
-                shortcut.setTextColor_(NSColor.secondaryLabelColor())
-                shortcut.setAlignment_(2)  # NSTextAlignmentRight
-                shortcut.setFrame_(NSMakeRect(w - 2 * SPOTLIGHT_PAD - 92, 8, 72, 20))
-                row.addSubview_(shortcut)
-            row.onPick = lambda i=index: self._pick_orb_spotlight_row(i)
-            glass.addSubview_(row)
-            state["rows"].append(row)
+        scroll = NSScrollView.alloc().initWithFrame_(NSMakeRect(0, SPOTLIGHT_PAD, w, field_y - 2 * SPOTLIGHT_PAD))
+        scroll.setHasVerticalScroller_(True)
+        scroll.setDrawsBackground_(False)
+        glass.addSubview_(scroll)
+        state["scroll"] = scroll
+        state["quick"] = False
+        self._refresh_spotlight_rows(state)
 
         win.keyHandler = lambda code: self._spotlight_key(code)
         self._spotlight = state
@@ -2846,10 +2857,49 @@ class AppDelegate(NSObject):
         print("orb spotlight: close ({0})".format(reason), flush=True)
 
     @objc.python_method
+    def _refresh_spotlight_rows(self, state):
+        from mini_bar import quick_commands
+        from orb_spotlight import search_rows, SPOTLIGHT_PAD, SPOTLIGHT_ROW_H
+        state["choices"] = search_rows(str(state["field"].stringValue()), state["quick"], quick_commands(hazard_alerts=self._hazard_alerts_on()))
+        state["rows"] = []
+        state["index"] = -1
+        w = float(state["scroll"].frame().size.width)
+        doc_h = max(float(state["scroll"].frame().size.height), len(state["choices"]) * SPOTLIGHT_ROW_H)
+        document = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, w, doc_h))
+        for index, (title, selector, symbol, hint) in enumerate(state["choices"]):
+            row_y = doc_h - (index + 1) * SPOTLIGHT_ROW_H
+            row = OrbSpotlightRow.alloc().initWithFrame_(
+                NSMakeRect(SPOTLIGHT_PAD, row_y, w - 2 * SPOTLIGHT_PAD, SPOTLIGHT_ROW_H))
+            row.setWantsLayer_(True)
+            row.layer().setCornerRadius_(10)
+            icon = NSImageView.alloc().initWithFrame_(NSMakeRect(10, 9, 18, 18))
+            icon.setImage_(NSImage.imageWithSystemSymbolName_accessibilityDescription_(symbol, title))
+            row.addSubview_(icon)
+            label = NSTextField.labelWithString_(title)
+            label.setFont_(NSFont.systemFontOfSize_(14))
+            label.setFrame_(NSMakeRect(38, 8, w - 2 * SPOTLIGHT_PAD - 120, 20))
+            row.addSubview_(label)
+            if hint:
+                shortcut = NSTextField.labelWithString_(hint)
+                shortcut.setFont_(NSFont.systemFontOfSize_(13))
+                shortcut.setTextColor_(NSColor.secondaryLabelColor())
+                shortcut.setAlignment_(2)  # NSTextAlignmentRight
+                shortcut.setFrame_(NSMakeRect(w - 2 * SPOTLIGHT_PAD - 92, 8, 72, 20))
+                row.addSubview_(shortcut)
+            row.onPick = lambda i=index: self._pick_orb_spotlight_row(i)
+            document.addSubview_(row)
+            state["rows"].append(row)
+
+        state["scroll"].setDocumentView_(document)
+        document.scrollPoint_(NSMakePoint(0, doc_h))
+
+    @objc.python_method
     def _set_orb_spotlight_highlight(self, state, index):
         for position, row in enumerate(state["rows"]):
             color = NSColor.whiteColor().colorWithAlphaComponent_(0.14).CGColor() if position == index else None
             row.layer().setBackgroundColor_(color)
+            if position == index:
+                row.scrollRectToVisible_(row.bounds())
 
     @objc.python_method
     def _spotlight_key(self, code):
@@ -2907,8 +2957,20 @@ class AppDelegate(NSObject):
 
     @objc.python_method
     def _pick_orb_spotlight_row(self, index):
-        from orb_spotlight import SPOTLIGHT_ROWS
-        title, selector, _symbol, _hint = SPOTLIGHT_ROWS[index]
+        state = self._spotlight
+        title, selector, _symbol, _hint = state["choices"][index]
+        if selector == "quickCommands:":
+            state["quick"] = True
+            state["field"].setStringValue_("")
+            self._refresh_spotlight_rows(state)
+            return
+        if selector.startswith("menu:"):
+            self._close_orb_spotlight("pick")
+            self._pick_quick_command(selector[len("menu:"):])
+            return
+        if selector.startswith("send:"):
+            self._send_orb_spotlight_text(selector[len("send:"):])
+            return
         print("orb spotlight: pick {0}".format(title), flush=True)
         self._close_orb_spotlight("pick")
         target = NSApp if selector == "terminate:" else self
@@ -2933,6 +2995,7 @@ class AppDelegate(NSObject):
             return True
         if kind == "typed":
             state["mode"] = "text"
+            self._refresh_spotlight_rows(state)
             state["index"] = -1
             self._set_orb_spotlight_highlight(state, -1)
             self._at_update(state["field"], "spotlight")
@@ -3532,37 +3595,16 @@ class AppDelegate(NSObject):
 
     @objc.python_method
     def _animate_action_menu_button(self, layer, start, end, delay):
-        """Scale 0.6 and alpha 0 at the orb's centre, to the slot on CASpring SPRING_MENU_FAN, after `delay` seconds."""
-        from Quartz import CABasicAnimation, CACurrentMediaTime, CASpringAnimation
-        from Foundation import NSValue
-        begin = CACurrentMediaTime() + float(delay)
-        stiffness, damping = SPRING_MENU_FAN
-        move = CASpringAnimation.animationWithKeyPath_("position")
-        move.setStiffness_(stiffness)
-        move.setDamping_(damping)
-        move.setMass_(1.0)
-        move.setFromValue_(NSValue.valueWithPoint_(NSMakePoint(start[0], start[1])))
-        move.setToValue_(NSValue.valueWithPoint_(NSMakePoint(end[0], end[1])))
-        move.setDuration_(move.settlingDuration())
-        move.setBeginTime_(begin)
-        move.setFillMode_("backwards")
-        grow = CASpringAnimation.animationWithKeyPath_("transform.scale")
-        grow.setStiffness_(stiffness)
-        grow.setDamping_(damping)
-        grow.setMass_(1.0)
-        grow.setFromValue_(MENU_FAN_START_SCALE)
-        grow.setToValue_(1.0)
-        grow.setDuration_(grow.settlingDuration())
-        grow.setBeginTime_(begin)
-        grow.setFillMode_("backwards")
-        fade = CABasicAnimation.animationWithKeyPath_("opacity")
-        fade.setFromValue_(0.0)
-        fade.setToValue_(1.0)
-        fade.setDuration_(0.18)
-        fade.setBeginTime_(begin)
-        fade.setFillMode_("backwards")
-        for anim, key in ((move, "menuFanMove"), (grow, "menuFanScale"), (fade, "menuFanFade")):
-            layer.addAnimation_forKey_(anim, key)
+        """A short whole-panel slide and fade; text keeps its natural size."""
+        from Quartz import CABasicAnimation
+        from orb_motion import MENU_OPEN_SECONDS
+        for path, initial, final, key in (("transform.translation.x", -6.0, 0.0, "menuSlide"),
+                                           ("opacity", 0.0, 1.0, "menuFade")):
+            animation = CABasicAnimation.animationWithKeyPath_(path)
+            animation.setFromValue_(initial)
+            animation.setToValue_(final)
+            animation.setDuration_(MENU_OPEN_SECONDS)
+            layer.addAnimation_forKey_(animation, key)
 
     @objc.python_method
     def _open_action_menu(self):
@@ -3592,10 +3634,9 @@ class AppDelegate(NSObject):
         self._action_menu_observing = True
         orb_view = getattr(self, "orb_view", None)
         if orb_view is None or not bool(getattr(orb_view, "reduceMotion", False)):
-            px, py = layout["panel"][0], layout["panel"][1]
-            start = (orb[0] + orb[2] / 2.0 - px, orb[1] + orb[3] / 2.0 - py)  # the orb's centre, in panel coordinates
-            for row, (item, end) in enumerate(self._action_menu_buttons):
-                self._animate_action_menu_button(item.layer(), start, end, layout["delays"][row])
+            layer = self._action_menu_panel.contentView().layer()
+            layer.setMasksToBounds_(True)
+            self._animate_action_menu_button(layer, None, None, 0)
         self._action_menu_panel.orderFrontRegardless()
 
     @objc.python_method
@@ -6058,7 +6099,7 @@ class AppDelegate(NSObject):
         for view in list(doc.subviews()):
             view.removeFromSuperview()
         _shown, allrows = self._full_rows()
-        items, height = fw.sidebar_items(fw.history_items(allrows))
+        items, height = fw.sidebar_items(fw.history_items(allrows), hazard_alerts=self._hazard_alerts_on())
         self._full_side_height = float(height)
         self.full_side_heads = []
         for item in items:
@@ -6135,6 +6176,9 @@ class AppDelegate(NSObject):
     def fullRow_(self, sender):
         """A sidebar row: a command (same path as a typed line), a main-window page, or a past request put back in the field."""
         kind, payload = getattr(sender, "rowAction", ("", "")) or ("", "")
+        if kind == "quick":
+            self._pick_quick_command(payload)
+            return
         if kind == "page":
             self._open_main_page(payload)
             return
@@ -6532,6 +6576,13 @@ class AppDelegate(NSObject):
             if image is not None:
                 item.setImage_(image)
             menu.addItem_(item)
+
+    @objc.python_method
+    def _pick_quick_command(self, item_id):
+        """Non-phrase game entries use exactly the mini-bar menu handler."""
+        item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("", None, "")
+        item.setRepresentedObject_(item_id)
+        self.miniPlusItem_(item)
 
     def miniPlusItem_(self, sender):
         raw = sender.representedObject() if sender is not None else None

@@ -195,14 +195,14 @@ def test_the_menu_adds_no_shadow_path():
         assert "shadowPath" not in _body(ui, header)
 
 
-def test_the_fan_uses_the_section_three_spring_and_stagger():
-    ui = _ui()
-    fan = _body(ui, "    def _animate_action_menu_button(self, layer, start, end, delay):")
-    assert "SPRING_MENU_FAN" in fan
-    assert "MENU_FAN_START_SCALE" in ui
-    assert om.SPRING_MENU_FAN == (500.0, 30.0)
-    opened = _body(ui, "    def _open_action_menu(self):")
-    assert "layout[\"delays\"][row]" in opened
+def test_panel_animation_is_short_and_does_not_scale_text():
+    fan = _body(_ui(), "    def _animate_action_menu_button(self, layer, start, end, delay):")
+    assert 0 < om.MENU_OPEN_SECONDS <= 0.2
+    assert "MENU_OPEN_SECONDS" in fan
+    assert "CASpringAnimation" not in fan and "transform.scale" not in fan
+    opened = _body(_ui(), "    def _open_action_menu(self):")
+    assert 'getattr(orb_view, "reduceMotion", False)' in opened
+    assert "contentView().layer()" in opened
 
 
 def test_close_is_instant_with_order_out_and_no_animation():

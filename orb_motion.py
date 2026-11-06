@@ -875,3 +875,16 @@ def rects_overlap(a, b):
     ax, ay, aw, ah = (float(v) for v in a)
     bx, by, bw, bh = (float(v) for v in b)
     return ax < bx + bw and bx < ax + aw and ay < by + bh and by < ay + ah
+
+
+MENU_OPEN_SECONDS = 0.18
+SHAKE_WINDOW_SECONDS = 0.45
+SHAKE_REVERSALS = 2
+
+
+def shake_recognized(samples):
+    """Two deliberate reversals in a short window; a fast straight drag is not a shake."""
+    if not samples:
+        return False
+    recent = [sample for sample in samples if samples[-1][0] - sample[0] <= SHAKE_WINDOW_SECONDS]
+    return drag_roughness(recent).peak_window >= SHAKE_REVERSALS
