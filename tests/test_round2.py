@@ -465,7 +465,7 @@ class TestWorkSchoolMoney(unittest.TestCase):
     def test_grandma_hours_append_and_period_total(self):
         with tempfile.TemporaryDirectory() as folder:
             path = os.path.join(folder, "ihss_hours.csv")
-            with mock.patch.object(commands, "IHSS_PATH", path):
+            with mock.patch.object(commands, "IHSS_PATH", path), mock.patch("commands.money.JEV_DOCS", folder):
                 logged = commands.log_ihss("log 2.5 hours for grandma")
                 logged_old = commands.log_ihss("log IHSS hours: 1 hour today")
                 total = commands.speak_ihss_period()
