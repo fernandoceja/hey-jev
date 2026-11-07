@@ -476,3 +476,16 @@ class ReactionQueue:
     def cancel_all(self):
         """Stop the reaction that is playing. Cooldowns are kept, so it cannot replay at once."""
         self._current = None
+
+
+class MoodState:
+    """Remember transitions while retaining the orb's existing voice-state rules."""
+    def __init__(self):
+        self.current = 'idle'
+        self.previous = None
+
+    def update(self, status, held=False, reduce_motion=False, menu_open=False):
+        state = resolve(status, held, reduce_motion, menu_open)
+        if state != self.current:
+            self.previous, self.current = self.current, state
+        return self.current
