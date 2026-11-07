@@ -4,7 +4,7 @@ import random
 import sys
 import time
 
-from orb_character import (CLIPS, REACTIONS, STATE_CLIPS, ReactionQueue, clip_switch_delay, ease_look, look_intensity,
+from orb_character import (MoodState, CLIPS, REACTIONS, STATE_CLIPS, ReactionQueue, clip_switch_delay, ease_look, look_intensity,
                            next_accent_delay, next_clip, orb_state, pick_accent, resolve)
 from orb_motion import BODY_SIZE as ORB_SIZE
 from orb_motion import CURSOR_POLL_SECONDS, DESIGN_CENTER, EYE_CENTER_Y, EYE_SPACING
@@ -101,6 +101,7 @@ def make_orb_view(frame):
                     self.statusText = "Ready"
                     self.held = False
                     self.character = "idle"
+                    self.mood = MoodState()
                     self.key = None  # (character, orb_state) of the last applied pose
                     self.clipTicker = OrbTicker()  # one single-shot clip switch at a time
                     self.speechTicker = OrbTicker()  # one single-shot watch for the reply WAV at a time
@@ -324,7 +325,7 @@ def make_orb_view(frame):
                     self.speechTicker.sync(False, None)
                     return
                 reduce = self.reduceMotion or self.asleep
-                character = resolve(self.statusText, self.held, reduce, self.cfg[3])
+                character = self.mood.update(self.statusText, self.held, reduce, self.cfg[3])
                 key = (character, self.state)
                 if key == self.key:
                     return

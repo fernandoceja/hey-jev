@@ -1188,6 +1188,7 @@ def quick_commands(hazard_alerts=False, game_library=None, nx_ports=None):
         nxnative_menu(nx_ports),
         *build_rows,
         rea_menu(bool(STUDY.status())),
+        {"id": "storage_scan", "title": "Storage Scan", "kind": "storage_scan", "symbol": "internaldrive", "phrase": "", "key": ""},
         _menu_text("tutor", "Tutor", "tutor me", "graduationcap"),
         *([_menu_text("play_zelda", "Play Zelda", "play zelda", "gamecontroller")]
           if "ocarina" in installed else []),
@@ -1236,7 +1237,7 @@ def quick_command_leaves(items=None, parents=()):
     for item in quick_commands() if items is None else items:
         if item["kind"] == "submenu":
             yield from quick_command_leaves(item["items"], parents + (item["title"],))
-        elif item["kind"] in ("text", "game_launch", "nx_build", "nx_cancel") + REA_KINDS:
+        elif item["kind"] in ("text", "game_launch", "nx_build", "nx_cancel", "storage_scan") + REA_KINDS:
             yield dict(item, title=" / ".join(parents + (item["title"],)))
 
 

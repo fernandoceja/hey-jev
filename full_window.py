@@ -21,7 +21,7 @@ nothing is copied from Eney.
 """
 
 FULL_AUTOSAVE = "JevFullWindow"
-FULL_DEFAULT = (760.0, 560.0)
+FULL_DEFAULT = (840.0, 620.0)
 FULL_MIN = (560.0, 420.0)
 FULL_MAX = (1600.0, 1200.0)
 SIDEBAR_W = 200.0

@@ -5847,6 +5847,9 @@ class AppDelegate(NSObject):
         lay = fw.full_layout(size.width, size.height, has_conversation=has_conversation)
         R = lambda r: NSMakeRect(*r)
         cw, ch = lay["size"]
+        storage_card = getattr(self, "_storage_card", None)
+        if storage_card is not None:
+            storage_card.layout()
         self.full_solid.setFrame_(R((0, 0, cw, ch)))
         self.full_effect.setFrame_(R((0, 0, cw, ch)))  # glass behind the whole window
         self.full_main.setFrame_(R((fw.SIDEBAR_W, 0, cw - fw.SIDEBAR_W, ch)))
@@ -6621,6 +6624,10 @@ class AppDelegate(NSObject):
             if bar is not None:
                 reply = getattr(bar, "reply", "") or ""
             self._queue_bar_phrase(tutor_command(field, reply))
+            return
+        if kind == "storage_scan":
+            from commands.storage_scan_ui import start
+            start(self)
             return
         if kind == "text":
             self._queue_bar_phrase(spec.get("phrase") or "")

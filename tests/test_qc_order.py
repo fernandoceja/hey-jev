@@ -30,7 +30,7 @@ def test_shared_group_order(quick_tree):
     assert ids[:len(first)] == first
     assert ("nx_cancel" in ids) == running
     assert ids[len(first):] == [
-        "tutor", "play_zelda", "console_switch", "console_wiiu", "console_gamecube",
+        "storage_scan", "tutor", "play_zelda", "console_switch", "console_wiiu", "console_gamecube",
         "cleanmymac_scan", "offline_brain_on", "offline_brain_off", "brief",
         "play_brief", "next_shift", "leave", "leave_reminders_on",
         "leave_reminders_off", "payday", "hazard", "gods_eye", "hazard_alerts",
