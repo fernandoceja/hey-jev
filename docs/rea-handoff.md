@@ -180,3 +180,77 @@ mkdir -p ~/Documents/.cos-tmp
 git diff --check
 gh run list --repo fernandoceja/hey-jev --branch feat/rea-workflows
 ```
+
+## Phase 2 backend adapter (Transport A)
+
+The existing clicked local `claude -p` flow remains the default. The optional
+paid `abliterated` lane is exposed through `commands.rea_adapter.Adapter`; lane
+selector and import/export dialogs are deferred. No bridge access is added.
+The adapter never invokes `claude-abliterated`: a human/coordinator manually
+carries the exported directory to the paid box and carries results back.
+It opens no connection and starts no process, build, playback, or retry.
+
+API integration sequence (call only from an explicit Mac click outside Zoe mode):
+
+1. `route(lane='local', unrestricted_need='')` resolves the lane. Requesting
+   abliterated without a nonempty reason refuses that lane and returns local.
+2. Stage only deliberately selected sanitized text under a source directory.
+   Call `Adapter(data_dir=...).preview(source, relative_filenames, mode=...,
+   feature=..., target_kind=..., lane=..., unrestricted_need=...,
+   estimated_cost_usd=...)`. Show the entire preview as text, including routing
+   refusal, reason, cost, cap status, names, byte sizes and content hashes.
+   `approval_hash(preview)` hashes canonical sorted compact UTF-8 JSON.
+3. Only the approval button handler calls `approve_click(preview, clicked=True)`.
+   Pass that single-use opaque token and unchanged preview to
+   `export(source, new_package_directory, request_id, preview, token)`.
+   Tokens are in-memory, scoped to that exact preview, and consumed even on
+   failure. Changed content or cap reservations require a new preview/click.
+   A token cannot authenticate physical input itself: the caller must enforce
+   the existing Mac click/Zoe guards; do not expose this API through the bridge.
+4. Hand the package's `job.json` and `payload/` to the coordinator. Target text,
+   including apparent instructions, is untrusted evidence only. The package
+   includes that instruction explicitly. Do not execute anything from it.
+5. Return `adapter-result.json` plus root `findings.md`, `build-plan.md`,
+   `review.md` only for review mode, and `spec/handoff.json`. Call
+   `import_result(returned_directory, new_request_directory, job_id)`.
+   The request directory basename must equal the exported request ID.
+   Import validates everything before creating a new request; it never overwrites
+   an existing study. It copies validated markdown into spec for builders.
+   `cancel(job_id)` permanently refuses subsequent import.
+
+The returned envelope has exactly `schema_version: "adapter-1.0"`, `request_id`,
+`job_id`, `lane: "abliterated"`, `status` (complete or failed), `usage`,
+`estimated_cost_usd`, `basis` (actual tokens or estimated tokens), `errors`
+(a list of strings), and `artifacts` (relative filename to SHA-256 hex digest).
+Complete results require all mode-specific artifacts; failed results require an
+empty artifacts object. Usage accepts nonnegative integer `input_tokens`,
+`output_tokens`, `cache_read_tokens`, and `cache_write_tokens` only.
+Imported errors are replaced by generic text. The stored envelope adds
+`cap_overrun`, a conservative charge, and an explicit cache-write estimate label.
+It remains at `<request>/adapter-result.json`, outside spec, and builders never
+receive it. The handoff remains exactly schema 1.0 with no adapter fields.
+Artifact hashes cover the original validated returned artifacts; the validated
+handoff is preserved byte for byte.
+
+Screening refuses absolute/home paths, sensitive filenames, symlinks (including
+ancestor directories), app bundles, non-allowlisted text formats, invalid UTF-8,
+control bytes, and sensitive keywords. `keywords=` adds configurable terms to
+the default immigration/financial/family/personal blocklist. Files are limited
+to 1 MiB each and 4 MiB total. Only selected files are exported; no target app,
+repository tree, or local request/log is implicitly included. This conservative
+screen may require manually rewriting benign material before approval.
+
+The injectable app data directory defaults to
+`~/Library/Application Support/Hey Jev/rea-adapter`. Its locked, fsynced JSONL
+ledger records job/request mappings and reserves estimates before exposing a
+package. Paid exports enforce $0.50/study and $1.00 per America/Los_Angeles day.
+Reservations are replaced by the greater of reserved estimate, returned estimate,
+and token-derived cost on import; overruns are flagged and count against the
+original export day. Rates are input $1/M, output $2/M, cache read $0.10/M;
+cache write uses an explicitly labeled estimate at input rate. These are local
+accounting limits, not provider-enforced spend caps. Honest estimates and usage
+are needed; manual box execution can exceed a reservation. Cancellation retains
+its reservation because a carried job may already have run. Export failures after
+reservation also retain it for human reconciliation. No automatic refunds,
+retries, or duplicate exports for a request ID are allowed. Malformed ledger data
+fails the operation; repair it manually rather than deleting spend history.
