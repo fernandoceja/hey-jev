@@ -109,6 +109,10 @@ class Worker:
                 if len(message) > MAX_MESSAGE:
                     raise ValueError("Request exceeds protocol bounds")
                 started = time.monotonic()
+                # Long text renders proportionally longer (measured on the Mac
+                # Nov 8 2026: ~1.3-1.7s compute per audio second), so allow
+                # extra time per input character, still hard-capped.
+                limit = min(1800.0, self.timeout + 0.25 * len(text))
                 # Nonblocking writes are bounded too: a hung child may never
                 # read stdin, even before it loads the model.
                 os.set_blocking(self.process.stdin.fileno(), False)
@@ -131,7 +135,7 @@ class Worker:
                     while b"\n" not in reply:
                         if cancel is not None and cancel.is_set():
                             raise InterruptedError("Cancelled")
-                        if time.monotonic() - started >= self.timeout:
+                        if time.monotonic() - started >= limit:
                             raise TimeoutError("OmniVoice timed out")
                         if selector.select(min(.1, self.timeout)):
                             chunk = os.read(self.process.stdout.fileno(), 4096)

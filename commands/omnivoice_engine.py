@@ -19,6 +19,15 @@ class Engine:
         snapshot = snapshot_download(MODEL, cache_dir=os.path.expanduser(
             "~/.cache/huggingface/hub"), local_files_only=True)
         self.model = OmniVoice.from_pretrained(snapshot, local_files_only=True)
+        # Apple Silicon GPU was faster than CPU on the Mac (Nov 8 2026).
+        # JEV_OMNIVOICE_DEVICE=cpu opts out; any MPS failure stays on CPU.
+        if os.environ.get("JEV_OMNIVOICE_DEVICE", "auto") != "cpu":
+            try:
+                import torch
+                if torch.backends.mps.is_available():
+                    self.model = self.model.to("mps")
+            except Exception:
+                pass
 
     def render(self, request, output):
         import soundfile as sf
