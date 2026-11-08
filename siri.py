@@ -990,7 +990,13 @@ def fetch_tts(text):
     back there. A model that returns HTTP 402 is not requested again
     until this process ends.
     """
-    if voicestudio_voice.provider() == "VOICESTUDIO":
+    if voicestudio_voice.provider() == "OMNIVOICE":
+        try:
+            from commands import omnivoice_voice
+            return omnivoice_voice.fetch_speech(text, CACHE_DIR)
+        except Exception as exc:
+            print("  omnivoice failed: {}; trying VoiceStudio".format(type(exc).__name__), flush=True)
+    if voicestudio_voice.provider() in ("VOICESTUDIO", "OMNIVOICE"):
         try:
             result = voicestudio_voice.fetch_speech(text, CACHE_DIR)
             if result is not None:
