@@ -31,7 +31,17 @@ class Engine:
         if request.get("description"):
             # Assumption: voice-design conditioning uses instruct. Verify on Mac.
             options["instruct"] = request["description"]
-        # Assumption: no conditioning matches the installed default voice;
-        # output is a list of mono arrays at 24 kHz (upstream public example).
+        seed = options.pop("seed", None)
+        if seed is not None:
+            # OmniVoice.generate has no seed argument; seed torch globally.
+            import torch
+            torch.manual_seed(int(seed))
+        # Verified on Mac Nov 8 2026: generate returns a list of float32
+        # torch tensors shaped (1, samples); rate comes from the model.
         audio = self.model.generate(text=request["input"], **options)
-        sf.write(str(output), audio[0], 24000, subtype="PCM_16")
+        samples = audio[0]
+        if hasattr(samples, "detach"):
+            samples = samples.detach().cpu().float().numpy()
+        samples = samples.reshape(-1)
+        rate = int(getattr(self.model, "sampling_rate", None) or 24000)
+        sf.write(str(output), samples, rate, subtype="PCM_16")
