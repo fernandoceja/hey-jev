@@ -79,6 +79,12 @@ def run(output, idle=120):
         deadline = started + idle + 5
         while worker.process is not None and time.monotonic() < deadline:
             time.sleep(.1)
+        # _stop() clears worker.process before kill/wait finish on the timer
+        # thread; give the exit a bounded moment so the check isn't racy.
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
         report["idle_unload"] = {"seconds": time.monotonic() - started,
                                  "process_exited": process.poll() is not None,
                                  "process_released": worker.process is None}
