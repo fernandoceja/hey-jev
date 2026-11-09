@@ -53,10 +53,14 @@ read-aloud offers and Speaking→Ready `finally` cleanup are retained; none of
 the new commands plays audio. No new bridge commands or listeners were added.
 
 Set `JEV_OMNIVOICE_PYTHON` to the existing VoiceStudio runtime interpreter.
-Without it, Jev checks `~/Library/Application Support/VoiceStudio/.venv/bin/python`
-and `~/Library/Application Support/OmniVoice/.venv/bin/python`, in that order.
-These are candidate locations, not verified installation paths. It fails clearly
-if neither exists. No dependency was added to Jev. A Jev-owned runtime is a
+Without it, Jev checks these paths in order, requiring a file with execute permission:
+
+1. `~/Library/Application Support/VoiceStudio/runtime/project/.venv/bin/python`
+   (verified on the Mac November 8).
+2. `~/Library/Application Support/VoiceStudio/.venv/bin/python`
+3. `~/Library/Application Support/OmniVoice/.venv/bin/python`
+
+Failure lists every checked path. No dependency was added to Jev. A Jev-owned runtime is a
 separate approval-gated step **before any VoiceStudio uninstall**. Runtime/package,
 Python version, device support and cached dependency compatibility remain Mac checks;
 Jev's 3.9/3.12 test matrix is unchanged.
@@ -109,7 +113,7 @@ Only `commands/omnivoice_engine.py` imports engine dependencies. It assumes
 `OmniVoice.from_pretrained(local_snapshot, local_files_only=True)` works with the
 installed runtime and default device; `generate(text=...)` returns a list of mono
 arrays at 24 kHz, as in the public model-card example. Reference conditioning uses
-`ref_audio` and `ref_text`. Design conditioning assumes `instruct`; seed/speed
+`ref_audio` and `ref_text`. Design conditioning maps descriptions to the public API’s supported `instruct` tags; seed/speed
 kwargs and device selection require verification. An unsupported API fails rather
 than silently changing engines. No conditioning is assumed to produce the default
 voice; matching VoiceStudio's sound requires listening on the Mac, not a mock claim.
@@ -181,3 +185,62 @@ loader flags, provider fallback, session skip, Speaking→Ready, profiles/consen
 pronunciation, WAV saving, Design CLI, no listener/playback calls, and live-report
 success/failure bookkeeping. No real Mac audio, measured RAM or acceptance pass is
 claimed by this evidence.
+
+## Plain-description design and offline profile transcription
+
+`design` accepts prose or existing tags. It normalizes case, whitespace and
+full-width commas, deduplicates tags, and keeps at most one per category.
+First source match wins per category; longer phrases win ties. Moderate pitch
+synonyms apply only if no stronger pitch word exists; an explicit `moderate pitch`
+tag still follows the first-match rule. Conflicting and unmapped
+words are reported as ignored. Unsupported accents (for example French or
+Spanish) are ignored with the supported-category hint. Nothing mapped means the
+default voice. A model rejection of mapped tags returns an error without retrying
+with a different voice. Mapping is repeated at the engine boundary.
+
+| Category | Accepted tags (case-insensitive) | Example prose synonyms |
+| --- | --- | --- |
+| Gender | male, female | man/boy/father; woman/girl/mother |
+| Age | child, teenager, young adult, middle-aged, elderly | little/kid, teen, youthful, mature, old/senior |
+| Pitch | very low pitch, low pitch, moderate pitch, high pitch, very high pitch | very deep, warm/deep/husky, gentle/narrator, bright/chirpy, very high |
+| Style | whisper | whispering, hushed, breathy |
+| Accent | american accent, british accent, australian accent, chinese accent, canadian accent, indian accent, korean accent, portuguese accent, russian accent, japanese accent | us, english/uk/london, aussie, brazilian (Portuguese) |
+
+For example, `Warm, gentle storybook narrator` maps to `low pitch`; gentle,
+storybook and narrator are reported as ignored. Rendering prints the mapping
+message to stderr and only the WAV path to stdout. Preview without a runtime:
+
+```sh
+python -m scripts.omnivoice design --description "Warm, gentle storybook narrator" --tags-only
+```
+
+Both `clone` and `import` accept `--ref-text` and `--auto-transcribe`. Explicit
+nonempty reference text takes precedence. Auto-transcription lazily uses Jev’s
+installed faster-whisper and cached `small.en` with CPU, int8,
+`local_files_only=True` and `HF_HUB_OFFLINE=1`, in Jev’s process. It never loads
+Whisper in the OmniVoice worker. If transcription is unavailable or empty, the
+profile is still saved; rendering requires re-creation with reference text or
+successful auto-transcription. Consent is still required. All profile subcommands
+(`clone`, `import`, `render`) accept `--profiles-root` to isolate live tests.
+
+```sh
+python -m scripts.omnivoice clone --name Test --reference /absolute/path/consented.wav --auto-transcribe --consent --profiles-root /tmp/jev-profile-test
+python -m scripts.omnivoice import --name Existing --filename reference.wav --ref-text "Reference words" --consent --profiles-root /tmp/jev-profile-test
+```
+
+## Read-aloud check without playback
+
+The shared `commands.tts_chain.fetch_with_fallback` is used by both Siri and this
+check. Fish remains the default when `JEV_TTS_PROVIDER` is unset. Native cache
+identity includes provider, voice (`default`) and text.
+
+```sh
+python -m scripts.omnivoice_readaloud_check --cache-dir /tmp/jev-readaloud-new
+```
+
+Choose a fresh, nonexistent cache directory. The script sets OMNIVOICE only in
+its own process, validates the saved WAV with `wave`, and writes `report.json`
+next to the audio with provider, path, wall seconds, audio seconds and cache hit.
+Failures also produce a report. Fish is replaced by a raising callable, so no
+paid/network Fish fallback can happen. The existing VoiceStudio fallback remains
+in the shared chain; any result from it exits nonzero. Nothing plays audio.

@@ -18,12 +18,13 @@ def runtime_python():
     if configured:
         return configured
     # Candidate locations only, never inspect the app's source or internals.
-    candidates = [Path.home() / "Library/Application Support/VoiceStudio/.venv/bin/python",
+    candidates = [Path.home() / "Library/Application Support/VoiceStudio/runtime/project/.venv/bin/python",
+                  Path.home() / "Library/Application Support/VoiceStudio/.venv/bin/python",
                   Path.home() / "Library/Application Support/OmniVoice/.venv/bin/python"]
     for path in candidates:
-        if path.is_file():
+        if path.is_file() and os.access(str(path), os.X_OK):
             return str(path)
-    raise RuntimeError("Set JEV_OMNIVOICE_PYTHON to the existing VoiceStudio runtime Python")
+    raise RuntimeError("Set JEV_OMNIVOICE_PYTHON; no executable runtime found. Checked: " + ", ".join(map(str, candidates)))
 
 
 def validate_wav(path):
@@ -187,7 +188,7 @@ def fetch_speech(text, cache_dir):
     import hashlib
     text = strip_fish_cues(text)
     # Native selection deliberately defaults to the unconditioned engine voice.
-    path = Path(cache_dir) / "omnivoice" / (hashlib.sha256(text.encode()).hexdigest() + ".wav")
+    path = Path(cache_dir) / "omnivoice" / (hashlib.sha256(json.dumps(["OMNIVOICE", "default", text]).encode()).hexdigest() + ".wav")
     if path.is_file():
         validate_wav(path)
         return str(path), 0, True
