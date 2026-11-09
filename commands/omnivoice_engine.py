@@ -3,6 +3,7 @@
 Independent implementation from Jev's behavior brief; no VoiceStudio sources.
 """
 import os
+from .omnivoice_design import describe_to_tags
 
 MODEL = "k2-fsa/OmniVoice"
 
@@ -38,8 +39,9 @@ class Engine:
         if request.get("reference"):
             options["ref_audio"] = request["reference"]
         if request.get("description"):
-            # Assumption: voice-design conditioning uses instruct. Verify on Mac.
-            options["instruct"] = request["description"]
+            instruct = describe_to_tags(request["description"]).instruct
+            if instruct:
+                options["instruct"] = instruct
         seed = options.pop("seed", None)
         if seed is not None:
             # OmniVoice.generate has no seed argument; seed torch globally.
@@ -47,7 +49,12 @@ class Engine:
             torch.manual_seed(int(seed))
         # Verified on Mac Nov 8 2026: generate returns a list of float32
         # torch tensors shaped (1, samples); rate comes from the model.
-        audio = self.model.generate(text=request["input"], **options)
+        try:
+            audio = self.model.generate(text=request["input"], **options)
+        except ValueError as exc:
+            if "instruct" in options:
+                raise ValueError("OmniVoice rejected voice-design tags {!r}: {}".format(options["instruct"], exc)) from exc
+            raise
         samples = audio[0]
         if hasattr(samples, "detach"):
             samples = samples.detach().cpu().float().numpy()

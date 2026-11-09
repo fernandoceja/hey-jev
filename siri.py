@@ -990,31 +990,20 @@ def fetch_tts(text):
     back there. A model that returns HTTP 402 is not requested again
     until this process ends.
     """
-    if voicestudio_voice.provider() == "OMNIVOICE":
-        try:
-            from commands import omnivoice_voice
-            return omnivoice_voice.fetch_speech(text, CACHE_DIR)
-        except Exception as exc:
-            print("  omnivoice failed: {}; trying VoiceStudio".format(type(exc).__name__), flush=True)
-    if voicestudio_voice.provider() in ("VOICESTUDIO", "OMNIVOICE"):
-        try:
-            result = voicestudio_voice.fetch_speech(text, CACHE_DIR)
-            if result is not None:
-                return result
-        except Exception as exc:
-            print("  voicestudio failed: {0}; using Fish fallback".format(type(exc).__name__), flush=True)
-    os.makedirs(CACHE_DIR, exist_ok=True)
-    result = commands.synthesize_speech(
-        text,
-        post=requests.post,
-        api_key=FISH_KEY,
-        voice_id=VOICE_ID,
-        dramatic=commands.dramatic_voice_enabled(),
-        cache_dir=CACHE_DIR,
-    )
-    if result is None:
-        return None, 0, False
-    return result.path, result.ms, result.cached
+    from commands.tts_chain import fetch_with_fallback
+
+    def fish(line, cache_dir):
+        os.makedirs(cache_dir, exist_ok=True)
+        result = commands.synthesize_speech(
+            line, post=requests.post, api_key=FISH_KEY, voice_id=VOICE_ID,
+            dramatic=commands.dramatic_voice_enabled(), cache_dir=cache_dir)
+        if result is None:
+            return None, 0, False
+        return result.path, result.ms, result.cached
+
+    return fetch_with_fallback(
+        text, CACHE_DIR, fish=fish, provider=voicestudio_voice.provider,
+        voicestudio=voicestudio_voice.fetch_speech)[:3]
 
 
 def speak(text):

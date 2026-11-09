@@ -168,7 +168,7 @@ def test_design_cli_explicit_output_and_cleanup(tmp_path):
         main(["design", "--description", "Warm storybook narrator", "--text", "Once upon a time",
               "--output", str(tmp_path / "line.wav")])
         factory.return_value.render.assert_called_once_with("Once upon a time", str(tmp_path / "line.wav"),
-                                                            description="Warm storybook narrator")
+                                                            description="low pitch")
         factory.return_value.close.assert_called_once()
     with pytest.raises(SystemExit):
         main(["design", "--description", "Warm", "--text", "Hello"])
@@ -253,7 +253,7 @@ def test_engine_offline_and_api_assumptions(tmp_path):
         engine.render({"input": "Hello", "description": "Soft", "reference": "ref.wav", "settings": {}}, "out.wav")
         assert hf.snapshot_download.call_args.kwargs["local_files_only"]
         assert model_module.OmniVoice.from_pretrained.call_args.kwargs["local_files_only"]
-        engine.model.generate.assert_called_once_with(text="Hello", instruct="Soft", ref_audio="ref.wav")
+        engine.model.generate.assert_called_once_with(text="Hello", ref_audio="ref.wav")
         sf.write.assert_called_once()
         with pytest.raises(ValueError):
             engine.render({"input": "Hello", "settings": {"unexpected": True}}, "out.wav")
