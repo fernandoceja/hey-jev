@@ -1001,9 +1001,11 @@ def fetch_tts(text):
             return None, 0, False
         return result.path, result.ms, result.cached
 
-    return fetch_with_fallback(
+    # The chain logs the provider that actually produced the audio.
+    path, ms, cached, _provider = fetch_with_fallback(
         text, CACHE_DIR, fish=fish, provider=voicestudio_voice.provider,
-        voicestudio=voicestudio_voice.fetch_speech)[:3]
+        voicestudio=voicestudio_voice.fetch_speech)
+    return path, ms, cached
 
 
 def speak(text):

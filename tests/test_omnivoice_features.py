@@ -108,13 +108,51 @@ def test_transcriber_local_only(monkeypatch):
 
 def test_chain_default_order_and_logs(tmp_path, monkeypatch, capsys):
     monkeypatch.delenv('JEV_TTS_PROVIDER', raising=False)
+    monkeypatch.setattr('commands.tts_chain.time.monotonic', MagicMock(side_effect=[10, 15.02, 20, 21.23]))
     fish = MagicMock(return_value=('fish.wav', 2, False))
     omni = MagicMock(side_effect=RuntimeError())
     vs = MagicMock(side_effect=ValueError())
     assert fetch_with_fallback('hi', tmp_path, fish, omni, vs)[3] == 'FISH'
+    fish.assert_called_once_with('hi', tmp_path)
     omni.assert_not_called()
+    vs.assert_not_called()
     assert fetch_with_fallback('hi', tmp_path, fish, omni, vs, 'OMNIVOICE')[3] == 'FISH'
-    assert capsys.readouterr().out == '  omnivoice failed: RuntimeError; trying VoiceStudio\n  voicestudio failed: ValueError; using Fish fallback\n'
+    assert capsys.readouterr().out == (
+        'tts: provider=FISH selected=FISH fallback=no elapsed=5.02s path=fish.wav\n'
+        '  omnivoice failed: RuntimeError; trying VoiceStudio\n'
+        '  voicestudio failed: ValueError; using Fish fallback\n'
+        'tts: provider=FISH selected=OMNIVOICE fallback=yes '
+        'reason=omnivoice:RuntimeError;voicestudio:ValueError elapsed=1.23s path=fish.wav\n')
+
+
+def test_chain_omnivoice_success(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr('commands.tts_chain.time.monotonic', MagicMock(side_effect=[10, 15.02]))
+    fish = MagicMock()
+    omni = MagicMock(return_value=('omni.wav', 4, True))
+    vs = MagicMock()
+    assert fetch_with_fallback('private spoken text', tmp_path, fish, omni, vs,
+                               'OMNIVOICE') == ('omni.wav', 4, True, 'OMNIVOICE')
+    omni.assert_called_once_with('private spoken text', tmp_path)
+    fish.assert_not_called()
+    vs.assert_not_called()
+    assert capsys.readouterr().out == (
+        'tts: provider=OMNIVOICE selected=OMNIVOICE fallback=no elapsed=5.02s path=omni.wav\n')
+
+
+def test_chain_voicestudio_none(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr('commands.tts_chain.time.monotonic', MagicMock(side_effect=[10, 11.23]))
+    fish = MagicMock(return_value=('fish.wav', 2, False))
+    omni = MagicMock()
+    vs = MagicMock(return_value=None)
+    assert fetch_with_fallback('hi', tmp_path, fish, omni, vs,
+                               'VOICESTUDIO') == ('fish.wav', 2, False, 'FISH')
+    vs.assert_called_once_with('hi', tmp_path)
+    fish.assert_called_once_with('hi', tmp_path)
+    omni.assert_not_called()
+    # A provider declining to produce audio uses the stage:none convention.
+    assert capsys.readouterr().out == (
+        'tts: provider=FISH selected=VOICESTUDIO fallback=yes '
+        'reason=voicestudio:none elapsed=1.23s path=fish.wav\n')
 
 
 def test_cache_identity(tmp_path):
