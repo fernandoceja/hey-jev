@@ -183,6 +183,11 @@ def scan(home=None, paths=None, cancel=None, snapshots=None, limit=100000):
                     rows.append(Proposal(str(p), size, 'Installers / updates', 'Installer; review first', 'ask_first', not partial))
             if count > limit or cancel.is_set():
                 break
+    if not cancel.is_set() and sys.platform == 'darwin' and home == Path.home():
+        from .cleanup_apps import running_apps, unused_apps
+        running = running_apps()
+        rows.extend(unused_apps(home, (Path('/Applications'), home / 'Applications'),
+                               lambda path: measure(path, cancel, limit), cancel, local, running=running))
     if not cancel.is_set():
         try:
             output = snapshots() if snapshots else (subprocess.run(
