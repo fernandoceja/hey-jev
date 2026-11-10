@@ -58,7 +58,7 @@ CATEGORIES = (
     ("Today", (("start_day", "Start my day", "start my day"), ("weather", "Weather", "what's the weather"), ("eta_home", "ETA home", "eta home"))),
     ("Captures", (("shots", "Open my screenshots", "open my screenshots"),)),
     ("Games", (("games", "List games", "list games"),)),
-    ("Mac", (("mac", "CleanMyMac scan", "cleanmymac scan"),)),
+    ("Mac", (("mac", "Clean Up Mac", "clean up mac"),)),
 )
 # The other main-window pages, by their AssistantUI TABS key (Home is the header button).
 PAGES = (

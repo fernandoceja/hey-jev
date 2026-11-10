@@ -145,7 +145,7 @@ class SidebarTests(unittest.TestCase):
         for phrase in phrases:
             self.assertIsNotNone(mini_bar.submission(phrase), phrase)
         self.assertIn("brief me", phrases)
-        self.assertIn("cleanmymac scan", phrases)
+        self.assertIn("clean up mac", phrases)
         self.assertIn("list games", phrases)
 
     def test_pages_cover_every_main_window_tab(self):

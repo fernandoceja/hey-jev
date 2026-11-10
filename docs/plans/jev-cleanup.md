@@ -189,7 +189,7 @@ No `rm`. No `sudo`. No password prompts. No `tmutil` deletes. No `launchctl`. No
 | 2 | `jev/cleanup-02-scan-caches` | Scan: caches, logs, Xcode, npm / pip / Homebrew, Trash size, plain reasons. | Scan |
 | 3 | `jev/cleanup-03-scan-downloads` | Scan: large and old Downloads. | Scan |
 | 4 | `jev/cleanup-04-review-screen` | The three-bucket review screen. | UI |
-| 5 | `jev/cleanup-05-act-log` | Confirm sheet, per-item results, before and after, log, Empty Trash. | Act |
+| 5 | `jev/cleanup-05-act-log` | Confirm sheet, per-item results, before and after, log, Trash summary. | Act |
 | 6 | `jev/cleanup-06-scan-apps` | Scan: unused apps with size and last used. | Scan |
 | 7 | `jev/cleanup-07-scan-leftovers` | Scan: leftovers for installed apps and for apps that are gone. | Scan |
 | 8 | `jev/cleanup-08-remove-apps` | Remove an app with its leftovers. | Act |
@@ -589,7 +589,7 @@ You are Codex, building PR 5 of docs/plans/jev-cleanup.md in ~/Developer/hey-jev
 
 Setup: git checkout main && git pull && git checkout -b jev/cleanup-05-act-log
 
-Read first: the plan (section 3 "Act", decision D2, and "PR 5"), commands/cleanup_gate.py, commands/cleanup_view.py, commands/storage_scan_ui.py, commands/storage_scan.py (free_space), commands/system.py (empty_trash), tests/test_storage_scan.py.
+Read first: the plan (section 3 "Act", decision D2, and "PR 5"), commands/cleanup_gate.py, commands/cleanup_view.py, commands/storage_scan_ui.py, commands/storage_scan.py (free_space), tests/test_storage_scan.py.
 
 Build:
 1. Confirm sheet: the footer button becomes "Review and move to Trash…". It opens a sheet listing every selected item with its size, the total, and "Trash. You can put it back." Buttons: "Move to Trash", "Cancel". Irreplaceable items get their own line and a second tick box that must be ticked. Nothing moves before "Move to Trash" is clicked.

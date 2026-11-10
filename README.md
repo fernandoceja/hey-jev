@@ -9,6 +9,11 @@ A voice assistant for your Mac. Say "Hey Jev" or hold right Option, say a thing,
 
 **Mac only.** Works on macOS Sequoia and Tahoe. It controls the Mac through AppleScript and the Keychain, so it won't run on Windows or Linux.
 
+## Mac cleanup
+
+Open **Clean Up Mac** from Quick Commands, the Mac sidebar, or the Mac health chip. Jev scans storage and groups the findings by what you can review or act on. Moving files requires confirmation and supports Undo while they remain in Trash. The Trash summary opens Finder for manual review. iCloud actions use a separate confirmation and keep the cloud copy.
+
+
 ## What it can do
 
 Open, quit, hide, minimise or switch to apps, open a new browser tab or a website ("open youtube.com in Brave"), Mac volume up / down / mute / set, Apple Music play / pause / next / previous / what's playing, dark mode, lock or sleep the Mac. Spotify volume and playback stay available only when the Spotify app is installed and you name Spotify. Two things in one sentence work too: "pause the music and open Notes".

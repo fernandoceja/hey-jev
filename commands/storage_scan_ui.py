@@ -68,7 +68,7 @@ def start(ui):
                 grouped = sections(self.rows)
                 visible = {key: entries for key, entries in grouped.items()
                            if key not in ('left_alone', 'fernando') or self.show_protected}
-                height = max(220, 160 + 42 * len(visible) + 92 * sum(map(len, visible.values())))
+                height = max(220, 205 + 42 * len(visible) + 92 * sum(map(len, visible.values())))
                 self.doc.setFrame_(NSMakeRect(0, 0, width, height))
                 self.label(message, height - 48, width)
                 self.checks = []
@@ -95,7 +95,8 @@ def start(ui):
                 if self.cloud_paths:
                     self.button('Download again', 'downloadAgain:', 10, 10, 155)
                 if self.rows or self.moves or self.cloud_paths:
-                    self.button('Trash summary…', 'trashSummary:', 335, 10, 145)
+                    self.button('Trash summary…', 'trashSummary:', 10, 78, 145)
+                    self.button('Past cleanups', 'pastCleanups:', 165, 78, 130)
                 self.button('Cancel' if not self.moves else 'Close', 'cancel:', 235, 10, 90)
 
             def protected_(self, sender):
@@ -112,6 +113,32 @@ def start(ui):
                 self.rows = rows
                 self.card = self.gate.present(rows) if not error else None
                 self.render(error or ('Storage scan — Free space: ' + ('{:.1f} GB'.format(free / 1e9) if free is not None else 'unavailable')))
+
+            def pastCleanups_(self, sender):
+                import json
+                from collections import deque
+                from datetime import datetime
+                runs = deque(maxlen=10)
+                try:
+                    with self.gate.audit.open(encoding='utf8') as stream:
+                        for line in stream:
+                            try:
+                                event = json.loads(line)
+                                if event.get('action') == 'run_finished':
+                                    runs.append(event)
+                            except (ValueError, AttributeError):
+                                continue
+                except OSError:
+                    pass
+                alert = NSAlert.alloc().init()
+                alert.setMessageText_('Past cleanups')
+                lines = []
+                for run in reversed(runs):
+                    date = datetime.fromtimestamp(run['time']).strftime('%Y-%m-%d %H:%M')
+                    lines.append(f"{date} · {len(run['results'])} items reviewed")
+                alert.setInformativeText_('\n'.join(lines) or 'No completed runs yet.')
+                alert.addButtonWithTitle_('Close')
+                alert.runModal()
 
             def trashSummary_(self, sender):
                 trash = self.home / '.Trash'

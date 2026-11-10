@@ -187,12 +187,17 @@ def scan(home=None, paths=None, cancel=None, snapshots=None, limit=100000):
         from .cleanup_apps import app_paths, running_apps, unused_apps
         from .cleanup_leftovers import leftovers
         roots = (Path('/Applications'), home / 'Applications')
-        apps = list(unused_apps(home, roots, lambda path: measure(path, cancel, limit),
+        def app_measure(path):
+            scan_root = home if home in path.parents else path.parent
+            return _measure(path, cancel, limit,
+                            lambda item: protected_reason(item, scan_root, local))[:2]
+        apps = list(unused_apps(home, roots, app_measure,
                                 cancel, local, running=running_apps()))
         rows.extend(apps)
         installed = [path for path in app_paths((*roots, '/System/Applications', '/Applications/Utilities',
                                                  '/Applications/Setapp'))
-                     if path.stem.casefold() not in {'eney', 'setapp'}]
+                     if path.stem.casefold() not in {'eney', 'setapp'}
+                     and not protected_reason(path, home if home in path.parents else path.parent, local)]
         rows.extend(leftovers(home, apps, installed,
                               lambda path: _measure(path, cancel, limit,
                                                     lambda item: protected_reason(item, home, local)),
