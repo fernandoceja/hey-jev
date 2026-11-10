@@ -1,10 +1,13 @@
 """Bounded read-only storage measurements. Cocoa is loaded only on macOS."""
 import os
+import stat
+import time
 from pathlib import Path
 import subprocess
 import sys
 import threading
 from .cleanup_gate import Proposal
+from .cleanup_rules import DATABASE_SUFFIXES, load_protected, protected_reason
 
 # category, relative path, safety, deletable, irreplaceable
 LOCATIONS = (
@@ -13,6 +16,9 @@ LOCATIONS = (
     ('Xcode DerivedData', 'Library/Developer/Xcode/DerivedData', 'safe', True, False),
     ('Xcode Archives', 'Library/Developer/Xcode/Archives', 'ask_first', True, False),
     ('iOS DeviceSupport', 'Library/Developer/Xcode/iOS DeviceSupport', 'safe', True, False),
+    ('watchOS DeviceSupport', 'Library/Developer/Xcode/watchOS DeviceSupport', 'safe', True, False),
+    ('tvOS DeviceSupport', 'Library/Developer/Xcode/tvOS DeviceSupport', 'safe', True, False),
+    ('npm cache', '.npm/_cacache', 'safe', True, False),
     ('CoreSimulator', 'Library/Developer/CoreSimulator', 'leave_alone', False, False),
     ('iOS/iPadOS backups', 'Library/Application Support/MobileSync/Backup', 'ask_first', True, True),
     ('Mail attachments', 'Library/Containers/com.apple.mail/Data/Library/Mail Downloads', 'ask_first', False, False),
@@ -23,9 +29,10 @@ LOCATIONS = (
 )
 
 
-def measure(path, cancel, limit=100000):
+def _measure(path, cancel, limit=100000, protected=None):
     """Allocated bytes where available; partial measurements are explicitly labelled."""
     total, count, partial = 0, 0, False
+    newest, symlink, database = 0, False, False
     pending = [Path(path)]
     while pending and not cancel.is_set():
         p = pending.pop()
@@ -35,10 +42,16 @@ def measure(path, cancel, limit=100000):
             break
         try:
             st = p.lstat()
-            if p.is_symlink():
+            newest = max(newest, st.st_mtime)
+            database |= p.name.lower().endswith(DATABASE_SUFFIXES)
+            if stat.S_ISLNK(st.st_mode):
+                symlink = True
+                continue
+            if protected and protected(p):
+                partial = True
                 continue
             total += getattr(st, 'st_blocks', (st.st_size + 511) // 512) * 512
-            if p.is_dir():
+            if stat.S_ISDIR(st.st_mode):
                 with os.scandir(p) as entries:
                     for entry in entries:
                         if cancel.is_set() or len(pending) + count >= limit:
@@ -49,7 +62,11 @@ def measure(path, cancel, limit=100000):
             partial = True
         except OSError:
             partial = True
-    return total, partial or cancel.is_set()
+    return total, partial or cancel.is_set(), newest, symlink, database
+
+
+def measure(path, cancel, limit=100000):
+    return _measure(path, cancel, limit)[:2]
 
 
 def free_space(home):
@@ -66,36 +83,52 @@ def scan(home=None, paths=None, cancel=None, snapshots=None, limit=100000):
     cancel = cancel or threading.Event()
     paths = paths or {}
     rows = []
+    local = load_protected(home / "Library/Application Support/Hey Jev/cleanup-protected.json")
     for category, relative, safety, deletable, irreplaceable in LOCATIONS:
         if cancel.is_set():
             break
         path = Path(paths.get(category, home / relative))
         targets = [path]
-        if category == 'User caches' and path.is_dir() and not path.is_symlink():
+        split = category in ('User caches', 'User logs', 'Xcode DerivedData') or category.endswith('DeviceSupport')
+        if split and path.is_dir() and not path.is_symlink() and not protected_reason(path, home, local):
             try:
                 with os.scandir(path) as entries:
-                    targets = [Path(e.path) for _, e in zip(range(1000), entries)]
-            except PermissionError:
-                pass
-        if category == 'Xcode DerivedData' and path.is_dir() and not path.is_symlink():
-            try:
-                with os.scandir(path) as entries:
-                    targets = [Path(e.path) for e in entries if e.is_dir(follow_symlinks=False)]
-            except PermissionError:
+                    targets = [Path(entry.path) for _, entry in zip(range(min(1000, limit)), entries)]
+            except OSError:
                 targets = [path]
+                deletable = False
         for target in targets:
+            if cancel.is_set():
+                break
             if not target.exists() or target.is_symlink():
                 continue
-            size, partial = measure(target, cancel, limit)
-            reason = 'Partial measurement; needs permission or scan limit reached' if partial else 'Review before moving to Trash'
+            guard = lambda item: protected_reason(item, home, local)
+            protected = guard(target)
+            size, partial, newest, symlink, database = _measure(target, cancel, limit, guard)
+            reason = 'Review before moving to Trash'
+            label = category
+            if category == 'User caches':
+                label = {'pip': 'pip cache', 'homebrew': 'Homebrew cache'}.get(target.name.lower(), category)
+            allowed = deletable and not partial and not symlink
             effective = safety
-            allowed = deletable and not partial
-            from .cleanup_rules import protected_reason, load_protected
-            local = load_protected(home / 'Library/Application Support/Hey Jev/cleanup-protected.json')
-            if protected_reason(target, home, local):
+            bucket = ''
+            if protected:
+                effective, allowed, reason = 'leave_alone', False, protected
+            elif partial or symlink:
                 effective, allowed = 'leave_alone', False
-            rows.append(Proposal(str(target), size, category, reason, effective,
-                                 allowed, irreplaceable))
+                reason = 'Contains a symlink' if symlink else 'Measurement incomplete or contains protected items'
+            elif newest > time.time() - 86400:
+                effective, allowed, reason = 'ask_first', False, 'Changed in the last 24 hours'
+            elif safety == 'safe':
+                reason = 'The app or tool can rebuild these files'
+            if database:
+                reason += '. Contains a database (size only)'
+            if category == 'CoreSimulator':
+                bucket, reason = 'fernando', 'Manage simulators in Xcode'
+            if category == 'Trash':
+                bucket, reason = 'your_call', 'Review the whole Trash separately'
+            rows.append(Proposal(str(target), size, label, reason, effective,
+                                 allowed, irreplaceable, bucket=bucket))
     for relative in ('Downloads', 'Library/iTunes/Software Updates', 'Library/iTunes/iPhone Software Updates', 'Library/iTunes/iPad Software Updates'):
         folder = Path(paths.get(relative, home / relative))
         # Bounded traversal for installer files; no directory symlink traversal.
