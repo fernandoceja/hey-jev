@@ -314,12 +314,9 @@ def take_screenshot(mode="full", folder=None, **kwargs):
 
 
 def empty_trash():
-    """Only call this after a spoken yes."""
-    try:
-        _run(("osascript", "-e", 'tell application "Finder" to empty the trash'))
-    except Exception:
-        return "I couldn't empty the trash. Allow Automation for Finder."
-    return "Trash is empty."
+    """Keep the legacy phrase available while leaving emptying to Finder."""
+    return "Empty Trash manually in Finder after reviewing its contents."
+
 
 
 def continue_chatgpt():

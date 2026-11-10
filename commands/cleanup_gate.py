@@ -6,6 +6,9 @@ import secrets
 import threading
 import time
 from dataclasses import dataclass
+from .cleanup_rules import fernando_reason, protected_reason, load_protected
+
+SYSTEM_PROTECTED = tuple(Path(p) for p in ('/System', '/usr', '/bin', '/sbin', '/private', '/Library', '/Applications/Setapp', '/Applications/Eney.app'))
 
 
 @dataclass(frozen=True)
@@ -17,6 +20,10 @@ class Proposal:
     safety: str
     deletable: bool = True
     irreplaceable: bool = False
+    kind: str = 'file'
+    bucket: str = ''
+    detail: str = ''
+    group: str = ''
 
 
 def mac_trash(path):
@@ -29,11 +36,12 @@ def mac_trash(path):
 
 
 class CleanupGate:
-    def __init__(self, home=None, audit=None, trash=None, now=time.time):
+    def __init__(self, home=None, audit=None, trash=None, now=time.time, protected_roots=None):
         self.home = Path(home or Path.home()).resolve()
         self.audit = Path(audit or self.home / 'Library/Application Support/Hey Jev/cleanup-audit.jsonl')
         self.trash = trash or mac_trash
         self.now = now
+        self.protected_roots = SYSTEM_PROTECTED if protected_roots is None else tuple(map(Path, protected_roots))
         self.cards = {}
         self.tokens = {}
         self.moves = {}
@@ -57,21 +65,33 @@ class CleanupGate:
             stream.write(json.dumps(dict(time=self.now(), action=action, **fields)) + '\n')
 
     def refusal(self, item):
+        if item.kind == 'icloud':
+            return 'iCloud uses its own confirmation'
         if item.safety not in ('safe', 'ask_first') or not item.deletable:
             return 'report only'
         path = Path(item.path).absolute()
-        protected = [self.home / p for p in ('.Trash', 'Developer/hey-jev',
-            'Documents/Fernando Ceja/Developer/AI-Projects/Jarvis')]
-        protected += [Path(p) for p in ('/System', '/usr', '/bin', '/sbin', '/private', '/Library',
-                                        '/Applications/Setapp', '/Applications/Eney.app')]
+        if item.kind == 'app' and self.trash is mac_trash:
+            from .cleanup_apps import running_apps
+            if path.resolve() in running_apps():
+                return 'Quit the app first'
+        local_rules = load_protected(self.home / 'Library/Application Support/Hey Jev/cleanup-protected.json')
+        reason = protected_reason(path, self.home, local_rules)
+        if reason:
+            return 'protected path'
+        protected = [self.home / p for p in ('.Trash', 'Developer/hey-jev')]
+        protected += list(self.protected_roots)
         def inside(p, root):
             return p == root or root in p.parents
         def check(p):
+            if protected_reason(p, self.home, local_rules):
+                return 'protected path'
             real = p.resolve()
             if not inside(real, self.home) or real == self.home:
                 return 'protected path'
             if any(inside(real, root) or inside(root, real) for root in protected):
                 return 'protected path'
+            if fernando_reason(p, self.home, uid=os.getuid()):
+                return 'needs permission'
             if self.now() - p.stat().st_mtime < 86400:
                 return 'modified in the last 24 hours'
         try:
@@ -114,7 +134,7 @@ class CleanupGate:
             self.tokens = {k: v for k, v in self.tokens.items() if v[0] != card}
             self.log('cancel', card=card)
 
-    def approve_click(self, card, indices):
+    def approve_click(self, card, indices, *, skip_refused=False):
         """Called only by the visible card's approval button handler."""
         with self.lock:
             items = self.cards.get(card)
@@ -123,7 +143,11 @@ class CleanupGate:
             if any(not isinstance(i, int) or i < 0 or i >= len(items) for i in indices):
                 raise ValueError('invalid card selection')
             selected = tuple(items[i] for i in sorted(set(indices)))
-            for item in selected:
+            apps = {item.group for item in selected if item.kind == 'app'}
+            if any(item.kind == 'leftover' and item.group and item.group not in apps for item in selected):
+                raise ValueError('Select the associated app before its leftovers')
+            selected = tuple(sorted(selected, key=lambda item: item.kind != 'app'))
+            for item in (() if skip_refused else selected):
                 reason = self.refusal(item)
                 if reason:
                     self.log('refuse', path=item.path, reason=reason)
@@ -140,9 +164,14 @@ class CleanupGate:
             card, items = self.tokens.pop(token)
             if self.cards.pop(card, None) is None:
                 raise ValueError('approval expired')
+            self.log('run_started', card=card, count=len(items))
             results = []
+            successful_apps = set()
             for item in items:
-                error = self.refusal(item)
+                if item.kind == 'leftover' and item.group and item.group not in successful_apps:
+                    error = 'App was not moved; leftover skipped'
+                else:
+                    error = self.refusal(item)
                 if error:
                     self.log('refuse', path=item.path, reason=error)
                     results.append(error)
@@ -164,6 +193,9 @@ class CleanupGate:
                 self.moves[move] = (original, str(destination))
                 self.log('trashed', move=move, path=original, trash=str(destination))
                 results.append(move)
+                if item.kind == 'app':
+                    successful_apps.add(item.group)
+            self.log('run_finished', card=card, results=results)
             return results
 
     def undo(self, move):

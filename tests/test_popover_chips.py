@@ -40,7 +40,6 @@ class TestChipRouting(unittest.TestCase):
         ("eta_home", "eta home", "info_eta_home"),
         ("hazard_check", "hazard check", "info_hazards"),
         ("plan_day", "brief me", "info_brief"),
-        ("mac_health", "cleanmymac scan", "cleanmymac_scan"),
     )
 
     def test_default_page_chip_phrases_and_routes(self):
@@ -67,7 +66,7 @@ class TestChipRouting(unittest.TestCase):
 
     def test_cleanmymac_chip_scan_only_script(self):
         plan = chip_command_plan("mac_health")
-        self.assertEqual(plan["control"][1], "cleanmymac scan")
+        self.assertEqual(plan["control"], ("text", "clean up mac"))
         for word in cmm.FORBIDDEN_BUTTONS:
             self.assertNotIn('"%s"' % word, cmm.SMART_CARE_SCRIPT, word)
 

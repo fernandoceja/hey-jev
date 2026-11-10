@@ -79,7 +79,7 @@ POPOVER_CHIPS = {
     "hazard_check": {"title": "Hazard Check", "subtitle": "", "phrase": "hazard check"},
     "plan_day": {"title": "Plan my day", "subtitle": "Today's brief", "phrase": "brief me"},
     "start_day": {"title": "Start my day", "subtitle": "Today's brief", "phrase": "start my day"},  # PR 8c
-    "mac_health": {"title": "Mac health", "subtitle": "CleanMyMac scan only.", "phrase": "cleanmymac scan"},
+    "mac_health": {"title": "Mac health", "subtitle": "Review Mac storage.", "phrase": "clean up mac"},
     "weather": {"title": "Weather", "subtitle": "Local forecast", "phrase": "what's the weather"},
     "time": {"title": "Time", "subtitle": "Clock check", "phrase": "what time is it"},
     "joke": {"title": "Joke", "subtitle": "Quick laugh", "phrase": "tell me a joke"},
@@ -1188,7 +1188,7 @@ def quick_commands(hazard_alerts=False, game_library=None, nx_ports=None):
         nxnative_menu(nx_ports),
         *build_rows,
         rea_menu(bool(STUDY.status())),
-        {"id": "storage_scan", "title": "Storage Scan", "kind": "storage_scan", "symbol": "internaldrive", "phrase": "", "key": ""},
+        {"id": "storage_scan", "title": "Clean Up Mac", "kind": "storage_scan", "symbol": "internaldrive", "phrase": "", "key": ""},
         _menu_text("tutor", "Tutor", "tutor me", "graduationcap"),
         *([_menu_text("play_zelda", "Play Zelda", "play zelda", "gamecontroller")]
           if "ocarina" in installed else []),

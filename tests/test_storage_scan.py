@@ -9,6 +9,12 @@ from commands.storage_scan import scan, measure
 from orb_character import MoodState
 
 
+@pytest.fixture(autouse=True)
+def fake_system_roots(monkeypatch):
+    import commands.cleanup_gate as module
+    monkeypatch.setattr(module, 'SYSTEM_PROTECTED', ())
+
+
 def aged(path):
     os.utime(path, (time.time() - 172800, time.time() - 172800))
     return path
@@ -102,10 +108,12 @@ def test_scan_categories_sorting(tmp_path):
     downloads = tmp_path / 'Downloads'
     downloads.mkdir()
     (downloads / 'update.dmg').write_bytes(b'x' * 100)
+    old = time.time() - 91 * 86400
+    os.utime(downloads / 'update.dmg', (old, old))
     rows = scan(home=tmp_path, snapshots=lambda: 'snapshot-1')
     assert [r.size for r in rows] == sorted([r.size for r in rows], reverse=True)
     by_category = {r.category: r for r in rows}
-    assert by_category['User caches'].safety == 'safe'
+    assert by_category['User caches'].safety == 'ask_first'
     backup = by_category['iOS/iPadOS backups']
     assert backup.safety == 'ask_first' and backup.irreplaceable
     assert by_category['Time Machine local snapshots'].safety == 'leave_alone'

@@ -4689,6 +4689,10 @@ class AppDelegate(NSObject):
     @objc.python_method
     def _dispatch_text_plan(self, plan):
         local_reply = False
+        if plan["kind"] == "run" and plan["control"] == ("text", "clean up mac"):
+            from commands.storage_scan_ui import start
+            start(self)
+            return
         if plan["kind"] == "run":
             from commands.rea_study_ui import kickoff
             if kickoff(self, plan["control"][1]):
@@ -6725,6 +6729,10 @@ class AppDelegate(NSObject):
     @objc.python_method
     def _queue_bar_phrase(self, phrase):
         phrase = " ".join(str(phrase or "").split())
+        if phrase == "clean up mac":
+            from commands.storage_scan_ui import start
+            start(self)
+            return
         if not phrase:
             return
         if not self.worker_started:

@@ -299,8 +299,7 @@ class ShadowTests(unittest.TestCase):
         source = open(os.path.join(ROOT, "commands", "router_shadow.py"), encoding="utf-8").read().lower()
         for banned in ("import socket", ".listen(", ".bind(", "twingate", "shell=true", "import requests", "--live"):
             self.assertNotIn(banned, source, banned)
-        workflow = open(os.path.join(ROOT, ".github", "workflows", "tests.yml"), encoding="utf-8").read()
-        self.assertNotIn("--live", workflow)
+        self.assertFalse(os.path.exists(os.path.join(ROOT, ".github", "workflows", "tests.yml")))
         for name in ("commands/bridge.py", "secrets_store.py", "siri.py"):
             text = open(os.path.join(ROOT, name), encoding="utf-8").read()
             self.assertNotIn("router_shadow", text, name)
