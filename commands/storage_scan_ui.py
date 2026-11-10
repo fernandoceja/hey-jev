@@ -1,6 +1,6 @@
 """Click-only storage card embedded in the existing resizable chat window."""
 from .cleanup_gate import CleanupGate
-from .storage_scan import ScanTask
+from .storage_scan import ScanTask, free_space, measure
 from .cleanup_view import SECTIONS, scan_home, sections
 
 _CONTROLLER = None
@@ -11,9 +11,10 @@ def start(ui):
     from . import zoe_mode_active
     if zoe_mode_active():
         return
+    import threading
     import objc
     from Foundation import NSObject
-    from AppKit import NSButton, NSScrollView, NSView, NSTextField, NSMakeRect
+    from AppKit import NSAlert, NSWorkspace, NSButton, NSScrollView, NSView, NSTextField, NSMakeRect
     from PyObjCTools.AppHelper import callAfter
     if _CONTROLLER is None:
         class StorageCard(NSObject):
@@ -87,9 +88,11 @@ def start(ui):
                     self.button('Hide protected rows' if self.show_protected else 'Show protected rows',
                                 'protected:', 10, 48, 190)
                 if self.card:
-                    self.button('Move selected to Trash', 'approve:', 10, 10, 220)
+                    self.button('Review and move to Trash…', 'approve:', 10, 10, 220)
                 elif self.moves:
                     self.button('Undo', 'undo:', 10, 10, 90)
+                if self.rows or self.moves:
+                    self.button('Trash summary…', 'trashSummary:', 335, 10, 145)
                 self.button('Cancel' if not self.moves else 'Close', 'cancel:', 235, 10, 90)
 
             def protected_(self, sender):
@@ -107,8 +110,48 @@ def start(ui):
                 self.card = self.gate.present(rows) if not error else None
                 self.render(error or ('Storage scan — Free space: ' + ('{:.1f} GB'.format(free / 1e9) if free is not None else 'unavailable')))
 
+            def trashSummary_(self, sender):
+                trash = self.home / '.Trash'
+                def work():
+                    try:
+                        import os
+                        with os.scandir(trash) as entries:
+                            count = sum(1 for _ in entries)
+                        size, partial = measure(trash, threading.Event())
+                        message = f'{count} items in home Trash · {size / 1048576:.1f} MB'
+                        if partial:
+                            message += ' measured (partial)'
+                    except OSError:
+                        message = 'Trash size and count are unavailable.'
+                    callAfter(self.show_trash, message)
+                threading.Thread(target=work, daemon=True).start()
+
+            @objc.python_method
+            def show_trash(self, message):
+                if self.closed:
+                    return
+                alert = NSAlert.alloc().init()
+                alert.setMessageText_('Trash summary')
+                alert.setInformativeText_(message + '\nReview the Trash in Finder. Emptying it is a manual Finder action.')
+                alert.addButtonWithTitle_('Open Trash in Finder')
+                alert.addButtonWithTitle_('Cancel')
+                if alert.runModal() == 1000 and not self.closed:
+                    NSWorkspace.sharedWorkspace().openFile_(str(self.home / '.Trash'))
+
             def approve_(self, sender):
                 selected = [i for i, c in self.checks if c.state() and c.isEnabled()]
+                if not selected or self.closed:
+                    return
+                rows = [self.rows[i] for i in selected]
+                alert = NSAlert.alloc().init()
+                alert.setMessageText_('Move selected items to Trash?')
+                size = sum(row.size for row in rows)
+                alert.setInformativeText_(f'{len(rows)} items · {size / 1048576:.1f} MB\n' +
+                                          '\n'.join(row.path for row in rows))
+                alert.addButtonWithTitle_('Cancel')
+                alert.addButtonWithTitle_('Move to Trash')
+                if alert.runModal() != 1001 or self.closed:
+                    return
                 # Safety traversal and filesystem operations stay off the UI thread.
                 for view in self.doc.subviews():
                     if hasattr(view, 'setEnabled_'):
@@ -116,10 +159,15 @@ def start(ui):
                 import threading
                 def work():
                     try:
-                        token = self.gate.approve_click(self.card, selected)
+                        token = self.gate.approve_click(self.card, selected, skip_refused=True)
+                        before = free_space(self.home)
                         results = self.gate.execute(token)
+                        after = free_space(self.home)
                         moves = [r for r in results if r in self.gate.moves]
                         message = '{} moved to Trash. {}'.format(len(moves), '; '.join(r for r in results if r not in moves))
+                        moved_bytes = sum(row.size for row, result in zip(rows, results) if result in self.gate.moves)
+                        space = lambda value: 'unavailable' if value is None else f'{value / 1e9:.1f} GB'
+                        message += f'\nFree space: {space(before)} before, {space(after)} after. {moved_bytes / 1048576:.1f} MB moved to Trash.'
                         callAfter(self.completed, moves, message)
                     except Exception as exc:
                         callAfter(self.failed, str(exc))

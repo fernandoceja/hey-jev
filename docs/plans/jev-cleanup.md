@@ -29,7 +29,7 @@ What Eney did on this Mac on Nov 10 2026 (from Fernando): it scanned the SSD, so
 | # | Question | Recommendation | Where it lands |
 |---|---|---|---|
 | D1 | The repo has `.github/workflows/tests.yml`. | Delete all workflows in this PR. No workflow is added, run, awaited, or triggered. | All PRs |
-| D2 | Trash moves don't free space until the Trash is emptied. | The results screen offers "Empty Trash…" as a separate button. It shows the whole Trash's size and item count, needs a second confirm, and Finder does the emptying. Default is that nothing is emptied. | PR 5 |
+| D2 | Trash moves don't free space until the Trash is emptied. | Jev shows a Trash summary and opens Trash in Finder. Fernando can empty it manually in Finder. | PR 5 |
 | D3 | When is an app "unused"? | Not opened in 90 days, or never opened. One constant, `UNUSED_APP_DAYS = 90`. | PR 6 |
 | D4 | Which iCloud files are worth offering? | 50 MB or larger, fully uploaded, not opened or changed in 30 days. | PR 9 |
 | D5 | The "Mac health" chip and the sidebar "Mac" row run a CleanMyMac scan. If CleanMyMac is a Setapp copy, it stops working when Setapp goes. | PR 11 points the chip and the sidebar row at Jev's own cleanup. The "CleanMyMac Scan" Quick Command stays as it is. | PR 11 |
@@ -167,7 +167,7 @@ cd ~/Developer/hey-jev && mkdir -p ~/Documents/.cos-tmp && .venv/bin/python -m p
 - **Move:** the existing `CleanupGate` and `NSFileManager.trashItemAtURL`. That is the same Trash Finder uses, and it needs no Finder Automation permission. One refused item no longer stops the others. Each result is reported per item.
 - **Apps:** the app bundle first, then its ticked leftovers, as one undo group. If the app can't be moved (running, not owned by Fernando, or macOS App Management says no), nothing else in that group is touched and the app goes to "Fernando does this: quit it and drag it to the Trash in Finder."
 - **iCloud:** `brctl evict <path>` per file, only when the file is uploaded, not uploading, current locally and has no conflicts. The check runs at scan time and again right before the call. Afterwards Jev confirms the file still exists as a cloud-only item. The undo is "Download again" (`brctl download <path>`). The iCloud module never imports the Trash function.
-- **Results:** free space before, what moved (count and size), what was refused and why, what was made cloud-only, and free space after. The after line says how much is still sitting in the Trash. "Undo" restores a run. "Empty Trash…" is D2.
+- **Results:** free space before, what moved (count and size), what was refused and why, what was made cloud-only, and free space after. The after line says how much is still sitting in the Trash. "Undo" restores a run. "Trash summary…" is D2.
 - **Log:** the existing `~/Library/Application Support/Hey Jev/cleanup-audit.jsonl` gains `run_started` and `run_finished` records. "Past cleanups" on the results screen shows the last ten runs: date, items, sizes, where each went, before and after. The log stays on the Mac.
 
 ### What Jev never does here
@@ -274,7 +274,7 @@ Each PR starts from a fresh `main` after the previous one is merged.
 ### PR 5: Act, before and after, and the log
 
 - **Files:** `commands/cleanup_gate.py`, `commands/cleanup_view.py`, `commands/storage_scan_ui.py`, tests.
-- **Build:** the confirm sheet; per-item results (a refused item is skipped and reported, the rest continue); free space read before the move and after it with the same key; `run_started` / `run_finished` log records; the results screen with Undo; "Past cleanups"; "Empty Trash…" with a second confirm that shows the whole Trash's size and count, then calls the existing `commands.empty_trash()` (Finder does it).
+- **Build:** the confirm sheet; per-item results (a refused item is skipped and reported, the rest continue); free space read before the move and after it with the same key; `run_started` / `run_finished` log records; the results screen with Undo; "Past cleanups"; "Trash summary…" showing size and item count and offering to open Trash in Finder. Emptying stays manual.
 - **Acceptance:** nothing moves on any single click. The token is still single-use. A crash between "requested" and "trashed" is visible in the log.
 - **Unit tests:** a batch with one refused item moves the others; the token can't be replayed; results text (moved, refused with reasons, still in Trash); run records and the last-ten reader with a broken line in the file; the empty-Trash path is reachable only through its own confirm (source test); Undo restores a whole run and refuses to overwrite.
 - **Hand test** (first with `JEV_CLEANUP_HOME`, then for real):
@@ -284,7 +284,7 @@ Each PR starts from a fresh `main` after the previous one is merged.
   - [ ] Again, then "Move to Trash": the folder is in the Trash, and Finder offers Put Back on it.
   - [ ] Results show free space before and after, and say 50 MB is still in the Trash.
   - [ ] Undo: the folder is back where it was.
-  - [ ] Move it again, then "Empty Trash…": the sheet shows the whole Trash's size. Cancel leaves the Trash alone. (Empty it only if you want to.)
+  - [ ] Move it again, then "Trash summary…": the sheet shows the whole Trash's size. Cancel leaves the Trash alone. (Empty it only if you want to.)
   - [ ] "Past cleanups" lists these runs with the right sizes.
   - [ ] Base checks.
 
@@ -596,8 +596,8 @@ Build:
 2. commands/cleanup_gate.py: approve_click no longer raises for the whole batch when one item is refused. It returns a token for the allowed items and the refusals with reasons. execute keeps its re-check before each move. Tokens stay single-use. Keep using the injected trash function (NSFileManager trashItemAtURL in the app).
 3. Runs: log run_started (free space before, item count, bytes) and run_finished (free space after, moved bytes, refused count). Read free space with the same key both times. Add last_runs(n=10) that reads the JSONL and skips broken lines.
 4. cleanup_view: results_text(run) -> free before, moved count and size, refused items with reasons, "X is still in the Trash", free after.
-5. Results screen with "Undo" (restores the whole run; refuses to overwrite), "Past cleanups" (last ten runs), and "Empty Trash…". That button opens its own confirm showing the whole Trash's size and item count, then calls the existing commands.empty_trash() so Finder empties it. This is the only permanent step, and it is never reachable without that second confirm.
-6. Trash row from PR 2 stays unticked; "Empty Trash…" is its only action.
+5. Results screen with "Undo" (restores the whole run; refuses to overwrite), "Past cleanups" (last ten runs), and "Trash summary…". That button shows the Trash summary and offers to open Trash in Finder. Emptying stays manual.
+6. Trash row from PR 2 stays unticked; "Trash summary…" is its only action.
 
 Tests: the PR 5 unit tests in the plan, with an injected trash function and a fake clock. Extend the no-permanent-removal source test to every cleanup module.
 

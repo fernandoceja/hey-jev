@@ -126,7 +126,7 @@ class CleanupGate:
             self.tokens = {k: v for k, v in self.tokens.items() if v[0] != card}
             self.log('cancel', card=card)
 
-    def approve_click(self, card, indices):
+    def approve_click(self, card, indices, *, skip_refused=False):
         """Called only by the visible card's approval button handler."""
         with self.lock:
             items = self.cards.get(card)
@@ -135,7 +135,7 @@ class CleanupGate:
             if any(not isinstance(i, int) or i < 0 or i >= len(items) for i in indices):
                 raise ValueError('invalid card selection')
             selected = tuple(items[i] for i in sorted(set(indices)))
-            for item in selected:
+            for item in (() if skip_refused else selected):
                 reason = self.refusal(item)
                 if reason:
                     self.log('refuse', path=item.path, reason=reason)
@@ -152,6 +152,7 @@ class CleanupGate:
             card, items = self.tokens.pop(token)
             if self.cards.pop(card, None) is None:
                 raise ValueError('approval expired')
+            self.log('run_started', card=card, count=len(items))
             results = []
             for item in items:
                 error = self.refusal(item)
@@ -176,6 +177,7 @@ class CleanupGate:
                 self.moves[move] = (original, str(destination))
                 self.log('trashed', move=move, path=original, trash=str(destination))
                 results.append(move)
+            self.log('run_finished', card=card, results=results)
             return results
 
     def undo(self, move):
