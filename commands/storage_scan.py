@@ -184,10 +184,19 @@ def scan(home=None, paths=None, cancel=None, snapshots=None, limit=100000):
             if count > limit or cancel.is_set():
                 break
     if not cancel.is_set() and sys.platform == 'darwin' and home == Path.home():
-        from .cleanup_apps import running_apps, unused_apps
-        running = running_apps()
-        rows.extend(unused_apps(home, (Path('/Applications'), home / 'Applications'),
-                               lambda path: measure(path, cancel, limit), cancel, local, running=running))
+        from .cleanup_apps import app_paths, running_apps, unused_apps
+        from .cleanup_leftovers import leftovers
+        roots = (Path('/Applications'), home / 'Applications')
+        apps = list(unused_apps(home, roots, lambda path: measure(path, cancel, limit),
+                                cancel, local, running=running_apps()))
+        rows.extend(apps)
+        installed = [path for path in app_paths((*roots, '/System/Applications', '/Applications/Utilities',
+                                                 '/Applications/Setapp'))
+                     if path.stem.casefold() not in {'eney', 'setapp'}]
+        rows.extend(leftovers(home, apps, installed,
+                              lambda path: _measure(path, cancel, limit,
+                                                    lambda item: protected_reason(item, home, local)),
+                              cancel, local))
     if not cancel.is_set():
         try:
             output = snapshots() if snapshots else (subprocess.run(
