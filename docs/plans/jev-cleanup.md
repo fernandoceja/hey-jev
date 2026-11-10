@@ -1,6 +1,6 @@
 # Jev cleanup: bring Eney's Mac cleanup into Jev
 
-Status: **plan only, waiting for Fernando's approval.** No build PR starts until this PR is approved. Codex builds one PR at a time from the prompts in section 7.
+Status: **implementation in progress on `jev/cleanup-all`, delivered as one PR.**
 
 Goal: Jev does everything Eney's Mac cleanup did, in Jev's own style, so Fernando can uninstall Eney and Setapp.
 
@@ -28,15 +28,17 @@ What Eney did on this Mac on Nov 10 2026 (from Fernando): it scanned the SSD, so
 
 | # | Question | Recommendation | Where it lands |
 |---|---|---|---|
-| D1 | The repo has `.github/workflows/tests.yml`, which runs pytest on every push and PR. The rule for this work is "No GitHub Actions". | Codex doesn't add, edit or wait on any workflow, and every PR is verified with local pytest on the Mac. The existing workflow is left alone and will still run by itself. If you want it deleted, say so and it becomes its own one-file PR. | All PRs |
+| D1 | The repo has `.github/workflows/tests.yml`. | Delete all workflows in this PR. No workflow is added, run, awaited, or triggered. | All PRs |
 | D2 | Trash moves don't free space until the Trash is emptied. | The results screen offers "Empty Trash…" as a separate button. It shows the whole Trash's size and item count, needs a second confirm, and Finder does the emptying. Default is that nothing is emptied. | PR 5 |
-| D3 | When is an app "unused"? | Not opened in 90 days, or never opened. One constant, `UNUSED_APP_DAYS`. | PR 6 |
+| D3 | When is an app "unused"? | Not opened in 90 days, or never opened. One constant, `UNUSED_APP_DAYS = 90`. | PR 6 |
 | D4 | Which iCloud files are worth offering? | 50 MB or larger, fully uploaded, not opened or changed in 30 days. | PR 9 |
 | D5 | The "Mac health" chip and the sidebar "Mac" row run a CleanMyMac scan. If CleanMyMac is a Setapp copy, it stops working when Setapp goes. | PR 11 points the chip and the sidebar row at Jev's own cleanup. The "CleanMyMac Scan" Quick Command stays as it is. | PR 11 |
 | D6 | Where do the real protected paths live? | In a local file on the Mac that is never committed, `~/Library/Application Support/Hey Jev/cleanup-protected.json`. The repo holds name patterns and an example file only. | PR 0, PR 1 |
-| D7 | Simulators (`~/Library/Developer/CoreSimulator`) are deletable in today's card. | Make it report-only and list it under "Fernando does this" (Xcode manages it). | PR 1 |
+| D7 | Simulators (`~/Library/Developer/CoreSimulator`) are deletable in today's card. | Report-only and list under "Fernando does this" (Xcode manages it). | PR 1 |
 
 ---
+
+PR 0 reconciliation: the three REA request notes cover storage/System Data cleanup (caches, logs, backups, development data, attachments, snapshots), large and old files, app age/size/last-opened and leftovers, plus startup/login items and memory/RAM actions. The storage and app areas are mapped to PRs 1–11 below. Startup/login item management, memory freeing, malware checks, and general AI-driven actions that change the system remain out of scope; no helper or privileged operation is introduced. The broad inventory note is a catalog request, not authorization to add unrelated features.
 
 ## 1. Feature inventory
 
@@ -61,7 +63,7 @@ Source: "Brief" is Fernando's Nov 10 description. "Notes" means the row must be 
 | 15 | Free space before and after | Brief | **Before only.** The card shows free space when the scan ends. | The after number, with the Trash caveat. | 5 |
 | 16 | A log of what was removed | Brief | **Kept but hidden.** `cleanup-audit.jsonl` records every propose, approve, refuse, move and restore. | A readable log on screen. | 5 |
 | 17 | Low-disk nudge | Bubble v2 notes (`outOfDiscSpace` reaction) | **Yes.** The orb's `low_disk` reaction highlights the Mac health chip. | The chip opens CleanMyMac, not Jev's cleanup. | 11 |
-| 18 | Anything else in the three notes (to be filled in by PR 0) | Notes | Unknown | Unknown | 0 |
+| 18 | Startup/login-item management, memory/RAM freeing, malware checks, and AI-driven system changes | Notes | Not part of the existing storage scan | Not covered; kept out of scope for this cleanup | — |
 
 **Jev already does these and Eney's brief doesn't mention them** (kept as they are): undo after a move; a 24-hour "recently changed" refusal; Xcode Archives, iOS backups (marked irreplaceable), Mail and Messages attachments (size only), Ollama models, and Time Machine local snapshots (listed, never touched).
 

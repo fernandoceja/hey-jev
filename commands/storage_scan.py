@@ -1,5 +1,6 @@
 """Bounded read-only storage measurements. Cocoa is loaded only on macOS."""
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -13,12 +14,12 @@ LOCATIONS = (
     ('Xcode DerivedData', 'Library/Developer/Xcode/DerivedData', 'safe', True, False),
     ('Xcode Archives', 'Library/Developer/Xcode/Archives', 'ask_first', True, False),
     ('iOS DeviceSupport', 'Library/Developer/Xcode/iOS DeviceSupport', 'safe', True, False),
-    ('CoreSimulator', 'Library/Developer/CoreSimulator', 'ask_first', True, False),
+    ('CoreSimulator', 'Library/Developer/CoreSimulator', 'leave_alone', False, False),
     ('iOS/iPadOS backups', 'Library/Application Support/MobileSync/Backup', 'ask_first', True, True),
     ('Mail attachments', 'Library/Containers/com.apple.mail/Data/Library/Mail Downloads', 'ask_first', False, False),
     ('Mail Downloads', 'Library/Mail Downloads', 'ask_first', False, False),
     ('Messages attachments', 'Library/Messages/Attachments', 'ask_first', False, False),
-    ('Hugging Face models', '.cache/huggingface', 'ask_first', True, False),
+    ('Hugging Face models', '.cache/huggingface', 'leave_alone', False, False),
     ('Ollama models', '.ollama/models', 'ask_first', True, False),
     ('Trash', '.Trash', 'leave_alone', False, False),
 )
@@ -78,13 +79,25 @@ def scan(home=None, paths=None, cancel=None, snapshots=None, limit=100000):
                     targets = [Path(e.path) for _, e in zip(range(1000), entries)]
             except PermissionError:
                 pass
+        if category == 'Xcode DerivedData' and path.is_dir() and not path.is_symlink():
+            try:
+                with os.scandir(path) as entries:
+                    targets = [Path(e.path) for e in entries if e.is_dir(follow_symlinks=False)]
+            except PermissionError:
+                targets = [path]
         for target in targets:
             if not target.exists() or target.is_symlink():
                 continue
             size, partial = measure(target, cancel, limit)
             reason = 'Partial measurement; needs permission or scan limit reached' if partial else 'Review before moving to Trash'
-            rows.append(Proposal(str(target), size, category, reason, safety,
-                                 deletable and not partial, irreplaceable))
+            effective = safety
+            allowed = deletable and not partial
+            from .cleanup_rules import protected_reason, load_protected
+            local = load_protected(home / 'Library/Application Support/Hey Jev/cleanup-protected.json')
+            if protected_reason(target, home, local):
+                effective, allowed = 'leave_alone', False
+            rows.append(Proposal(str(target), size, category, reason, effective,
+                                 allowed, irreplaceable))
     for relative in ('Downloads', 'Library/iTunes/Software Updates', 'Library/iTunes/iPhone Software Updates', 'Library/iTunes/iPad Software Updates'):
         folder = Path(paths.get(relative, home / relative))
         # Bounded traversal for installer files; no directory symlink traversal.

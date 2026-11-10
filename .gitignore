@@ -22,3 +22,5 @@ rea-blocklist.json
 rea-money-ids.local.json
 rea-money-ids.json
 rea-logs/
+# Local cleanup protected paths may contain private folder names. Never commit.
+cleanup-protected.json

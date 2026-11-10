@@ -6,6 +6,7 @@ import secrets
 import threading
 import time
 from dataclasses import dataclass
+from .cleanup_rules import protected_reason, load_protected
 
 
 @dataclass(frozen=True)
@@ -17,6 +18,10 @@ class Proposal:
     safety: str
     deletable: bool = True
     irreplaceable: bool = False
+    kind: str = 'file'
+    bucket: str = ''
+    detail: str = ''
+    group: str = ''
 
 
 def mac_trash(path):
@@ -60,8 +65,11 @@ class CleanupGate:
         if item.safety not in ('safe', 'ask_first') or not item.deletable:
             return 'report only'
         path = Path(item.path).absolute()
-        protected = [self.home / p for p in ('.Trash', 'Developer/hey-jev',
-            'Documents/Fernando Ceja/Developer/AI-Projects/Jarvis')]
+        local_rules = load_protected(self.home / 'Library/Application Support/Hey Jev/cleanup-protected.json')
+        reason = protected_reason(path, self.home, local_rules)
+        if reason:
+            return 'protected path: ' + reason
+        protected = [self.home / p for p in ('.Trash', 'Developer/hey-jev')]
         protected += [Path(p) for p in ('/System', '/usr', '/bin', '/sbin', '/private', '/Library',
                                         '/Applications/Setapp', '/Applications/Eney.app')]
         def inside(p, root):
