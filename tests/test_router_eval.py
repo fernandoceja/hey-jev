@@ -122,8 +122,7 @@ class RouterEvalTests(unittest.TestCase):
         self.assertEqual(rows["g48"]["routed"], "mid")
         self.assertEqual(rows["g48"]["usage"]["input_tokens"], 0)
         self.assertEqual(rows["g49"]["routed"], "mid")
-        workflow = open(os.path.join(ROOT, ".github", "workflows", "tests.yml"), encoding="utf-8").read()
-        self.assertNotIn("--live", workflow)
+        self.assertFalse(os.path.exists(os.path.join(ROOT, ".github", "workflows", "tests.yml")))
 
     def test_five_percent_under_routing_fails_and_cost_uses_the_haiku_rate(self):
         rows = [_row(str(i), True, "cheap" if i == 0 else "heavy") for i in range(20)]
