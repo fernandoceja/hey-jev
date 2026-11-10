@@ -72,5 +72,5 @@ def unused_apps(home, roots, measure, cancel, extra=(), runner=subprocess.run, r
         size, partial = measure(path)
         detail = 'Never opened (or macOS has no record)' if opened is None else f'Last opened {opened.date()}'
         manual = fernando_reason(path, home, uid=os.getuid())
-        yield Proposal(str(path), size, path.stem, manual or detail, 'ask_first', False,
+        yield Proposal(str(path), size, path.stem, manual or detail, 'ask_first', not manual and not partial,
                        kind='app', bucket='fernando' if manual else 'apps', detail=detail, group=str(path))

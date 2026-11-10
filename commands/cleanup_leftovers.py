@@ -49,6 +49,8 @@ def leftovers(home, candidates, installed, measure, cancel, extra=()):
                     if cancel.is_set():
                         return
                     path = Path(entry.path)
+                    if any(part.casefold() in {'eney', 'setapp'} for part in entry.name.split('.')):
+                        continue
                     if entry.is_symlink() or protected_reason(path, home, extra) or entry.name.startswith('com.apple.'):
                         continue
                     groups = [row for row in candidates if ids.get(Path(row.path)) and
@@ -57,6 +59,8 @@ def leftovers(home, candidates, installed, measure, cancel, extra=()):
                         parent = groups[0]
                         group, bucket = parent.path, parent.bucket
                         reason = f'Associated with {parent.category}'
+                        if location == 'LaunchAgents':
+                            reason += '. Stops after you log out and back in'
                     elif (not groups and location in ORPHAN_LOCATIONS
                           and BUNDLE_ID.fullmatch(entry.name) and entry.name not in known
                           and not any(entry.name.endswith('.' + identifier) for identifier in known)):
@@ -69,7 +73,7 @@ def leftovers(home, candidates, installed, measure, cancel, extra=()):
                         reason += '. Contains a database (size only)'
                     if partial or symlink:
                         bucket = 'left_alone'
-                    yield Proposal(str(path), size, entry.name, reason, 'ask_first', False,
+                    yield Proposal(str(path), size, entry.name, reason, 'ask_first', bucket in ('apps', 'your_call') and not database,
                                    kind='leftover', bucket=bucket, group=group)
         except OSError:
             continue

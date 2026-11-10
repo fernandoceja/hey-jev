@@ -6,7 +6,7 @@ import secrets
 import threading
 import time
 from dataclasses import dataclass
-from .cleanup_rules import protected_reason, load_protected
+from .cleanup_rules import fernando_reason, protected_reason, load_protected
 
 SYSTEM_PROTECTED = tuple(Path(p) for p in ('/System', '/usr', '/bin', '/sbin', '/private', '/Library', '/Applications/Setapp', '/Applications/Eney.app'))
 
@@ -68,6 +68,10 @@ class CleanupGate:
         if item.safety not in ('safe', 'ask_first') or not item.deletable:
             return 'report only'
         path = Path(item.path).absolute()
+        if item.kind == 'app' and self.trash is mac_trash:
+            from .cleanup_apps import running_apps
+            if path.resolve() in running_apps():
+                return 'Quit the app first'
         local_rules = load_protected(self.home / 'Library/Application Support/Hey Jev/cleanup-protected.json')
         reason = protected_reason(path, self.home, local_rules)
         if reason:
@@ -84,6 +88,8 @@ class CleanupGate:
                 return 'protected path'
             if any(inside(real, root) or inside(root, real) for root in protected):
                 return 'protected path'
+            if fernando_reason(p, self.home, uid=os.getuid()):
+                return 'needs permission'
             if self.now() - p.stat().st_mtime < 86400:
                 return 'modified in the last 24 hours'
         try:
@@ -135,6 +141,10 @@ class CleanupGate:
             if any(not isinstance(i, int) or i < 0 or i >= len(items) for i in indices):
                 raise ValueError('invalid card selection')
             selected = tuple(items[i] for i in sorted(set(indices)))
+            apps = {item.group for item in selected if item.kind == 'app'}
+            if any(item.kind == 'leftover' and item.group and item.group not in apps for item in selected):
+                raise ValueError('Select the associated app before its leftovers')
+            selected = tuple(sorted(selected, key=lambda item: item.kind != 'app'))
             for item in (() if skip_refused else selected):
                 reason = self.refusal(item)
                 if reason:
@@ -154,8 +164,12 @@ class CleanupGate:
                 raise ValueError('approval expired')
             self.log('run_started', card=card, count=len(items))
             results = []
+            successful_apps = set()
             for item in items:
-                error = self.refusal(item)
+                if item.kind == 'leftover' and item.group and item.group not in successful_apps:
+                    error = 'App was not moved; leftover skipped'
+                else:
+                    error = self.refusal(item)
                 if error:
                     self.log('refuse', path=item.path, reason=error)
                     results.append(error)
@@ -177,6 +191,8 @@ class CleanupGate:
                 self.moves[move] = (original, str(destination))
                 self.log('trashed', move=move, path=original, trash=str(destination))
                 results.append(move)
+                if item.kind == 'app':
+                    successful_apps.add(item.group)
             self.log('run_finished', card=card, results=results)
             return results
 

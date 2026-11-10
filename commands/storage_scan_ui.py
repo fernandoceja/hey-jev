@@ -142,7 +142,11 @@ def start(ui):
                 selected = [i for i, c in self.checks if c.state() and c.isEnabled()]
                 if not selected or self.closed:
                     return
-                rows = [self.rows[i] for i in selected]
+                rows = sorted((self.rows[i] for i in selected), key=lambda row: row.kind != 'app')
+                for row in rows:
+                    if row.kind == 'app' and self.gate.refusal(row):
+                        self.failed(f'{row.category}: {self.gate.refusal(row)}')
+                        return
                 alert = NSAlert.alloc().init()
                 alert.setMessageText_('Move selected items to Trash?')
                 size = sum(row.size for row in rows)
