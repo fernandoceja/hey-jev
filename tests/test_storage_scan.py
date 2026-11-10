@@ -108,6 +108,8 @@ def test_scan_categories_sorting(tmp_path):
     downloads = tmp_path / 'Downloads'
     downloads.mkdir()
     (downloads / 'update.dmg').write_bytes(b'x' * 100)
+    old = time.time() - 91 * 86400
+    os.utime(downloads / 'update.dmg', (old, old))
     rows = scan(home=tmp_path, snapshots=lambda: 'snapshot-1')
     assert [r.size for r in rows] == sorted([r.size for r in rows], reverse=True)
     by_category = {r.category: r for r in rows}
