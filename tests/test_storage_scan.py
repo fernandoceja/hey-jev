@@ -9,6 +9,12 @@ from commands.storage_scan import scan, measure
 from orb_character import MoodState
 
 
+@pytest.fixture(autouse=True)
+def fake_system_roots(monkeypatch):
+    import commands.cleanup_gate as module
+    monkeypatch.setattr(module, 'SYSTEM_PROTECTED', ())
+
+
 def aged(path):
     os.utime(path, (time.time() - 172800, time.time() - 172800))
     return path

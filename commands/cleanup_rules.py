@@ -30,13 +30,18 @@ def protected_reason(path, home, extra=()):
         return "outside home"
     if path == home:
         return "home folder"
-    parts = path.parts
-    if any(_key(part) in PROTECTED_NAMES or any(_key(part).startswith(k) for k in ("luigi", "highonlife", "dmios")) for part in parts):
+    parts = path.relative_to(home).parts
+    if any(any(k in _key(part) for k in PROTECTED_NAMES) for part in parts):
         return "protected name"
     if any(part == ".cache" for part in parts):
         return "Jev model cache"
-    if any(part == ".git" for part in parts) or "Developer" in parts:
+    if any(part == ".git" for part in parts) or (parts and parts[0] == "Developer"):
         return "developer work"
+    for ancestor in (path.parent, *path.parents):
+        if ancestor == home.parent:
+            break
+        if (ancestor / '.git').exists():
+            return "developer work"
     if any(part == "Xcode.app" or (part.startswith("Xcode") and part.endswith(".app")) for part in parts):
         return "Xcode"
     if "Xcode" in parts and "UserData" in parts:
@@ -48,7 +53,7 @@ def protected_reason(path, home, extra=()):
         return "protected database (size only)"
     if name.endswith(DATABASE_SUFFIXES) and "Caches" not in parts:
         return "database (size only)"
-    if str(path).startswith(str(home / "Documents/.cos-tmp")) or str(path).startswith(str(home / "Library/Application Support/Hey Jev")):
+    if any(path == root or root in path.parents for root in (home / "Documents/.cos-tmp", home / "Library/Application Support/Hey Jev")):
         return "Jev data"
     roots = [Path(p).expanduser().absolute() for p in extra]
     for root in roots:

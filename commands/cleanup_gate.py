@@ -8,6 +8,8 @@ import time
 from dataclasses import dataclass
 from .cleanup_rules import protected_reason, load_protected
 
+SYSTEM_PROTECTED = tuple(Path(p) for p in ('/System', '/usr', '/bin', '/sbin', '/private', '/Library', '/Applications/Setapp', '/Applications/Eney.app'))
+
 
 @dataclass(frozen=True)
 class Proposal:
@@ -34,11 +36,12 @@ def mac_trash(path):
 
 
 class CleanupGate:
-    def __init__(self, home=None, audit=None, trash=None, now=time.time):
+    def __init__(self, home=None, audit=None, trash=None, now=time.time, protected_roots=None):
         self.home = Path(home or Path.home()).resolve()
         self.audit = Path(audit or self.home / 'Library/Application Support/Hey Jev/cleanup-audit.jsonl')
         self.trash = trash or mac_trash
         self.now = now
+        self.protected_roots = SYSTEM_PROTECTED if protected_roots is None else tuple(map(Path, protected_roots))
         self.cards = {}
         self.tokens = {}
         self.moves = {}
@@ -68,13 +71,14 @@ class CleanupGate:
         local_rules = load_protected(self.home / 'Library/Application Support/Hey Jev/cleanup-protected.json')
         reason = protected_reason(path, self.home, local_rules)
         if reason:
-            return 'protected path: ' + reason
+            return 'protected path'
         protected = [self.home / p for p in ('.Trash', 'Developer/hey-jev')]
-        protected += [Path(p) for p in ('/System', '/usr', '/bin', '/sbin', '/private', '/Library',
-                                        '/Applications/Setapp', '/Applications/Eney.app')]
+        protected += list(self.protected_roots)
         def inside(p, root):
             return p == root or root in p.parents
         def check(p):
+            if protected_reason(p, self.home, local_rules):
+                return 'protected path'
             real = p.resolve()
             if not inside(real, self.home) or real == self.home:
                 return 'protected path'

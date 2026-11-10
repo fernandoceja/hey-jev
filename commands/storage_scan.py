@@ -1,6 +1,5 @@
 """Bounded read-only storage measurements. Cocoa is loaded only on macOS."""
 import os
-import re
 from pathlib import Path
 import subprocess
 import sys
@@ -19,7 +18,6 @@ LOCATIONS = (
     ('Mail attachments', 'Library/Containers/com.apple.mail/Data/Library/Mail Downloads', 'ask_first', False, False),
     ('Mail Downloads', 'Library/Mail Downloads', 'ask_first', False, False),
     ('Messages attachments', 'Library/Messages/Attachments', 'ask_first', False, False),
-    ('Hugging Face models', '.cache/huggingface', 'leave_alone', False, False),
     ('Ollama models', '.ollama/models', 'ask_first', True, False),
     ('Trash', '.Trash', 'leave_alone', False, False),
 )
