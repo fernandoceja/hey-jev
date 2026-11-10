@@ -26,6 +26,7 @@ def start(ui):
                 self.show_protected = False
                 self.card = None
                 self.moves = []
+                self.cloud_paths = []
                 self.rows = []
                 self.checks = []
                 self.closed = False
@@ -91,7 +92,9 @@ def start(ui):
                     self.button('Review and move to Trash…', 'approve:', 10, 10, 220)
                 elif self.moves:
                     self.button('Undo', 'undo:', 10, 10, 90)
-                if self.rows or self.moves:
+                if self.cloud_paths:
+                    self.button('Download again', 'downloadAgain:', 10, 10, 155)
+                if self.rows or self.moves or self.cloud_paths:
                     self.button('Trash summary…', 'trashSummary:', 335, 10, 145)
                 self.button('Cancel' if not self.moves else 'Close', 'cancel:', 235, 10, 90)
 
@@ -143,6 +146,13 @@ def start(ui):
                 if not selected or self.closed:
                     return
                 rows = sorted((self.rows[i] for i in selected), key=lambda row: row.kind != 'app')
+                cloud = [row for row in rows if row.kind == 'icloud']
+                if cloud:
+                    if len(cloud) != len(rows):
+                        self.failed('Review iCloud files separately from Trash moves.')
+                    else:
+                        self.confirm_cloud(cloud)
+                    return
                 for row in rows:
                     if row.kind == 'app' and self.gate.refusal(row):
                         self.failed(f'{row.category}: {self.gate.refusal(row)}')
@@ -175,6 +185,63 @@ def start(ui):
                         callAfter(self.completed, moves, message)
                     except Exception as exc:
                         callAfter(self.failed, str(exc))
+                threading.Thread(target=work, daemon=True).start()
+
+            @objc.python_method
+            def confirm_cloud(self, rows):
+                from .cleanup_icloud import evict
+                from .cleanup_rules import load_protected
+                alert = NSAlert.alloc().init()
+                alert.setMessageText_('Make selected files cloud-only?')
+                size = sum(row.size for row in rows)
+                alert.setInformativeText_(f'{len(rows)} files · {size / 1048576:.1f} MB. '
+                                          'The files stay in iCloud and Finder.\n' +
+                                          '\n'.join(row.path for row in rows))
+                alert.addButtonWithTitle_('Cancel')
+                alert.addButtonWithTitle_('Make cloud-only')
+                if alert.runModal() != 1001 or self.closed:
+                    return
+                for view in self.doc.subviews():
+                    if hasattr(view, 'setEnabled_'):
+                        view.setEnabled_(False)
+                def work():
+                    messages = []
+                    paths = []
+                    try:
+                        for row in rows:
+                            local = load_protected(self.home / 'Library/Application Support/Hey Jev/cleanup-protected.json')
+                            ok, message = evict(row.path, self.home, local)
+                            self.gate.log('evicted' if ok else 'eviction_refused', path=row.path, size=row.size, reason=message)
+                            messages.append(f'{row.path}: {message}')
+                            if ok:
+                                paths.append(row.path)
+                            elif message != 'File no longer qualifies':
+                                break
+                    except Exception as exc:
+                        messages.append(str(exc))
+                    callAfter(self.cloud_completed, paths, '\n'.join(messages))
+                threading.Thread(target=work, daemon=True).start()
+
+            @objc.python_method
+            def cloud_completed(self, paths, message):
+                self.cloud_paths = paths
+                self.completed([], message)
+
+            def downloadAgain_(self, sender):
+                from .cleanup_icloud import download_again
+                from .cleanup_rules import load_protected
+                sender.setEnabled_(False)
+                def work():
+                    remaining = []
+                    for path in self.cloud_paths:
+                        try:
+                            local = load_protected(self.home / 'Library/Application Support/Hey Jev/cleanup-protected.json')
+                            if not download_again(path, self.home, local):
+                                remaining.append(path)
+                        except Exception:
+                            remaining.append(path)
+                    message = 'Could not request every download.' if remaining else 'Downloads requested.'
+                    callAfter(self.cloud_completed, remaining, message)
                 threading.Thread(target=work, daemon=True).start()
 
             @objc.python_method

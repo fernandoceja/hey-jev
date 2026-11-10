@@ -65,6 +65,8 @@ class CleanupGate:
             stream.write(json.dumps(dict(time=self.now(), action=action, **fields)) + '\n')
 
     def refusal(self, item):
+        if item.kind == 'icloud':
+            return 'iCloud uses its own confirmation'
         if item.safety not in ('safe', 'ask_first') or not item.deletable:
             return 'report only'
         path = Path(item.path).absolute()

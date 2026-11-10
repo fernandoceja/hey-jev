@@ -61,10 +61,43 @@ def candidates(home, cancel, extra=(), reader=metadata, limit=100000):
                 if evictable(info, st, now):
                     rows.append(Proposal(str(path), st.st_size, 'iCloud',
                                          'Already in iCloud. Making it cloud-only frees local space.',
-                                         'ask_first', False, kind='icloud', bucket='your_call'))
+                                         'ask_first', True, kind='icloud', bucket='your_call'))
                 elif info.get('IsUbiquitousItem') and info.get('UbiquitousItemIsUploading'):
                     rows.append(Proposal(str(path), st.st_size, 'iCloud', 'Still uploading',
                                          'ask_first', False, kind='icloud', bucket='your_call'))
         except OSError:
             continue
     return sorted(rows, key=lambda row: row.size, reverse=True)[:200]
+
+
+def evict(path, home, extra=(), reader=metadata, runner=None):
+    """Recheck all eligibility immediately before invoking the system tool."""
+    import subprocess
+    runner = runner or subprocess.run
+    path = Path(path)
+    if protected_reason(path, home, extra) or path.resolve() != path:
+        return False, 'Protected path'
+    try:
+        st = path.lstat()
+        if not stat.S_ISREG(st.st_mode) or not evictable(reader(path), st, time.time()):
+            return False, 'File no longer qualifies'
+        runner(['/usr/bin/brctl', 'evict', str(path)], check=True, timeout=20, capture_output=True)
+        if not os.path.lexists(path):
+            raise RuntimeError('File no longer appears in Finder. Stopped.')
+        if reader(path).get('cloud_only'):
+            return True, 'Cloud-only'
+        return False, 'Cloud-only status could not be verified'
+    except (OSError, subprocess.SubprocessError) as error:
+        return False, str(error)
+
+
+def download_again(path, home, extra=(), reader=metadata, runner=None):
+    import subprocess
+    runner = runner or subprocess.run
+    path = Path(path)
+    if protected_reason(path, home, extra) or path.resolve() != path:
+        return False
+    if not reader(path).get('cloud_only'):
+        return False
+    runner(['/usr/bin/brctl', 'download', str(path)], check=True, timeout=20, capture_output=True)
+    return True
