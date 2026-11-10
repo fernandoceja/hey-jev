@@ -1,12 +1,16 @@
 """Click-only storage card embedded in the existing resizable chat window."""
 from .cleanup_gate import CleanupGate
 from .storage_scan import ScanTask
+from .cleanup_view import SECTIONS, scan_home, sections
 
 _CONTROLLER = None
 
 
 def start(ui):
     global _CONTROLLER
+    from . import zoe_mode_active
+    if zoe_mode_active():
+        return
     import objc
     from Foundation import NSObject
     from AppKit import NSButton, NSScrollView, NSView, NSTextField, NSMakeRect
@@ -16,7 +20,9 @@ def start(ui):
             @objc.python_method
             def build(self, host):
                 self.host = host
-                self.gate = CleanupGate()
+                self.home = scan_home()
+                self.gate = CleanupGate(home=self.home)
+                self.show_protected = False
                 self.card = None
                 self.moves = []
                 self.rows = []
@@ -28,7 +34,7 @@ def start(ui):
                 self.scroll.setDocumentView_(self.doc)
                 host.full_root.addSubview_(self.scroll)
                 self.render('Scanning storage… Read only.')
-                self.task = ScanTask(lambda rows, free, error: callAfter(self.finished, rows, free, error))
+                self.task = ScanTask(lambda rows, free, error: callAfter(self.finished, rows, free, error), home=self.home)
 
             @objc.python_method
             def label(self, text, y, width):
@@ -57,23 +63,38 @@ def start(ui):
                     view.removeFromSuperview()
                 self.layout()
                 width = self.scroll.bounds().size.width - 18
-                height = max(180, 120 + len(self.rows) * 92)
+                grouped = sections(self.rows)
+                visible = {key: entries for key, entries in grouped.items()
+                           if key not in ('left_alone', 'fernando') or self.show_protected}
+                height = max(220, 160 + 42 * len(visible) + 92 * sum(map(len, visible.values())))
                 self.doc.setFrame_(NSMakeRect(0, 0, width, height))
                 self.label(message, height - 48, width)
                 self.checks = []
-                for i, row in enumerate(self.rows):
-                    y = height - 90 - i * 92
-                    check = self.button('{} — {:.1f} MB — {}'.format(row.category, row.size / 1048576, row.safety), 'toggle:', 10, y, width - 20)
-                    check.setButtonType_(3)
-                    check.setEnabled_(row.deletable and row.safety != 'leave_alone')
-                    check.setState_(1 if row.safety == 'safe' and row.deletable else 0)
-                    self.checks.append(check)
-                    self.label('{}\n{}{}'.format(row.path, 'IRREPLACEABLE. ' if row.irreplaceable else '', row.reason), y - 45, width)
+                y = height - 88
+                for key, entries in visible.items():
+                    total = sum(row.size for _, row in entries)
+                    self.label(f'{SECTIONS[key]} · {len(entries)} · {total / 1048576:.1f} MB', y, width)
+                    y -= 42
+                    for index, row in entries:
+                        check = self.button(f'{row.category} · {row.size / 1048576:.1f} MB', 'toggle:', 10, y, width - 20)
+                        check.setButtonType_(3)
+                        check.setEnabled_(row.deletable and key in ('safe', 'your_call', 'apps'))
+                        check.setState_(int(key == 'safe' and row.deletable))
+                        self.checks.append((index, check))
+                        self.label(f'{row.path}\n{row.reason}', y - 45, width)
+                        y -= 92
+                if self.rows:
+                    self.button('Hide protected rows' if self.show_protected else 'Show protected rows',
+                                'protected:', 10, 48, 190)
                 if self.card:
                     self.button('Move selected to Trash', 'approve:', 10, 10, 220)
                 elif self.moves:
                     self.button('Undo', 'undo:', 10, 10, 90)
                 self.button('Cancel' if not self.moves else 'Close', 'cancel:', 235, 10, 90)
+
+            def protected_(self, sender):
+                self.show_protected = not self.show_protected
+                self.render(self.message)
 
             def toggle_(self, sender):
                 pass
@@ -87,7 +108,7 @@ def start(ui):
                 self.render(error or ('Storage scan — Free space: ' + ('{:.1f} GB'.format(free / 1e9) if free is not None else 'unavailable')))
 
             def approve_(self, sender):
-                selected = [i for i, c in enumerate(self.checks) if c.state() and c.isEnabled()]
+                selected = [i for i, c in self.checks if c.state() and c.isEnabled()]
                 # Safety traversal and filesystem operations stay off the UI thread.
                 for view in self.doc.subviews():
                     if hasattr(view, 'setEnabled_'):
