@@ -197,6 +197,9 @@ def scan(home=None, paths=None, cancel=None, snapshots=None, limit=100000):
                               lambda path: _measure(path, cancel, limit,
                                                     lambda item: protected_reason(item, home, local)),
                               cancel, local))
+    if not cancel.is_set() and sys.platform == 'darwin' and home == Path.home():
+        from .cleanup_icloud import candidates
+        rows.extend(candidates(home, cancel, local, limit=limit))
     if not cancel.is_set():
         try:
             output = snapshots() if snapshots else (subprocess.run(
