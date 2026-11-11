@@ -202,7 +202,7 @@ from orb_motion import (
 )
 from orb_motion import peek_edge_allowed  # PR 8: a tuck never sits on a shared display edge
 from orb_motion import dock_strip, rects_overlap
-from orb_character import disk_check, is_thanks, reaction_for_status, rough_drag
+from orb_character import disk_check, is_thanks, lookup_reaction, reaction_for_status, rough_drag
 from orb_tuck import (TUCK_CLOSE_SIZE, TUCK_FADE_IN_SECONDS, TUCK_FADE_OUT_SECONDS, TUCK_KEY, TUCK_SECONDS,
                       decode_tuck, encode_tuck, tuck_close_centre, tuck_edge, tuck_eye_centres, tucked_frame,
                       untucked_frame)
@@ -7472,7 +7472,7 @@ class AppDelegate(NSObject):
             self._show_brief_offer_buttons(True)  # PR 8c: the brief's offer, with its two buttons
         else:
             self._show_brief_offer_buttons(False)
-        reaction = reaction_for_status(previous, state, detail)  # PR 7b: success or failure
+        reaction = reaction_for_status(previous, state, detail) or lookup_reaction(previous, state)  # PR 7b, plus remember and curious
         if reaction is not None and getattr(self, "orb_view", None) is not None:
             self.orb_view.offerReaction(reaction)
         self.detail.setStringValue_(_hold_option_detail(self, state, detail))
