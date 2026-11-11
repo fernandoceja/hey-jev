@@ -60,7 +60,6 @@ def recycle_with_fallback(path, finder, foundation):
 
 def move_into_home_trash(path, trash):
     """Move into an existing, user-owned Trash without overwriting any entry."""
-    import ctypes
     import uuid
 
     source = Path(path)
@@ -69,19 +68,25 @@ def move_into_home_trash(path, trash):
             or source.lstat().st_dev != info.st_dev):
         raise OSError('The existing home Trash is not suitable for a local move.')
 
+    destination = trash / source.name
+    try:
+        rename_exclusive(source, destination)
+    except FileExistsError:
+        destination = trash / ('Jev-' + uuid.uuid4().hex + source.suffix)
+        rename_exclusive(source, destination)
+    return str(destination)
+
+
+def rename_exclusive(source, destination):
+    import ctypes
+
     rename = ctypes.CDLL(None, use_errno=True).renamex_np
     rename.argtypes = (ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint)
     rename.restype = ctypes.c_int
     rename_excl = 0x00000004
-    destination = trash / source.name
-    for _ in range(2):
-        if rename(os.fsencode(source), os.fsencode(destination), rename_excl) == 0:
-            return str(destination)
+    if rename(os.fsencode(source), os.fsencode(destination), rename_excl) != 0:
         code = ctypes.get_errno()
-        if code != errno.EEXIST:
-            raise OSError(code, os.strerror(code), str(source), str(destination))
-        destination = trash / ('Jev-' + uuid.uuid4().hex + source.suffix)
-    raise FileExistsError('Could not reserve a unique Trash destination.')
+        raise OSError(code, os.strerror(code), str(source), str(destination))
 
 
 def summary(trash, measure):
