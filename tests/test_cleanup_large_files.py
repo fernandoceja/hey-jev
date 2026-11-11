@@ -80,3 +80,28 @@ def test_download_candidate_is_only_listed_once(tmp_path, monkeypatch):
     monkeypatch.setenv('JEV_LARGE_FILES_MIN_MB', '1')
     rows = [r for r in scan(home=tmp_path, snapshots=lambda: '') if r.path == str(archive)]
     assert len(rows) == 1 and rows[0].bucket == BUCKET
+
+
+def test_incomplete_report_distinguishes_limit_and_permission(tmp_path, monkeypatch):
+    import errno
+
+    restricted = tmp_path / 'restricted'
+    restricted.mkdir()
+    fixture(tmp_path / 'other' / 'file')
+    scandir = os.scandir
+
+    def deny(path):
+        if path == restricted:
+            raise PermissionError(errno.EACCES, 'Access denied', str(path))
+        return scandir(path)
+
+    monkeypatch.setattr(os, 'scandir', deny)
+    opts = dict(min_bytes=4096, min_age=0)
+    report = list(candidates(tmp_path, threading.Event(), (), **opts))[-1].reason
+    assert '1 paths skipped (permission denied)' in report
+    assert '3 entries visited' in report
+    assert 'limit reached' not in report
+
+    report = list(candidates(tmp_path, threading.Event(), (), limit=1, **opts))[-1].reason
+    assert '1-entry limit reached' in report and 'directories unfinished' in report
+    assert 'permission denied' not in report

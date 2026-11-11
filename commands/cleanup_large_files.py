@@ -1,5 +1,6 @@
 """Read-only home scan for large files, with an optional modification age."""
 from collections import deque
+import errno
 import math
 import os
 from pathlib import Path
@@ -38,7 +39,9 @@ def candidates(home, cancel, local, *, min_bytes, min_age, reader=None, limit=10
     now = time.time() if now is None else now
     pending = deque([home])
     examined = 0
-    incomplete = False
+    permission_skips = 0
+    other_errors = 0
+    remaining_directories = 0
     skipped_roots = {home / 'Library', home / '.Trash', home / '.ollama/models',
                      home / '.npm/_cacache'}
     while pending and not cancel.is_set():
@@ -49,7 +52,7 @@ def candidates(home, cancel, local, *, min_bytes, min_age, reader=None, limit=10
                     if cancel.is_set():
                         return
                     if examined >= limit:
-                        incomplete = True
+                        remaining_directories = len(pending) + 1
                         pending.clear()
                         break
                     examined += 1
@@ -87,10 +90,24 @@ def candidates(home, cancel, local, *, min_bytes, min_age, reader=None, limit=10
                         elif recently_modified(info.st_mtime, now):
                             reason, actionable = 'Changed in the last 24 hours', False
                         yield Proposal(str(path), size, CATEGORY, reason, 'ask_first', actionable, bucket=BUCKET)
-                    except OSError:
-                        incomplete = True
-        except OSError:
-            incomplete = True
-    if incomplete and not cancel.is_set():
-        yield Proposal(str(home), 0, CATEGORY, 'Scan incomplete: item limit reached or some paths were inaccessible.',
-                       'leave_alone', False, bucket=BUCKET)
+                    except OSError as error:
+                        if error.errno in (errno.EACCES, errno.EPERM):
+                            permission_skips += 1
+                        else:
+                            other_errors += 1
+        except OSError as error:
+            if error.errno in (errno.EACCES, errno.EPERM):
+                permission_skips += 1
+            else:
+                other_errors += 1
+    if cancel.is_set() or not (permission_skips or other_errors or remaining_directories):
+        return
+    details = [f'{examined:,} entries visited']
+    if permission_skips:
+        details.append(f'{permission_skips:,} paths skipped (permission denied)')
+    if other_errors:
+        details.append(f'{other_errors:,} paths skipped (other filesystem errors)')
+    if remaining_directories:
+        details.append(f'{limit:,}-entry limit reached; {remaining_directories:,} directories unfinished')
+    yield Proposal(str(home), 0, CATEGORY, 'Scan incomplete: ' + '. '.join(details) + '.',
+                   'leave_alone', False, bucket=BUCKET)
