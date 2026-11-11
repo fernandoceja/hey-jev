@@ -350,7 +350,7 @@ def test_copy_and_close_pills_and_esc_close_the_result():
     ui = _ui()
     assert '"Copy", frames["copy"]' in _body(ui, "    def _fill_result_panel(self, heading, text):")
     assert '"Close", frames["close"]' in _body(ui, "    def _fill_result_panel(self, heading, text):")
-    copy = _body(ui, "    def resultCopy_(self, _sender):")
+    copy = _body(ui, "    def resultCopy_(self, sender):")
     assert "NSPasteboard.generalPasteboard()" in copy and "NSPasteboardTypeString" in copy
     local = _body(ui, "    def _local_key(self, event):")
     assert "self._close_result_panel()" in local
