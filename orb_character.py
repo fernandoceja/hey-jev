@@ -453,8 +453,12 @@ def reaction_for_status(previous, state, detail):
 
 
 def lookup_reaction(previous, state):
-    """curious: Jev just started a lookup (the searching state), coming from a calm status, not mid-turn."""
-    if state == "Doing it" and previous not in _BUSY:
+    """curious: Jev just started work on a request, coming from a calm status (or from transcribing), not mid-turn.
+
+    "Doing it" is a local action such as weather or opening an app. "Thinking" is a question sent to the AI model.
+    The 45 s cooldown in REACTIONS keeps it from playing on every turn.
+    """
+    if state in ("Doing it", "Thinking") and (previous not in _BUSY or previous == "Transcribing"):
         return "curious"
     return None
 
