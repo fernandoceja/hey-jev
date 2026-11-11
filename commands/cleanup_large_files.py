@@ -19,6 +19,16 @@ PACKAGE_SUFFIXES = frozenset({
     '.xcassets', '.xcworkspace', '.xcodeproj', '.photolibrary', '.musiclibrary',
     '.imovielibrary', '.fcpbundle', '.sparsebundle', '.vmwarevm', '.parallels', '.pvm',
 })
+DEPENDENCY_NAMES = frozenset({
+    'node_modules', '.venv', 'venv', 'site-packages', '__pycache__', '.tox',
+    '.mypy_cache', '.pytest_cache', '.gradle', 'Pods', 'DerivedData',
+})
+
+
+def dependency_directory(path, home):
+    return path == home / '.npm' or path.name in DEPENDENCY_NAMES
+
+
 # Darwin's stat.h: a placeholder without local file contents.
 SF_DATALESS = 0x40000000
 
@@ -49,8 +59,8 @@ def candidates(home, cancel, local, *, min_bytes, min_age, reader=None, limit=10
     other_errors = 0
     remaining_directories = 0
     packages_skipped = 0
-    skipped_roots = {home / 'Library', home / '.Trash', home / '.ollama/models',
-                     home / '.npm/_cacache'}
+    dependencies_skipped = 0
+    skipped_roots = {home / 'Library', home / '.Trash', home / '.ollama/models'}
     while pending and not cancel.is_set():
         directory = pending.popleft()
         try:
@@ -70,6 +80,9 @@ def candidates(home, cancel, local, *, min_bytes, min_age, reader=None, limit=10
                         if entry.is_dir(follow_symlinks=False):
                             if path.suffix.casefold() in PACKAGE_SUFFIXES:
                                 packages_skipped += 1
+                                continue
+                            if dependency_directory(path, home):
+                                dependencies_skipped += 1
                                 continue
                             if not protected_reason(path, home, local) and not (path / '.git').exists():
                                 pending.append(path)
@@ -112,7 +125,8 @@ def candidates(home, cancel, local, *, min_bytes, min_age, reader=None, limit=10
                 other_errors += 1
     if cancel.is_set():
         return
-    details = [f'{examined:,} entries visited', f'{packages_skipped:,} packages skipped']
+    details = [f'{examined:,} entries visited', f'{packages_skipped:,} packages skipped',
+               f'{dependencies_skipped:,} dependency directories skipped']
     if permission_skips:
         details.append(f'{permission_skips:,} paths skipped (permission denied)')
     if other_errors:

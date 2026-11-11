@@ -121,4 +121,25 @@ def test_packages_are_opaque_and_nearby_files_still_appear(tmp_path, monkeypatch
     monkeypatch.setattr(os, 'scandir', track)
     rows = list(candidates(tmp_path, threading.Event(), (), min_bytes=4096, min_age=0))
     assert [r.path for r in rows[:-1]] == [str(outside)]
-    assert 'Scan complete: 4 entries visited. 2 packages skipped.' == rows[-1].reason
+    assert 'Scan complete: 4 entries visited. 2 packages skipped.' in rows[-1].reason
+
+def test_dependency_skips_require_exact_name_or_home_npm(tmp_path, monkeypatch):
+    skipped = [tmp_path / 'Project/node_modules', tmp_path / '.npm']
+    for directory in skipped:
+        fixture(directory / 'large.bin')
+    visible = [
+        fixture(tmp_path / name / 'large.bin')
+        for name in ('Project', 'Project/my node_modules backup', 'Other/Node_modules',
+                     'Project/.npm', 'Project/build', 'Project/dist', 'Project/target',
+                     'Project/cache', 'Project/vendor')
+    ]
+    scandir = os.scandir
+
+    def track(path):
+        assert path not in skipped
+        return scandir(path)
+
+    monkeypatch.setattr(os, 'scandir', track)
+    rows = list(candidates(tmp_path, threading.Event(), (), min_bytes=4096, min_age=0))
+    assert {r.path for r in rows[:-1]} == {str(p) for p in visible}
+    assert '2 dependency directories skipped' in rows[-1].reason
