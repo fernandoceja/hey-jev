@@ -183,3 +183,48 @@ def test_home_field_clean_up_mac_opens_the_scan():
     body = source[source.index('def homeSubmit_'):source.index('def openCaptures_')]
     assert 'if opens_cleanup(plan):' in body and 'start(self)' in body
     assert body.index('opens_cleanup(plan)') < body.index('self.worker_started')
+
+
+class _Button:
+    def __init__(self, title):
+        self.title, self.key, self.refuses = title, None, False
+    def setKeyEquivalent_(self, key):
+        self.key = key
+    def setRefusesFirstResponder_(self, value):
+        self.refuses = value
+    def cell(self):
+        return ('cell', self.title)
+
+
+class _Alert:
+    def __init__(self, *titles):
+        self._buttons = [_Button(t) for t in titles]
+        self.default = self.first = None
+        outer = self
+        class Window:
+            def setDefaultButtonCell_(self, cell): outer.default = cell
+            def setInitialFirstResponder_(self, view): outer.first = view
+        self._window = Window()
+    def buttons(self): return self._buttons
+    def window(self): return self._window
+
+
+def test_confirmation_cards_default_to_cancel():
+    from commands.storage_scan_ui import make_cancel_default
+    for titles in (('Cancel', 'Move to Trash'), ('Cancel', 'Make cloud-only')):
+        alert = _Alert(*titles)
+        make_cancel_default(alert)
+        cancel, confirm = alert.buttons()
+        assert cancel.key == '\r' and confirm.key == '' and confirm.refuses and not cancel.refuses
+        assert alert.default == ('cell', 'Cancel') and alert.first is cancel
+    source = open('commands/storage_scan_ui.py', encoding='utf-8').read()
+    for confirm in ("alert.addButtonWithTitle_('Move to Trash')", "alert.addButtonWithTitle_('Make cloud-only')"):
+        at = source.index(confirm)
+        assert source[at:].split('runModal', 1)[0].count('make_cancel_default(alert)') == 1
+
+
+def test_row_details_wrap_instead_of_clipping():
+    source = open('commands/storage_scan_ui.py', encoding='utf-8').read()
+    assert 'wrappingLabelWithString_' in source and 'def detail_label' in source
+    assert "self.detail_label(f'{row.path}\\n{row.reason}'" in source
+    assert "self.label(f'{row.path}" not in source
