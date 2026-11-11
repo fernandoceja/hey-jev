@@ -22,12 +22,29 @@ def load_protected(path):
         return ()
 
 
+CLAUDE_HANDLER_PATH = Path('Applications/Claude Code URL Handler.app')
+CLAUDE_HANDLER_ID = 'com.anthropic.claude-code-url-handler'
+
+
+def protected_app(path, home):
+    path = Path(path)
+    if str(path).casefold() == str(Path(home) / CLAUDE_HANDLER_PATH).casefold():
+        return True
+    if path.suffix.casefold() != '.app' or path.is_symlink():
+        return False
+    from .cleanup_leftovers import bundle_id
+    return bundle_id(path) == CLAUDE_HANDLER_ID
+
+
 def protected_reason(path, home, extra=()):
     path, home = Path(path).resolve(), Path(home).resolve()
     try:
         path.relative_to(home)
     except ValueError:
         return "outside home"
+    handler = str(home / CLAUDE_HANDLER_PATH).casefold()
+    if any(str(parent).casefold() == handler for parent in (path, *path.parents)):
+        return "Claude Code URL Handler"
     if path == home:
         return "home folder"
     parts = path.relative_to(home).parts

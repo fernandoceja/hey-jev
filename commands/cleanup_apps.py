@@ -6,7 +6,7 @@ import subprocess
 import time
 
 from .cleanup_gate import Proposal
-from .cleanup_rules import fernando_reason, protected_reason
+from .cleanup_rules import fernando_reason, protected_app, protected_reason
 
 UNUSED_APP_DAYS = 90
 
@@ -56,6 +56,10 @@ def unused_apps(home, roots, measure, cancel, extra=(), runner=subprocess.run, r
     for path in app_paths(roots):
         if cancel.is_set():
             break
+        if protected_app(path, home):
+            yield Proposal(str(path), 0, path.stem, 'Protected: Claude Code URL Handler',
+                           'leave_alone', False, kind='app', bucket='fernando')
+            continue
         name = path.stem.casefold()
         if path.resolve() in running or name in {'jev', 'hey jev', 'eney', 'setapp'}:
             continue
