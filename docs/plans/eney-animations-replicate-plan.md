@@ -19,11 +19,12 @@ turns the motion off, nothing plays audio.
 - Reduce Motion: no sweep. The pending text stays at a steady dimmed alpha.
 - Tests: pending-text rule, mask locations, constants sane, Reduce Motion branch, source wiring.
 
-## 2. Speaking clip rotation
+## 2. Speaking clip rotation (already built, nothing to do)
 - What Eney does (study): the reading-aloud state picks a random talk clip and switches every 2 to 4 s.
-- Jev version: add a `speaking` entry to the clip switch table so the orb rotates through its speaking clips on a
-  random 2 to 4 s timer. Jev's thinking, searching and listening already do this.
-- Tests: switch delay range, never repeats the previous clip, other states unchanged.
+- Status: already in Jev before this plan. `clip_switch_delay` in `orb_character.py` returns a random 2 to 4 s delay
+  for the `speaking` state, `STATE_CLIPS` has four talk clips, and `orb_view.py` schedules the switch. The first
+  shortlist said the switch table had no speaking entry. That was a misread, because the 2 to 4 s range lives in the
+  function, not in `SWITCH_SECONDS`. Covered by `tests/test_orb_states.py`. No PR was made.
 
 ## 3. Memory-update and search reactions
 - What Eney does (study): a one-shot memory-update reaction, and a curiosity clip in the searching state.
@@ -38,5 +39,11 @@ turns the motion off, nothing plays audio.
   pop (1.0 to 1.12 to 1.0, easeOut), then the panel closes after a beat. Reduce Motion: the label swap only.
 - Tests: constants, label swap, Reduce Motion branch.
 
+## Status
+- 1 shimmer: PR #131 merged.
+- 2 speaking clip rotation: already built, no PR.
+- 3 remember and curious: PR #132 merged.
+- 4 copy pop: PR #133 merged.
+
 ## Live-test list
-Written after each PR merges and given to Fernando with the rebuild.
+Given to Fernando with the rebuild, and kept on the Notion page "Jev Animations (from Eney)".
