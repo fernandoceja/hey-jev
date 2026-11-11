@@ -13,6 +13,12 @@ from .cleanup_rules import DATABASE_SUFFIXES, protected_reason, recently_modifie
 CATEGORY = 'Large & Old Files'
 BUCKET = 'large_files'
 DEFAULT_MIN_MB = 500
+PACKAGE_SUFFIXES = frozenset({
+    '.photoslibrary', '.app', '.bundle', '.framework', '.plugin', '.appex',
+    '.pkg', '.xpc', '.rtfd', '.pages', '.numbers', '.key', '.playground',
+    '.xcassets', '.xcworkspace', '.xcodeproj', '.photolibrary', '.musiclibrary',
+    '.imovielibrary', '.fcpbundle', '.sparsebundle', '.vmwarevm', '.parallels', '.pvm',
+})
 # Darwin's stat.h: a placeholder without local file contents.
 SF_DATALESS = 0x40000000
 
@@ -42,6 +48,7 @@ def candidates(home, cancel, local, *, min_bytes, min_age, reader=None, limit=10
     permission_skips = 0
     other_errors = 0
     remaining_directories = 0
+    packages_skipped = 0
     skipped_roots = {home / 'Library', home / '.Trash', home / '.ollama/models',
                      home / '.npm/_cacache'}
     while pending and not cancel.is_set():
@@ -57,10 +64,13 @@ def candidates(home, cancel, local, *, min_bytes, min_age, reader=None, limit=10
                         break
                     examined += 1
                     path = Path(entry.path)
-                    if path in skipped_roots or path.suffix.casefold() == '.app':
+                    if path in skipped_roots:
                         continue
                     try:
                         if entry.is_dir(follow_symlinks=False):
+                            if path.suffix.casefold() in PACKAGE_SUFFIXES:
+                                packages_skipped += 1
+                                continue
                             if not protected_reason(path, home, local) and not (path / '.git').exists():
                                 pending.append(path)
                             continue
@@ -100,14 +110,15 @@ def candidates(home, cancel, local, *, min_bytes, min_age, reader=None, limit=10
                 permission_skips += 1
             else:
                 other_errors += 1
-    if cancel.is_set() or not (permission_skips or other_errors or remaining_directories):
+    if cancel.is_set():
         return
-    details = [f'{examined:,} entries visited']
+    details = [f'{examined:,} entries visited', f'{packages_skipped:,} packages skipped']
     if permission_skips:
         details.append(f'{permission_skips:,} paths skipped (permission denied)')
     if other_errors:
         details.append(f'{other_errors:,} paths skipped (other filesystem errors)')
     if remaining_directories:
         details.append(f'{limit:,}-entry limit reached; {remaining_directories:,} directories unfinished')
-    yield Proposal(str(home), 0, CATEGORY, 'Scan incomplete: ' + '. '.join(details) + '.',
+    status = 'Scan incomplete' if permission_skips or other_errors or remaining_directories else 'Scan complete'
+    yield Proposal(str(home), 0, CATEGORY, status + ': ' + '. '.join(details) + '.',
                    'leave_alone', False, bucket=BUCKET)

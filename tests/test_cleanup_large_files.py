@@ -55,7 +55,7 @@ def test_home_scan_prunes_protected_paths_and_handles_cloud_and_databases(tmp_pa
 
     rows = list(candidates(tmp_path, threading.Event(), (secret.parent,), min_bytes=4096,
                            min_age=0, reader=reader, now=100000))
-    by_path = {r.path: r for r in rows}
+    by_path = {r.path: r for r in rows if r.path != str(tmp_path)}
     assert set(by_path) == {str(data), str(local), str(downloaded)}
     assert not by_path[str(data)].deletable
     assert not by_path[str(downloaded)].deletable
@@ -72,7 +72,7 @@ def test_age_configuration_and_recent_file(tmp_path):
     rows = {r.path: r for r in candidates(tmp_path, threading.Event(), (), min_age=0, **options)}
     assert not rows[str(recent)].deletable
     assert rows[str(old)].deletable
-    assert [r.path for r in candidates(tmp_path, threading.Event(), (), min_age=172800, **options)] == [str(old)]
+    assert [r.path for r in candidates(tmp_path, threading.Event(), (), min_age=172800, **options) if r.path != str(tmp_path)] == [str(old)]
 
 
 def test_download_candidate_is_only_listed_once(tmp_path, monkeypatch):
@@ -105,3 +105,20 @@ def test_incomplete_report_distinguishes_limit_and_permission(tmp_path, monkeypa
     report = list(candidates(tmp_path, threading.Event(), (), limit=1, **opts))[-1].reason
     assert '1-entry limit reached' in report and 'directories unfinished' in report
     assert 'permission denied' not in report
+
+def test_packages_are_opaque_and_nearby_files_still_appear(tmp_path, monkeypatch):
+    library = tmp_path / 'Pictures' / 'Photos Library.PHOTOSLIBRARY'
+    fixture(library / 'database' / 'Photos.sqlite')
+    bundle = tmp_path / 'Pictures' / 'Other.framework'
+    fixture(bundle / 'large.bin')
+    outside = fixture(library.parent / 'large.bin')
+    scandir = os.scandir
+
+    def track(path):
+        assert path not in (library, bundle)
+        return scandir(path)
+
+    monkeypatch.setattr(os, 'scandir', track)
+    rows = list(candidates(tmp_path, threading.Event(), (), min_bytes=4096, min_age=0))
+    assert [r.path for r in rows[:-1]] == [str(outside)]
+    assert 'Scan complete: 4 entries visited. 2 packages skipped.' == rows[-1].reason
