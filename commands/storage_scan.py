@@ -199,7 +199,10 @@ def scan(home=None, paths=None, cancel=None, snapshots=None, limit=100000):
                                                  '/Applications/Setapp'))
                      if path.stem.casefold() not in {'eney', 'setapp'}
                      and not protected_reason(path, home if home in path.parents else path.parent, local)]
-        rows.extend(leftovers(home, apps, installed,
+        # The new system Applications eligibility applies to bundles only.
+        leftover_apps = [replace(row, bucket='fernando') if home not in Path(row.path).parents else row
+                         for row in apps if row.group and row.reason != 'app is running']
+        rows.extend(leftovers(home, leftover_apps, installed,
                               lambda path: _measure(path, cancel, limit,
                                                     lambda item: protected_reason(item, home, local)),
                               cancel, local))

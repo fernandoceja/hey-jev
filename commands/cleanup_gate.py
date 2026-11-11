@@ -3,11 +3,12 @@ import json
 import os
 from pathlib import Path
 import secrets
+import stat
 import threading
 import time
 from dataclasses import dataclass
 from .cleanup_rules import fernando_reason, protected_app, protected_reason, load_protected, recently_modified
-from .cleanup_trash import SOURCE_ACCESS, TRASH_ACCESS, TrashAccessError, denied, recycle_result, recycle_with_fallback
+from .cleanup_trash import SOURCE_ACCESS, TRASH_ACCESS, TrashAccessError, denied, move_into_home_trash, recycle_result, recycle_with_fallback
 
 SYSTEM_PROTECTED = tuple(Path(p) for p in ('/System', '/usr', '/bin', '/sbin', '/private', '/Library', '/Applications/Setapp', '/Applications/Eney.app'))
 
@@ -76,7 +77,11 @@ def finder_recycle(path):
 
 
 class CleanupGate:
-    def __init__(self, home=None, audit=None, trash=None, now=time.time, protected_roots=None):
+    def __init__(self, home=None, audit=None, trash=None, now=time.time, protected_roots=None,
+                 applications=None, running=None):
+        from .cleanup_apps import APPLICATIONS_ROOT, running_apps
+        self.applications = Path(applications).resolve() if applications is not None else APPLICATIONS_ROOT
+        self.running = running if running is not None else (running_apps if trash is None else set)
         self.home = Path(home or Path.home()).resolve()
         self.audit = Path(audit or self.home / 'Library/Application Support/Hey Jev/cleanup-audit.jsonl')
         self.trash = trash or mac_trash
@@ -107,32 +112,33 @@ class CleanupGate:
     def refusal(self, item):
         if item.kind == 'icloud':
             return 'iCloud uses its own confirmation'
+        from .cleanup_apps import app_refusal, external_app_path
         path = Path(item.path).absolute()
-        if protected_app(path, self.home):
+        external = item.kind == 'app' and external_app_path(path, self.applications)
+        scope = self.applications if external else self.home
+        local_rules = load_protected(self.home / 'Library/Application Support/Hey Jev/cleanup-protected.json')
+        if protected_reason(path, scope, local_rules) or protected_app(path, self.home):
             return 'protected path'
         if item.safety not in ('safe', 'ask_first') or not item.deletable:
             return 'report only'
-        if item.kind == 'app' and self.trash is mac_trash:
-            from .cleanup_apps import running_apps
-            if path.resolve() in running_apps():
-                return 'Quit the app first'
-        local_rules = load_protected(self.home / 'Library/Application Support/Hey Jev/cleanup-protected.json')
-        reason = protected_reason(path, self.home, local_rules)
-        if reason:
-            return 'protected path'
+        if item.kind == 'app':
+            reason = app_refusal(path, self.home, local_rules, self.running(),
+                                 applications=self.applications, now=self.now())
+            if reason:
+                return reason
         protected = [self.home / p for p in ('.Trash', 'Developer/hey-jev')]
         protected += list(self.protected_roots)
         def inside(p, root):
             return p == root or root in p.parents
         def check(p):
-            if protected_reason(p, self.home, local_rules):
+            if protected_reason(p, scope, local_rules):
                 return 'protected path'
             real = p.resolve()
-            if not inside(real, self.home) or real == self.home:
+            if not inside(real, scope) or real == scope:
                 return 'protected path'
             if any(inside(real, root) or inside(root, real) for root in protected):
                 return 'protected path'
-            if fernando_reason(p, self.home, uid=os.getuid()):
+            if fernando_reason(p, scope, uid=os.getuid()):
                 return 'needs permission'
             if recently_modified(p.lstat().st_mtime, self.now()):
                 return 'modified in the last 24 hours'
@@ -190,8 +196,12 @@ class CleanupGate:
                 raise ValueError('Select the associated app before its leftovers')
             selected = tuple(sorted(selected, key=lambda item: item.kind != 'app'))
             for item in selected:
-                if skip_refused and not protected_app(Path(item.path).absolute(), self.home):
-                    continue
+                if skip_refused:
+                    path = Path(item.path).absolute()
+                    extra = load_protected(self.home / 'Library/Application Support/Hey Jev/cleanup-protected.json')
+                    scope = self.applications if self.applications in path.parents else self.home
+                    if protected_reason(path, scope, extra) == 'locally protected' or not protected_app(path, self.home):
+                        continue
                 reason = self.refusal(item)
                 if reason:
                     self.log('refuse', path=item.path, reason=reason)
@@ -224,7 +234,11 @@ class CleanupGate:
                 # Persist intent before changing the filesystem.
                 self.log('trash_requested', path=original)
                 try:
-                    destination = self.trash(original)
+                    if item.kind == 'app' and self.applications in Path(original).parents and self.trash is mac_trash:
+                        # Same Trash and audit flow, with an unprivileged move that cannot prompt for admin.
+                        destination = move_into_home_trash(original, self.home / '.Trash')
+                    else:
+                        destination = self.trash(original)
                 except TrashAccessError as exc:
                     self.log('refuse', path=original, reason=str(exc))
                     results.append(str(exc))
@@ -251,14 +265,35 @@ class CleanupGate:
             original, destination = self.moves[move]
             self.log('undo_requested', move=move)
             resolved = Path(original).resolve()
-            if self.home not in resolved.parents or Path(original).parent.resolve() != Path(original).parent:
+            from .cleanup_apps import external_app_path
+            external = external_app_path(Path(original), self.applications)
+            if (self.home not in resolved.parents and not external) or Path(original).parent.resolve() != Path(original).parent:
                 self.log('undo_refused', move=move, reason='original path changed or outside home')
                 raise ValueError('original path changed or outside home')
             if os.path.lexists(original):
                 self.log('undo_refused', move=move, reason='destination exists')
                 raise FileExistsError('Undo refuses to overwrite')
+            if external:
+                source, target = Path(destination), Path(original)
+                extra = load_protected(self.home / 'Library/Application Support/Hey Jev/cleanup-protected.json')
+                source_info = source.lstat()
+                if (source.parent != self.home / '.Trash'
+                        or source.parent.resolve() != source.parent
+                        or not stat.S_ISDIR(source_info.st_mode)
+                        or source_info.st_uid != os.getuid()
+                        or protected_reason(target, self.applications, extra)
+                        or protected_app(source, self.home)
+                        or target.stem.casefold() in {'eney', 'setapp'}
+                        or any(part.casefold() == 'setapp' for part in target.parts)
+                        or not os.access(target.parent, os.W_OK | os.X_OK)):
+                    raise PermissionError('Cannot restore the app without administrator access')
+                if self.trash is mac_trash:
+                    from .cleanup_trash import rename_exclusive
+                    rename_exclusive(source, target)
+                else:
+                    os.rename(source, target)
             # Foundation's move refuses to overwrite; tests inject a rename adapter.
-            if self.trash is mac_trash:
+            elif self.trash is mac_trash:
                 from Foundation import NSFileManager
                 ok, error = NSFileManager.defaultManager().moveItemAtPath_toPath_error_(destination, original, None)
                 if not ok:
