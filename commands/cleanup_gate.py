@@ -6,7 +6,7 @@ import secrets
 import threading
 import time
 from dataclasses import dataclass
-from .cleanup_rules import fernando_reason, protected_reason, load_protected, recently_modified
+from .cleanup_rules import fernando_reason, protected_app, protected_reason, load_protected, recently_modified
 from .cleanup_trash import SOURCE_ACCESS, TRASH_ACCESS, TrashAccessError, denied, recycle_result, recycle_with_fallback
 
 SYSTEM_PROTECTED = tuple(Path(p) for p in ('/System', '/usr', '/bin', '/sbin', '/private', '/Library', '/Applications/Setapp', '/Applications/Eney.app'))
@@ -107,9 +107,11 @@ class CleanupGate:
     def refusal(self, item):
         if item.kind == 'icloud':
             return 'iCloud uses its own confirmation'
+        path = Path(item.path).absolute()
+        if protected_app(path, self.home):
+            return 'protected path'
         if item.safety not in ('safe', 'ask_first') or not item.deletable:
             return 'report only'
-        path = Path(item.path).absolute()
         if item.kind == 'app' and self.trash is mac_trash:
             from .cleanup_apps import running_apps
             if path.resolve() in running_apps():
@@ -187,7 +189,9 @@ class CleanupGate:
             if any(item.kind == 'leftover' and item.group and item.group not in apps for item in selected):
                 raise ValueError('Select the associated app before its leftovers')
             selected = tuple(sorted(selected, key=lambda item: item.kind != 'app'))
-            for item in (() if skip_refused else selected):
+            for item in selected:
+                if skip_refused and not protected_app(Path(item.path).absolute(), self.home):
+                    continue
                 reason = self.refusal(item)
                 if reason:
                     self.log('refuse', path=item.path, reason=reason)
