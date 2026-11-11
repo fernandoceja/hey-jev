@@ -182,6 +182,7 @@ from mini_bar import (
     resize_edges,
     resize_frame,
     smooth,
+    opens_cleanup,
     submission,
     trailing_symbol,
     control_option_command_held,
@@ -7021,6 +7022,10 @@ class AppDelegate(NSObject):
             return
         field.setStringValue_("")
         if plan["kind"] != "run":
+            return
+        if opens_cleanup(plan):
+            from commands.storage_scan_ui import start
+            start(self)
             return
         phrase = plan["control"][1]
         self.typed.note_request(phrase)

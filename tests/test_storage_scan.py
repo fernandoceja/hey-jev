@@ -170,3 +170,16 @@ def test_report_only_and_symlink_descendant(tmp_path):
     gate = CleanupGate(home=tmp_path)
     assert gate.refusal(item(folder)) == 'protected path'
     assert gate.refusal(item(folder, 'ask_first', deletable=False)) == 'report only'
+
+
+def test_home_field_clean_up_mac_opens_the_scan():
+    import re
+    from mini_bar import opens_cleanup, submission
+    assert opens_cleanup(submission('clean up mac', ''))
+    assert opens_cleanup(submission('  Clean Up Mac ', ''))
+    assert not opens_cleanup(submission('what time is it', ''))
+    assert not opens_cleanup(None)
+    source = open('assistant_ui.py', encoding='utf-8').read()
+    body = source[source.index('def homeSubmit_'):source.index('def openCaptures_')]
+    assert 'if opens_cleanup(plan):' in body and 'start(self)' in body
+    assert body.index('opens_cleanup(plan)') < body.index('self.worker_started')

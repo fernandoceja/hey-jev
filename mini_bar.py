@@ -1762,6 +1762,13 @@ def mic_event(phase):
     raise ValueError(phase)
 
 
+def opens_cleanup(plan):
+    """True when a typed line is the Clean Up Mac phrase, which opens the scan screen instead of the worker."""
+    control = (plan or {}).get("control") or ()
+    return (bool(plan) and plan.get("kind") == "run" and len(control) == 2 and control[0] == "text"
+            and " ".join(str(control[1]).split()).casefold() == "clean up mac")
+
+
 def submission(text, shown_reply=""):
     """What Return does with the field.
 
