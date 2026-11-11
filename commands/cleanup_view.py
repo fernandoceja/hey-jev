@@ -4,12 +4,14 @@ from pathlib import Path
 
 from .cleanup_rules import bucket_of
 from .cleanup_large_files import BUCKET, CATEGORY
+from .cleanup_summaries import BUCKET as FOLDERS_BUCKET, CATEGORY as FOLDERS_CATEGORY
 
 SECTIONS = {
     'safe': 'Safe to delete',
     'your_call': 'Your call',
     BUCKET: CATEGORY,
     'apps': 'Remove apps',
+    FOLDERS_BUCKET: FOLDERS_CATEGORY,
     'left_alone': 'Left alone',
     'fernando': 'Fernando does this',
 }

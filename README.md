@@ -12,6 +12,7 @@ A voice assistant for your Mac. Say "Hey Jev" or hold right Option, say a thing,
 ## Mac cleanup
 
 Open **Clean Up Mac** from Quick Commands, the Mac sidebar, or the Mac health chip. Jev scans storage and groups the findings by what you can review or act on. Moving files requires confirmation and supports Undo while they remain in Trash. The Trash summary opens Finder for manual review. iCloud actions use a separate confirmation and keep the cloud copy.
+The scan also shows a report-only **Folder summaries** section: item count and allocated size for Documents and Desktop. These rows cannot be selected, Jev never moves or deletes those folders, and nothing in them is opened.
 
 
 **Large & Old Files** reviews files across your home folder, with a default minimum file size of 500 MB and no minimum age. Set `JEV_LARGE_FILES_MIN_MB` and optionally `JEV_LARGE_FILES_MIN_AGE_DAYS` in Jev’s launch environment. The age filter uses the last modification time. Rows show allocated space and start unchecked. Databases show path and size only. Cloud-only files, protected paths, app bundles, and the Library are skipped.

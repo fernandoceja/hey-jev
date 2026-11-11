@@ -7,7 +7,7 @@ from pathlib import Path
 import subprocess
 import sys
 import threading
-from . import cleanup_large_files, tidy_downloads
+from . import cleanup_large_files, cleanup_summaries, tidy_downloads
 from .cleanup_gate import Proposal
 from .cleanup_rules import DATABASE_SUFFIXES, load_protected, protected_reason, recently_modified
 
@@ -163,6 +163,11 @@ def scan(home=None, paths=None, cancel=None, snapshots=None, limit=100000):
                                  allowed, irreplaceable, bucket=bucket))
     if not cancel.is_set():
         rows.extend(download_rows(Path(paths.get('Downloads', home / 'Downloads')), home, local, cancel, limit))
+    if not cancel.is_set():
+        rows.extend(cleanup_summaries.summary_rows(
+            home, lambda folder: _measure(folder, cancel, limit,
+                                          lambda item: protected_reason(item, home, local))[:2],
+            cancel, limit, paths))
     for relative in ('Library/iTunes/Software Updates', 'Library/iTunes/iPhone Software Updates', 'Library/iTunes/iPad Software Updates'):
         folder = Path(paths.get(relative, home / relative))
         if folder.is_symlink() or protected_reason(folder, home, local):
