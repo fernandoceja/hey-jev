@@ -103,7 +103,7 @@ from AppKit import (
 )
 from Foundation import NSSelectorFromString, NSStringFromSelector
 from Foundation import NSProcessInfo
-from Foundation import NSInsetRect, NSAttributedString, NSMutableAttributedString, NSString, NSMakeSize, NSObject, NSURL, NSTimer, NSUserDefaults, NSDate, NSDefaultRunLoopMode
+from Foundation import NSValue, NSInsetRect, NSAttributedString, NSMutableAttributedString, NSString, NSMakeSize, NSObject, NSURL, NSTimer, NSUserDefaults, NSDate, NSDefaultRunLoopMode
 from assistant_layout import (
     DEFAULT_H,
     DEFAULT_W,
@@ -217,7 +217,8 @@ from area_hotkey import CARBON_CONTROL, CARBON_OPTION, AreaCaptureHotKey, Carbon
 from orb_motion import (
     MENU_CORNER_RADIUS, MENU_FILL_HOVER, MENU_FILL_REST, MENU_HOVER_SECONDS,
     HINT_SECONDS, HINT_TEXT_INSET, RESULT_FADE_SECONDS, RESULT_SCALE_FROM, TEXT_ACTIONS,
-    SHIMMER_BAND, SHIMMER_DIM, SHIMMER_SECONDS, hint_layout, is_pending_text, menu_layout, result_frames,
+    COPY_CLOSE_DELAY, COPY_POP_SCALE, COPY_POP_SECONDS, SHIMMER_BAND, SHIMMER_DIM, SHIMMER_SECONDS, copy_pill_title,
+    hint_layout, is_pending_text, menu_layout, result_frames,
     result_layout, shimmer_locations,
 )
 from mini_bar import FIND_IMAGE_HINT, TYPE_KEY_CODE, capture_outcome, menu_on_drop, orb_action_menu
@@ -4165,6 +4166,7 @@ class AppDelegate(NSObject):
 
     @objc.python_method
     def _present_result(self, heading, text, animate):
+        NSObject.cancelPreviousPerformRequestsWithTarget_selector_object_(self, "resultClose:", None)
         if self._result_panel is None:
             self._build_result_panel()
         window = getattr(self, "mini_panel", None)
@@ -4213,11 +4215,38 @@ class AppDelegate(NSObject):
     def resultClose_(self, _sender):
         self._close_result_panel()
 
-    def resultCopy_(self, _sender):
+    def resultCopy_(self, sender):
         pasteboard = NSPasteboard.generalPasteboard()
         pasteboard.clearContents()
         pasteboard.setString_forType_(self._result_text, NSPasteboardTypeString)
-        self._close_result_panel()
+        self._pop_copy_pill(sender)
+        # The panel closes after a beat, so the "Copied" feedback is seen. A new result cancels this close.
+        self.performSelector_withObject_afterDelay_("resultClose:", None, COPY_CLOSE_DELAY)
+
+    @objc.python_method
+    def _pop_copy_pill(self, pill):
+        """The pill says "Copied" and pops once. Reduce Motion swaps the label and does not move."""
+        if pill is None:
+            return
+        pill.setTitle_(copy_pill_title(True))
+        pill.setAccessibilityLabel_("Copied")
+        orb_view = getattr(self, "orb_view", None)
+        if bool(getattr(orb_view, "reduceMotion", False)) or pill.layer() is None:
+            return
+        from Quartz import (CABasicAnimation, CAMediaTimingFunction, CATransform3DIdentity, CATransform3DMakeTranslation,
+                            CATransform3DConcat, CATransform3DMakeScale)
+        # Scale about the pill's centre whatever the layer's anchor point is: move the centre to the origin, scale, move back.
+        w, h = float(pill.bounds().size.width), float(pill.bounds().size.height)
+        about = CATransform3DConcat(CATransform3DMakeTranslation(-w / 2.0, -h / 2.0, 0.0),
+                                    CATransform3DMakeScale(COPY_POP_SCALE, COPY_POP_SCALE, 1.0))
+        peak = CATransform3DConcat(about, CATransform3DMakeTranslation(w / 2.0, h / 2.0, 0.0))
+        pop = CABasicAnimation.animationWithKeyPath_("transform")
+        pop.setFromValue_(NSValue.valueWithCATransform3D_(CATransform3DIdentity))
+        pop.setToValue_(NSValue.valueWithCATransform3D_(peak))
+        pop.setDuration_(COPY_POP_SECONDS / 2.0)
+        pop.setAutoreverses_(True)
+        pop.setTimingFunction_(CAMediaTimingFunction.functionWithName_("easeOut"))
+        pill.layer().addAnimation_forKey_(pop, "copyPop")
 
     @objc.python_method
     def _start_text_action(self, ident):

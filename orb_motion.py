@@ -578,6 +578,17 @@ SHIMMER_BAND = 0.5  # the bright band's width as a fraction of the text width
 SHIMMER_DIM = 0.45  # alpha of the text outside the band; Reduce Motion holds this steady
 
 
+# Copy pop (Jev's own): the result panel's Copy pill shows a check and "Copied" with a short scale pop, then the panel closes.
+COPY_POP_SCALE = 1.12  # peak scale of the pill
+COPY_POP_SECONDS = 0.2  # up and back, easeOut
+COPY_CLOSE_DELAY = 0.7  # how long "Copied" stays before the panel closes
+COPY_DONE_TITLE = "\u2713 Copied"
+
+
+def copy_pill_title(done):
+    return COPY_DONE_TITLE if done else "Copy"
+
+
 def is_pending_text(text):
     """True for a line that says work is still going, such as 'Reading the capture...'."""
     return str(text or "").strip().endswith(("...", "\u2026"))
