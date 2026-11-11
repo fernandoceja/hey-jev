@@ -7,7 +7,7 @@ import threading
 import time
 from dataclasses import dataclass
 from .cleanup_rules import fernando_reason, protected_reason, load_protected, recently_modified
-from .cleanup_trash import SOURCE_ACCESS, TRASH_ACCESS, TrashAccessError, denied, recycle_result
+from .cleanup_trash import SOURCE_ACCESS, TRASH_ACCESS, TrashAccessError, denied, recycle_result, recycle_with_fallback
 
 SYSTEM_PROTECTED = tuple(Path(p) for p in ('/System', '/usr', '/bin', '/sbin', '/private', '/Library', '/Applications/Setapp', '/Applications/Eney.app'))
 
@@ -28,6 +28,19 @@ class Proposal:
 
 
 def mac_trash(path):
+    return recycle_with_fallback(path, finder_recycle, foundation_recycle)
+
+
+def foundation_recycle(path):
+    from Foundation import NSFileManager, NSURL
+    source = NSURL.fileURLWithPath_(str(path))
+    ok, destination, error = NSFileManager.defaultManager().trashItemAtURL_resultingItemURL_error_(
+        source, None, None)
+    return recycle_result({source: destination} if ok and destination is not None else {},
+                          source, error)
+
+
+def finder_recycle(path):
     from AppKit import NSWorkspace
     from Foundation import NSURL
     from PyObjCTools.AppHelper import callAfter

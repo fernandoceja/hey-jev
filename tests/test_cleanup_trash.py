@@ -1,5 +1,6 @@
 import errno
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -94,3 +95,50 @@ def test_gate_reports_actionable_finder_denial(tmp_path):
     token = gate.approve_click(gate.present([Proposal(str(path), 0, 'Fixture', '', 'safe')]), [0])
     assert gate.execute(token) == [SOURCE_ACCESS]
     assert path.exists() and not gate.moves
+
+
+def test_direct_trash_fallback_requires_confirmed_denial_and_present_source(tmp_path):
+    from commands.cleanup_trash import recycle_with_fallback
+
+    path = tmp_path / 'fixture'
+    path.touch()
+    calls = []
+
+    def denied_move(source):
+        calls.append(('finder', source))
+        raise TrashAccessError('denied')
+
+    def direct(source):
+        calls.append(('direct', source))
+        return '/Trash/fixture'
+
+    assert recycle_with_fallback(path, denied_move, direct) == '/Trash/fixture'
+    assert calls == [('finder', path), ('direct', path)]
+    calls.clear()
+    with pytest.raises(FileNotFoundError):
+        recycle_with_fallback(tmp_path / 'missing', denied_move, direct)
+    assert calls == []
+
+    def timeout(_):
+        raise OSError('No reply')
+
+    calls.clear()
+    with pytest.raises(OSError, match='No reply'):
+        recycle_with_fallback(path, timeout, direct)
+    assert calls == []
+
+@pytest.mark.skipif(sys.platform != 'darwin', reason='macOS exclusive rename')
+def test_local_trash_move_does_not_replace_existing_item(tmp_path):
+    from commands.cleanup_trash import move_into_home_trash
+
+    trash = tmp_path / '.Trash'
+    trash.mkdir()
+    existing = trash / 'fixture.dmg'
+    existing.write_text('keep')
+    source = tmp_path / existing.name
+    source.write_text('disposable')
+    moved = Path(move_into_home_trash(source, trash))
+    assert moved.parent == trash and moved != existing
+    assert existing.read_text() == 'keep'
+    assert moved.read_text() == 'disposable'
+    assert not source.exists()
