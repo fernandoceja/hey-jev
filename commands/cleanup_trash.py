@@ -1,6 +1,8 @@
 """macOS Trash access and actionable errors."""
 import errno
 import os
+import stat
+from pathlib import Path
 
 FULL_DISK_ACCESS = 'x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles'
 FILES_AND_FOLDERS = 'x-apple.systempreferences:com.apple.preference.security?Privacy_FilesAndFolders'
@@ -27,8 +29,59 @@ def recycle_result(destinations, source, error):
     if destination is not None:
         return str(destination.path())
     if denied(error):
-        raise TrashAccessError(SOURCE_ACCESS)
+        raise TrashAccessError(SOURCE_ACCESS + ' ' + str(error.localizedDescription()))
     raise OSError(str(error.localizedDescription()) if error else 'Finder did not return a Trash location.')
+
+
+def recycle_with_fallback(path, finder, foundation):
+    """Retry only an explicit denial for the same source item."""
+    original = os.lstat(path)
+    try:
+        return finder(path)
+    except TrashAccessError as finder_error:
+        try:
+            if not os.path.samestat(original, os.lstat(path)):
+                raise OSError('The source changed during the Trash move.')
+        except FileNotFoundError:
+            raise finder_error
+        try:
+            return foundation(path)
+        except TrashAccessError as direct_error:
+            if not os.path.samestat(original, os.lstat(path)):
+                raise OSError('The source changed during the Trash move.')
+            trash = Path.home() / '.Trash'
+            try:
+                with os.scandir(trash):
+                    pass
+            except PermissionError:
+                raise TrashAccessError(TRASH_ACCESS) from direct_error
+            return move_into_home_trash(path, trash)
+
+
+def move_into_home_trash(path, trash):
+    """Move into an existing, user-owned Trash without overwriting any entry."""
+    import ctypes
+    import uuid
+
+    source = Path(path)
+    info = trash.lstat()
+    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
+            or source.lstat().st_dev != info.st_dev):
+        raise OSError('The existing home Trash is not suitable for a local move.')
+
+    rename = ctypes.CDLL(None, use_errno=True).renamex_np
+    rename.argtypes = (ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint)
+    rename.restype = ctypes.c_int
+    rename_excl = 0x00000004
+    destination = trash / source.name
+    for _ in range(2):
+        if rename(os.fsencode(source), os.fsencode(destination), rename_excl) == 0:
+            return str(destination)
+        code = ctypes.get_errno()
+        if code != errno.EEXIST:
+            raise OSError(code, os.strerror(code), str(source), str(destination))
+        destination = trash / ('Jev-' + uuid.uuid4().hex + source.suffix)
+    raise FileExistsError('Could not reserve a unique Trash destination.')
 
 
 def summary(trash, measure):
