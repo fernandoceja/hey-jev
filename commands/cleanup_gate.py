@@ -6,7 +6,8 @@ import secrets
 import threading
 import time
 from dataclasses import dataclass
-from .cleanup_rules import fernando_reason, protected_reason, load_protected
+from .cleanup_rules import fernando_reason, protected_reason, load_protected, recently_modified
+from .cleanup_trash import SOURCE_ACCESS, TRASH_ACCESS, TrashAccessError, denied, recycle_result
 
 SYSTEM_PROTECTED = tuple(Path(p) for p in ('/System', '/usr', '/bin', '/sbin', '/private', '/Library', '/Applications/Setapp', '/Applications/Eney.app'))
 
@@ -27,12 +28,38 @@ class Proposal:
 
 
 def mac_trash(path):
-    from Foundation import NSFileManager, NSURL
-    ok, url, error = NSFileManager.defaultManager().trashItemAtURL_resultingItemURL_error_(
-        NSURL.fileURLWithPath_(str(path)), None, None)
-    if not ok:
-        raise PermissionError(str(error))
-    return str(url.path())
+    from AppKit import NSWorkspace
+    from Foundation import NSURL
+    from PyObjCTools.AppHelper import callAfter
+
+    if threading.current_thread() is threading.main_thread():
+        raise RuntimeError('Trash moves must run on the cleanup worker')
+    source = NSURL.fileURLWithPath_(str(path))
+    complete = threading.Event()
+    result = []
+
+    def finished(destinations, error):
+        try:
+            result.append(recycle_result(destinations, source, error))
+        except Exception as exc:
+            result.append(exc)
+        finally:
+            complete.set()
+
+    def start():
+        try:
+            NSWorkspace.sharedWorkspace().recycleURLs_completionHandler_([source], finished)
+        except Exception as exc:
+            result.append(exc)
+            complete.set()
+
+    callAfter(start)
+    if not complete.wait(60):
+        raise OSError('Finder did not report the move in time. Check Trash before retrying.')
+    if isinstance(result[0], Exception):
+        raise result[0]
+    return result[0]
+
 
 
 class CleanupGate:
@@ -92,7 +119,7 @@ class CleanupGate:
                 return 'protected path'
             if fernando_reason(p, self.home, uid=os.getuid()):
                 return 'needs permission'
-            if self.now() - p.stat().st_mtime < 86400:
+            if recently_modified(p.lstat().st_mtime, self.now()):
                 return 'modified in the last 24 hours'
         try:
             error = check(path)
@@ -114,7 +141,7 @@ class CleanupGate:
             if path.is_symlink():
                 return 'symlink requires separate review'
         except PermissionError:
-            return 'needs permission'
+            return SOURCE_ACCESS
         except OSError:
             return 'path unavailable'
         return None
@@ -181,6 +208,10 @@ class CleanupGate:
                 self.log('trash_requested', path=original)
                 try:
                     destination = self.trash(original)
+                except TrashAccessError as exc:
+                    self.log('refuse', path=original, reason=str(exc))
+                    results.append(str(exc))
+                    continue
                 except PermissionError:
                     self.log('refuse', path=original, reason='needs permission')
                     results.append('needs permission')
@@ -215,7 +246,9 @@ class CleanupGate:
                 ok, error = NSFileManager.defaultManager().moveItemAtPath_toPath_error_(destination, original, None)
                 if not ok:
                     self.log('undo_refused', move=move, reason=str(error))
-                    raise PermissionError('needs permission')
+                    if denied(error):
+                        raise TrashAccessError(TRASH_ACCESS)
+                    raise OSError(str(error.localizedDescription()) if error else 'Could not restore the item.')
             else:
                 os.rename(destination, original)
             self.log('restored', move=move, path=original, trash=destination)

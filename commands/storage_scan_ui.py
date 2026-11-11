@@ -97,6 +97,8 @@ def start(ui):
                 if self.rows or self.moves or self.cloud_paths:
                     self.button('Trash summary…', 'trashSummary:', 10, 78, 145)
                     self.button('Past cleanups', 'pastCleanups:', 165, 78, 130)
+                if 'Grant access in System Settings' in message:
+                    self.button('Grant access…', 'grantAccess:', 10, 48, 145)
                 self.button('Cancel' if not self.moves else 'Close', 'cancel:', 235, 10, 90)
 
             def protected_(self, sender):
@@ -143,21 +145,13 @@ def start(ui):
             def trashSummary_(self, sender):
                 trash = self.home / '.Trash'
                 def work():
-                    try:
-                        import os
-                        with os.scandir(trash) as entries:
-                            count = sum(1 for _ in entries)
-                        size, partial = measure(trash, threading.Event())
-                        message = f'{count} items in home Trash · {size / 1048576:.1f} MB'
-                        if partial:
-                            message += ' measured (partial)'
-                    except OSError:
-                        message = 'Trash size and count are unavailable.'
-                    callAfter(self.show_trash, message)
+                    from .cleanup_trash import summary
+                    message, access = summary(trash, lambda path: measure(path, threading.Event()))
+                    callAfter(self.show_trash, message, access)
                 threading.Thread(target=work, daemon=True).start()
 
             @objc.python_method
-            def show_trash(self, message):
+            def show_trash(self, message, access):
                 if self.closed:
                     return
                 alert = NSAlert.alloc().init()
@@ -165,8 +159,21 @@ def start(ui):
                 alert.setInformativeText_(message + '\nReview the Trash in Finder. Emptying it is a manual Finder action.')
                 alert.addButtonWithTitle_('Open Trash in Finder')
                 alert.addButtonWithTitle_('Cancel')
-                if alert.runModal() == 1000 and not self.closed:
+                if access:
+                    alert.addButtonWithTitle_('Grant access…')
+                choice = alert.runModal()
+                if self.closed:
+                    return
+                if choice == 1000:
                     NSWorkspace.sharedWorkspace().openFile_(str(self.home / '.Trash'))
+                elif choice == 1002 and access:
+                    self.grantAccess_(None)
+
+            def grantAccess_(self, sender):
+                from Foundation import NSURL
+                from .cleanup_trash import FULL_DISK_ACCESS, FILES_AND_FOLDERS, TRASH_ACCESS
+                pane = FULL_DISK_ACCESS if sender is None or TRASH_ACCESS in self.message else FILES_AND_FOLDERS
+                NSWorkspace.sharedWorkspace().openURL_(NSURL.URLWithString_(pane))
 
             def approve_(self, sender):
                 selected = [i for i, c in self.checks if c.state() and c.isEnabled()]
