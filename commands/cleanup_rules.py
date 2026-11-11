@@ -48,17 +48,17 @@ def protected_reason(path, home, extra=()):
         return "Xcode user data"
     if any(_key(part).endswith(tuple(_key(s) for s in ACTIVE_SUFFIXES)) for part in parts):
         return "active download"
+    if any(path == root or root in path.parents for root in (home / "Documents/.cos-tmp", home / "Library/Application Support/Hey Jev")):
+        return "Jev data"
+    roots = [Path(p).expanduser().resolve() for p in extra]
+    for root in roots:
+        if path == root or root in path.parents:
+            return "locally protected"
     name = path.name.lower()
     if name in ALWAYS_PROTECTED_FILES:
         return "protected database (size only)"
     if name.endswith(DATABASE_SUFFIXES) and "Caches" not in parts:
         return "database (size only)"
-    if any(path == root or root in path.parents for root in (home / "Documents/.cos-tmp", home / "Library/Application Support/Hey Jev")):
-        return "Jev data"
-    roots = [Path(p).expanduser().absolute() for p in extra]
-    for root in roots:
-        if path == root or root in path.parents:
-            return "locally protected"
     return None
 
 

@@ -1,4 +1,5 @@
 """Bounded read-only storage measurements. Cocoa is loaded only on macOS."""
+from dataclasses import replace
 import os
 import stat
 import time
@@ -6,7 +7,7 @@ from pathlib import Path
 import subprocess
 import sys
 import threading
-from . import tidy_downloads
+from . import cleanup_large_files, tidy_downloads
 from .cleanup_gate import Proposal
 from .cleanup_rules import DATABASE_SUFFIXES, load_protected, protected_reason, recently_modified
 
@@ -205,6 +206,23 @@ def scan(home=None, paths=None, cancel=None, snapshots=None, limit=100000):
     if not cancel.is_set() and sys.platform == 'darwin' and home == Path.home():
         from .cleanup_icloud import candidates
         rows.extend(candidates(home, cancel, local, limit=limit))
+    if not cancel.is_set():
+        reader = None
+        if sys.platform == 'darwin' and home == Path.home():
+            from .cleanup_icloud import metadata
+            reader = metadata
+        min_bytes, min_age = cleanup_large_files.settings(os.environ)
+        large = list(cleanup_large_files.candidates(home, cancel, local, min_bytes=min_bytes,
+                                                   min_age=min_age, reader=reader, limit=limit))
+        large_by_path = {Path(row.path).resolve(): row for row in large}
+        for row in rows:
+            key = Path(row.path).resolve()
+            if row.kind == 'icloud' and key in large_by_path:
+                candidate = large_by_path[key]
+                large_by_path[key] = replace(row, category=candidate.category,
+                                             size=candidate.size, bucket=candidate.bucket)
+        rows = [row for row in rows if Path(row.path).resolve() not in large_by_path]
+        rows.extend(large_by_path.values())
     if not cancel.is_set():
         try:
             output = snapshots() if snapshots else (subprocess.run(

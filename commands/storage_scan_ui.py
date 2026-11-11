@@ -80,7 +80,7 @@ def start(ui):
                     for index, row in entries:
                         check = self.button(f'{row.category} · {row.size / 1048576:.1f} MB', 'toggle:', 10, y, width - 20)
                         check.setButtonType_(3)
-                        check.setEnabled_(row.deletable and key in ('safe', 'your_call', 'apps'))
+                        check.setEnabled_(row.deletable and key in ('safe', 'your_call', 'large_files', 'apps'))
                         check.setState_(int(key == 'safe' and row.deletable))
                         self.checks.append((index, check))
                         self.label(f'{row.path}\n{row.reason}', y - 45, width)

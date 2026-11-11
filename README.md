@@ -14,6 +14,8 @@ A voice assistant for your Mac. Say "Hey Jev" or hold right Option, say a thing,
 Open **Clean Up Mac** from Quick Commands, the Mac sidebar, or the Mac health chip. Jev scans storage and groups the findings by what you can review or act on. Moving files requires confirmation and supports Undo while they remain in Trash. The Trash summary opens Finder for manual review. iCloud actions use a separate confirmation and keep the cloud copy.
 
 
+**Large & Old Files** reviews files across your home folder, with a default minimum file size of 500 MB and no minimum age. Set `JEV_LARGE_FILES_MIN_MB` and optionally `JEV_LARGE_FILES_MIN_AGE_DAYS` in Jev’s launch environment. The age filter uses the last modification time. Rows show allocated space and start unchecked. Databases show path and size only. Cloud-only files, protected paths, app bundles, and the Library are skipped.
+
 ## What it can do
 
 Open, quit, hide, minimise or switch to apps, open a new browser tab or a website ("open youtube.com in Brave"), Mac volume up / down / mute / set, Apple Music play / pause / next / previous / what's playing, dark mode, lock or sleep the Mac. Spotify volume and playback stay available only when the Spotify app is installed and you name Spotify. Two things in one sentence work too: "pause the music and open Notes".
