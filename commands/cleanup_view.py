@@ -3,10 +3,12 @@ import os
 from pathlib import Path
 
 from .cleanup_rules import bucket_of
+from .cleanup_large_files import BUCKET, CATEGORY
 
 SECTIONS = {
     'safe': 'Safe to delete',
     'your_call': 'Your call',
+    BUCKET: CATEGORY,
     'apps': 'Remove apps',
     'left_alone': 'Left alone',
     'fernando': 'Fernando does this',
