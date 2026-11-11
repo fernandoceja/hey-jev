@@ -126,7 +126,10 @@ class ReactionQueueTests(unittest.TestCase):
         self.assertEqual(table["heart"], (1.0, 1, 60.0))
         self.assertEqual(table["low_disk"], (1.5, 1, 3600.0))
         self.assertEqual(table["wave"][:2], (1.2, 1))
-        self.assertEqual(set(REACTIONS), {"get_ready", "success", "failure", "dizzy", "heart", "low_disk", "wave"})
+        self.assertEqual(table["remember"], (0.7, 2, 5.0))
+        self.assertEqual(table["curious"], (0.8, 1, 45.0))
+        self.assertEqual(set(REACTIONS), {"get_ready", "success", "failure", "dizzy", "heart", "low_disk", "wave",
+                                          "remember", "curious"})
 
 
 class IsThanksTests(unittest.TestCase):

@@ -333,6 +333,10 @@ REACTIONS = {
     "heart": Reaction("heart", 1.0, 1, 60.0, ((0.0, "heart"),), ("pulse", 0.08), False),
     "low_disk": Reaction("low_disk", 1.5, 1, 3600.0, ((0.0, "sad"),), ("none", 0.0), True),
     "wave": Reaction("wave", 1.2, 1, float("inf"), ((0.0, "open"),), ("none", 0.0), False),
+    # Eney animations, item 3 (Jev's own art): a nod with a smile when a note is saved, and a small head tilt with
+    # wide eyes when Jev starts looking something up. curious is rare (45 s) and low priority, so success always wins.
+    "remember": Reaction("remember", 0.7, 2, 5.0, ((0.0, "smileClosed"),), ("nod", 3.0), False),
+    "curious": Reaction("curious", 0.8, 1, 45.0, ((0.0, "wide"),), ("tilt", 5.0), False),
 }
 
 LOW_DISK_BYTES = 10 * 1024 ** 3  # 10 GB
@@ -358,6 +362,10 @@ def reaction_body_tracks(name):
     elif channel == "wobble":
         tracks["rot"] = sample_track(
             lambda t: amount * math.sin(math.tau * 2.0 * t / seconds) * (1.0 - t / seconds), seconds)
+    elif channel == "nod":
+        tracks["y"] = sample_track(lambda t: -amount * math.sin(math.tau * t / seconds) ** 2, seconds)
+    elif channel == "tilt":
+        tracks["rot"] = sample_track(lambda t: amount * math.sin(math.pi * t / seconds), seconds)
     elif channel == "pulse":
         tracks["scale"] = sample_track(lambda t: 1.0 + amount * math.sin(math.pi * t / seconds), seconds)
     return tracks
@@ -423,15 +431,31 @@ def is_real_reply(detail):
 _BUSY = {"Doing it", "Thinking", "Transcribing", "Finishing", "Speaking"}
 
 
+# The replies that mean Jev saved something to a note. They are the exact lines the note commands say.
+NOTE_SAVED_LINES = ("Got it. I added that to your notes.", "Saved it to a new note in Notes.")
+
+
+def is_note_saved(detail):
+    return str(detail or "").strip().startswith(NOTE_SAVED_LINES)
+
+
 def reaction_for_status(previous, state, detail):
     """The reaction a status change calls for, or None.
 
-    success: a command ended on Ready with a real reply, after a busy state. failure: an error or Time's up.
+    remember: a command ended on Ready with a note-saved reply. success: any other real reply, after a busy state.
+    failure: an error or Time's up.
     """
     if state in ("Something went wrong", "Time's up"):
         return "failure"
     if state == "Ready" and previous in _BUSY and is_real_reply(detail):
-        return "success"
+        return "remember" if is_note_saved(detail) else "success"
+    return None
+
+
+def lookup_reaction(previous, state):
+    """curious: Jev just started a lookup (the searching state), coming from a calm status, not mid-turn."""
+    if state == "Doing it" and previous not in _BUSY:
+        return "curious"
     return None
 
 
