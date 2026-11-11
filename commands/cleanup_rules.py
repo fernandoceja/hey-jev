@@ -92,3 +92,7 @@ def bucket_of(proposal):
     if kind == "app":
         return "apps"
     return "safe" if getattr(proposal, "safety", "") == "safe" else "your_call"
+
+
+def recently_modified(mtime, now):
+    return mtime > now - 24 * 60 * 60

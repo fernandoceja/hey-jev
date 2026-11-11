@@ -8,7 +8,7 @@ import sys
 import threading
 from . import tidy_downloads
 from .cleanup_gate import Proposal
-from .cleanup_rules import DATABASE_SUFFIXES, load_protected, protected_reason
+from .cleanup_rules import DATABASE_SUFFIXES, load_protected, protected_reason, recently_modified
 
 # category, relative path, safety, deletable, irreplaceable
 LOCATIONS = (
@@ -148,7 +148,7 @@ def scan(home=None, paths=None, cancel=None, snapshots=None, limit=100000):
             elif partial or symlink:
                 effective, allowed = 'leave_alone', False
                 reason = 'Contains a symlink' if symlink else 'Measurement incomplete or contains protected items'
-            elif newest > time.time() - 86400:
+            elif recently_modified(newest, time.time()):
                 effective, allowed, reason = 'ask_first', False, 'Changed in the last 24 hours'
             elif safety == 'safe':
                 reason = 'The app or tool can rebuild these files'
