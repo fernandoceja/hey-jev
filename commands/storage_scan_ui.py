@@ -6,6 +6,19 @@ from .cleanup_view import SECTIONS, scan_home, sections
 _CONTROLLER = None
 
 
+def make_cancel_default(alert):
+    """Return and Escape press the first button (Cancel). No other button keeps a key equivalent."""
+    buttons = list(alert.buttons())
+    cancel = buttons[0]
+    for button in buttons[1:]:
+        button.setKeyEquivalent_('')
+        button.setRefusesFirstResponder_(True)  # no keyboard focus, so Space cannot press it either
+    cancel.setKeyEquivalent_('\r')
+    window = alert.window()
+    window.setDefaultButtonCell_(cancel.cell())
+    window.setInitialFirstResponder_(cancel)
+
+
 def start(ui):
     global _CONTROLLER
     from . import zoe_mode_active
@@ -14,7 +27,7 @@ def start(ui):
     import threading
     import objc
     from Foundation import NSObject
-    from AppKit import NSAlert, NSWorkspace, NSButton, NSScrollView, NSView, NSTextField, NSMakeRect
+    from AppKit import NSAlert, NSWorkspace, NSButton, NSScrollView, NSView, NSTextField, NSMakeRect, NSMakeSize
     from PyObjCTools.AppHelper import callAfter
     if _CONTROLLER is None:
         class StorageCard(NSObject):
@@ -42,6 +55,17 @@ def start(ui):
             def label(self, text, y, width):
                 field = NSTextField.labelWithString_(text)
                 field.setFrame_(NSMakeRect(12, y, width - 24, 42))
+                self.doc.addSubview_(field)
+
+            @objc.python_method
+            def detail_label(self, text, top, width, limit=86):
+                """Row details wrap to the window width instead of clipping at one line."""
+                field = NSTextField.wrappingLabelWithString_(text)
+                field.setPreferredMaxLayoutWidth_(width - 24)
+                field.setFrame_(NSMakeRect(12, top - limit, width - 24, limit))
+                fit = field.sizeThatFits_(NSMakeSize(width - 24, limit)).height
+                height = min(limit, max(18, fit))
+                field.setFrame_(NSMakeRect(12, top - height, width - 24, height))
                 self.doc.addSubview_(field)
 
             @objc.python_method
@@ -83,7 +107,7 @@ def start(ui):
                         check.setEnabled_(row.deletable and key in ('safe', 'your_call', 'large_files', 'apps'))
                         check.setState_(int(key == 'safe' and row.deletable))
                         self.checks.append((index, check))
-                        self.label(f'{row.path}\n{row.reason}', y - 45, width)
+                        self.detail_label(f'{row.path}\n{row.reason}', y - 3, width)
                         y -= 92
                 if self.rows:
                     self.button('Hide protected rows' if self.show_protected else 'Show protected rows',
@@ -198,6 +222,7 @@ def start(ui):
                                           '\n'.join(row.path for row in rows))
                 alert.addButtonWithTitle_('Cancel')
                 alert.addButtonWithTitle_('Move to Trash')
+                make_cancel_default(alert)
                 if alert.runModal() != 1001 or self.closed:
                     return
                 # Safety traversal and filesystem operations stay off the UI thread.
@@ -233,6 +258,7 @@ def start(ui):
                                           '\n'.join(row.path for row in rows))
                 alert.addButtonWithTitle_('Cancel')
                 alert.addButtonWithTitle_('Make cloud-only')
+                make_cancel_default(alert)
                 if alert.runModal() != 1001 or self.closed:
                     return
                 for view in self.doc.subviews():
