@@ -32,10 +32,17 @@ class TriggerTests(unittest.TestCase):
         self.assertEqual(oc.lookup_reaction("Ready", "Doing it"), "curious")
         self.assertEqual(oc.lookup_reaction("Listening", "Doing it"), "curious")
 
+    def test_a_question_sent_to_the_model_calls_curious(self):
+        self.assertEqual(oc.lookup_reaction("Ready", "Thinking"), "curious")
+        self.assertEqual(oc.lookup_reaction("Transcribing", "Thinking"), "curious")  # a spoken question
+
     def test_curious_does_not_fire_mid_turn_or_for_other_states(self):
         self.assertIsNone(oc.lookup_reaction("Thinking", "Doing it"))
         self.assertIsNone(oc.lookup_reaction("Doing it", "Doing it"))
-        self.assertIsNone(oc.lookup_reaction("Ready", "Thinking"))
+        self.assertIsNone(oc.lookup_reaction("Doing it", "Thinking"))
+        self.assertIsNone(oc.lookup_reaction("Thinking", "Thinking"))
+        self.assertIsNone(oc.lookup_reaction("Speaking", "Thinking"))
+        self.assertIsNone(oc.lookup_reaction("Ready", "Transcribing"))
         self.assertIsNone(oc.lookup_reaction("Ready", "Ready"))
 
 
