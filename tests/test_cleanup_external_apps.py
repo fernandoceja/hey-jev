@@ -83,3 +83,18 @@ def test_external_app_recent_bundle_stays_disabled(tmp_path):
     home, root = setup_apps(tmp_path, ['Recent.app'])
     row = rows(home, root, now=2000)[0]
     assert not row.deletable and 'last 24 hours' in row.reason
+
+
+def test_xcode_named_apps_are_never_offered_anywhere(tmp_path):
+    from commands.cleanup_apps import app_refusal
+    home, root = setup_apps(tmp_path, ['Xcode-beta.app'])
+    mine = home / 'Applications'
+    for name in ('xcode.app', 'xcode-beta.app'):
+        (mine / name / 'Contents').mkdir(parents=True)
+        os.utime(mine / name, (1000, 1000))
+    found = list(unused_apps(home, [root, mine], lambda _: (123, False), threading.Event(),
+                             runner=lambda *a, **k: SimpleNamespace(stdout='(null)'),
+                             now=100000, applications=root))
+    assert not [r for r in found if r.deletable and 'xcode' in r.path.casefold()]
+    for path in (mine / 'xcode.app', mine / 'xcode-beta.app', root / 'Xcode-beta.app'):
+        assert app_refusal(path, home, (), set(), applications=root) == 'protected app'
