@@ -572,6 +572,22 @@ RESULT_BODY_PILL_GAP = 12.0  # body bottom to the pill row
 RESULT_FADE_SECONDS = 0.15  # fade and scale only; no spring on the result panel
 RESULT_SCALE_FROM = 0.96
 
+# Loading shimmer (Jev's own): a soft band sweeps across a pending line of text on a repeating mask animation.
+SHIMMER_SECONDS = 1.4  # one sweep
+SHIMMER_BAND = 0.5  # the bright band's width as a fraction of the text width
+SHIMMER_DIM = 0.45  # alpha of the text outside the band; Reduce Motion holds this steady
+
+
+def is_pending_text(text):
+    """True for a line that says work is still going, such as 'Reading the capture...'."""
+    return str(text or "").strip().endswith(("...", "\u2026"))
+
+
+def shimmer_locations(progress, band=SHIMMER_BAND):
+    """Gradient stop positions (dim, bright, dim) for the band's centre at progress 0 to 1, sweeping fully across."""
+    centre = -band + progress * (1.0 + 2.0 * band)
+    return (centre - band / 2.0, centre, centre + band / 2.0)
+
 TEXT_ACTIONS = {
     "summarize": ("Summary", "Summarize this"),
     "translate": ("Translation", "Translate this to English"),

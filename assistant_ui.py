@@ -217,7 +217,8 @@ from area_hotkey import CARBON_CONTROL, CARBON_OPTION, AreaCaptureHotKey, Carbon
 from orb_motion import (
     MENU_CORNER_RADIUS, MENU_FILL_HOVER, MENU_FILL_REST, MENU_HOVER_SECONDS,
     HINT_SECONDS, HINT_TEXT_INSET, RESULT_FADE_SECONDS, RESULT_SCALE_FROM, TEXT_ACTIONS,
-    hint_layout, menu_layout, result_frames, result_layout,
+    SHIMMER_BAND, SHIMMER_DIM, SHIMMER_SECONDS, hint_layout, is_pending_text, menu_layout, result_frames,
+    result_layout, shimmer_locations,
 )
 from mini_bar import FIND_IMAGE_HINT, TYPE_KEY_CODE, capture_outcome, menu_on_drop, orb_action_menu
 from mini_bar import TRANSLATE_CHIP_ID, set_translate_chip, translate_chip_on  # PR 8b
@@ -4131,6 +4132,36 @@ class AppDelegate(NSObject):
         for view in (head, body, copy, close):
             content.addSubview_(view)
         panel.setContentView_(content)
+        if is_pending_text(text):
+            self._shimmer_body(body)
+
+    @objc.python_method
+    def _shimmer_body(self, body):
+        """A soft band sweeps across a pending line. Reduce Motion holds the text at a steady dim instead.
+        The panel is rebuilt when the answer arrives, so the layer and its mask go away with the old body."""
+        from Quartz import CABasicAnimation, CAGradientLayer, CAMediaTimingFunction
+        orb_view = getattr(self, "orb_view", None)
+        if bool(getattr(orb_view, "reduceMotion", False)):
+            body.setAlphaValue_(0.7)
+            return
+        body.setWantsLayer_(True)
+        layer = body.layer()
+        mask = CAGradientLayer.layer()
+        mask.setFrame_(layer.bounds())
+        dim = NSColor.colorWithCalibratedWhite_alpha_(1.0, SHIMMER_DIM).CGColor()
+        bright = NSColor.colorWithCalibratedWhite_alpha_(1.0, 1.0).CGColor()
+        mask.setColors_([dim, bright, dim])
+        mask.setStartPoint_((0.0, 0.5))
+        mask.setEndPoint_((1.0, 0.5))
+        mask.setLocations_(list(shimmer_locations(0.0)))
+        sweep = CABasicAnimation.animationWithKeyPath_("locations")
+        sweep.setFromValue_(list(shimmer_locations(0.0)))
+        sweep.setToValue_(list(shimmer_locations(1.0)))
+        sweep.setDuration_(SHIMMER_SECONDS)
+        sweep.setRepeatCount_(float("inf"))
+        sweep.setTimingFunction_(CAMediaTimingFunction.functionWithName_("linear"))
+        mask.addAnimation_forKey_(sweep, "shimmer")
+        layer.setMask_(mask)
 
     @objc.python_method
     def _present_result(self, heading, text, animate):
