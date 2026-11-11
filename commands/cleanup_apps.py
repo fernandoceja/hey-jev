@@ -70,6 +70,8 @@ def app_refusal(path, home, extra, running, *, applications=APPLICATIONS_ROOT, n
         return 'protected app'
     if any(part.casefold() == 'setapp' for part in path.parts) or path.stem.casefold() in {'eney', 'setapp'}:
         return 'protected Eney or Setapp app'
+    if path.stem.casefold().startswith('xcode'):
+        return 'protected app'
     if path.resolve() in running:
         return 'app is running'
     if path.resolve() != path:
@@ -77,7 +79,7 @@ def app_refusal(path, home, extra, running, *, applications=APPLICATIONS_ROOT, n
     if external:
         from .cleanup_leftovers import bundle_id
         identifier = bundle_id(path)
-        if not identifier or identifier.casefold().startswith('com.apple.') or path.stem.casefold().startswith('xcode'):
+        if not identifier or identifier.casefold().startswith('com.apple.'):
             return 'Apple app or bundle identity unavailable'
         try:
             info = path.lstat()
@@ -106,6 +108,8 @@ def unused_apps(home, roots, measure, cancel, extra=(), runner=subprocess.run, r
         if name in {'eney', 'setapp'} or any(part.casefold() == 'setapp' for part in path.parts):
             yield Proposal(str(path), 0, path.stem, 'Protected Setapp app',
                            'leave_alone', False, kind='app', bucket='fernando')
+            continue
+        if name.startswith('xcode'):
             continue
         scope = applications if external_app_path(path, applications) else home
         protection = protected_reason(path, scope, extra)
