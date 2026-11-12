@@ -133,3 +133,15 @@ def idle_expired(shown_at, now, hovered, editing):
 def should_start(orb_visible, collapsed, docked, busy, has_rect):
     """Only a visible, quiet, collapsed orb moves to the selection. Anything else keeps the normal capture panel."""
     return bool(orb_visible and collapsed and not docked and not busy and has_rect)
+
+
+ACCEPT_SELECTORS = ("insertTab:", "moveRight:")  # Tab and Right Arrow, as the text system names them
+
+
+def accepted_text(current, selector, placeholder=PLACEHOLDER):
+    """The text to put in the field when Tab or Right Arrow accepts the grey suggestion, else None.
+
+    Only an empty field accepts it. With any text in it, Tab and Right Arrow keep their normal meaning."""
+    if str(current or "") == "" and str(selector) in ACCEPT_SELECTORS:
+        return placeholder
+    return None
