@@ -207,7 +207,7 @@ from capture_glimmer import (BAND_RGB, BORDER_RGB, DragTracker, GLIMMER_BAND, GL
                              GLIMMER_POLL_SECONDS, GLIMMER_REDUCED_WASH_ALPHA, GLIMMER_WASH_ALPHA, SPARKLE_RGB, WASH_RGB,
                              glimmer_seconds, panel_delay, rgba, sparkle_specs, star_points)
 from capture_inline import (FIELD_H, PLACEHOLDER as INLINE_PLACEHOLDER, idle_expired as inline_idle_expired, inline_frame,
-                            orb_target_origin, pick_corner, pill_size, should_start as inline_should_start, tidy_answer,
+                            accepted_text, orb_target_origin, pick_corner, pill_size, should_start as inline_should_start, tidy_answer,
                             clip_answer)
 from hotkey_helper import (LoginItemHelper, SHOW_ORB_NOTIFICATION, is_on as helper_is_on, show_orb_requested,
                            status_text as helper_status_text)
@@ -4873,6 +4873,15 @@ class AppDelegate(NSObject):
         self._apply_pill_presentation()
 
     def control_textView_doCommandBySelector_(self, control, _view, selector):
+        if control == getattr(self, "inline_field", None):
+            # Tab or Right Arrow in the empty inline field accepts the grey "What is this?" as real text, caret at the end.
+            # With text in it, they behave normally. Esc is not handled here, so it still opens the capture panel.
+            accepted = accepted_text(str(_view.string() or ""), str(selector))
+            if accepted is not None:
+                _view.setString_(accepted)
+                _view.setSelectedRange_((len(accepted), 0))
+                return True
+            return False
         surface = self._at_surface_for(control)
         if surface is not None and self._at_command(surface, selector):
             return True
@@ -7086,6 +7095,7 @@ class AppDelegate(NSObject):
         self.inline_field = text_field(NSMakeRect(12, 6, 246, 28), INLINE_PLACEHOLDER)
         self.inline_field.setTarget_(self)
         self.inline_field.setAction_("inlineAsk:")
+        self.inline_field.setDelegate_(self)  # for Tab and Right Arrow to accept the suggestion
         self.inline_answer = NSTextField.wrappingLabelWithString_("")
         self.inline_answer.setFrame_(NSMakeRect(14, 8, 242, 16))
         self.inline_answer.setFont_(NSFont.systemFontOfSize_(12))

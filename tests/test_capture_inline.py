@@ -114,6 +114,35 @@ class AnswerTextTests(unittest.TestCase):
         self.assertLess(len(clipped), len(text))
 
 
+class AcceptSuggestionTests(unittest.TestCase):
+    def test_tab_and_right_arrow_accept_the_suggestion_in_an_empty_field(self):
+        self.assertEqual(ci.accepted_text("", "insertTab:"), "What is this?")
+        self.assertEqual(ci.accepted_text("", "moveRight:"), "What is this?")
+        self.assertEqual(ci.accepted_text(None, "moveRight:"), "What is this?")
+
+    def test_with_any_text_they_keep_their_normal_meaning(self):
+        for text in ("a", "What is this?", " ", "hello world"):
+            self.assertIsNone(ci.accepted_text(text, "moveRight:"), text)
+            self.assertIsNone(ci.accepted_text(text, "insertTab:"), text)
+
+    def test_other_keys_never_accept_it(self):
+        for selector in ("cancelOperation:", "insertNewline:", "moveLeft:", "moveDown:", "deleteBackward:", ""):
+            self.assertIsNone(ci.accepted_text("", selector), selector)
+
+    def test_the_wiring_sets_the_text_with_the_caret_at_the_end_and_leaves_escape_alone(self):
+        ui = _ui()
+        body = _func(ui, "control_textView_doCommandBySelector_")
+        inline = body[:body.index("surface = self._at_surface_for(control)")]
+        self.assertIn('control == getattr(self, "inline_field", None)', inline)
+        self.assertIn("_view.setString_(accepted)", inline)
+        self.assertIn("_view.setSelectedRange_((len(accepted), 0))", inline)
+        self.assertIn("return False", inline)  # anything else, including Esc, falls through to the default
+        self.assertNotIn("cancelOperation", inline)
+        self.assertIn("self.inline_field.setDelegate_(self)", _func(ui, "_build_inline_panel"))
+        # Esc still opens the capture panel through the panel's handler.
+        self.assertIn("panel.escHandler = self._inline_open_capture_panel", _func(ui, "_build_inline_panel"))
+
+
 class RuleTests(unittest.TestCase):
     def test_only_a_visible_quiet_collapsed_orb_with_a_rect_moves(self):
         self.assertTrue(ci.should_start(True, True, False, False, True))
