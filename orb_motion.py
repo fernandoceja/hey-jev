@@ -589,6 +589,9 @@ def copy_pill_title(done):
     return COPY_DONE_TITLE if done else "Copy"
 
 
+PENDING_CAPTURE_TEXT = "Reading the capture\u2026"  # the answer line on the post-capture panel while Jev reads the picture
+
+
 def is_pending_text(text):
     """True for a line that says work is still going, such as 'Reading the capture...'."""
     return str(text or "").strip().endswith(("...", "\u2026"))

@@ -217,7 +217,7 @@ from area_hotkey import CARBON_CONTROL, CARBON_OPTION, AreaCaptureHotKey, Carbon
 from orb_motion import (
     MENU_CORNER_RADIUS, MENU_FILL_HOVER, MENU_FILL_REST, MENU_HOVER_SECONDS,
     HINT_SECONDS, HINT_TEXT_INSET, RESULT_FADE_SECONDS, RESULT_SCALE_FROM, TEXT_ACTIONS,
-    COPY_CLOSE_DELAY, COPY_POP_SCALE, COPY_POP_SECONDS, SHIMMER_BAND, SHIMMER_DIM, SHIMMER_SECONDS, copy_pill_title,
+    COPY_CLOSE_DELAY, COPY_POP_SCALE, PENDING_CAPTURE_TEXT, COPY_POP_SECONDS, SHIMMER_BAND, SHIMMER_DIM, SHIMMER_SECONDS, copy_pill_title,
     hint_layout, is_pending_text, menu_layout, result_frames,
     result_layout, shimmer_locations,
 )
@@ -4137,6 +4137,16 @@ class AppDelegate(NSObject):
             self._shimmer_body(body)
 
     @objc.python_method
+    def _stop_shimmer(self, body):
+        """Take a pending shimmer (or its Reduce Motion dim) off a text field."""
+        if body is None:
+            return
+        body.setAlphaValue_(1.0)
+        layer = body.layer()
+        if layer is not None and layer.mask() is not None:
+            layer.setMask_(None)
+
+    @objc.python_method
     def _shimmer_body(self, body):
         """A soft band sweeps across a pending line. Reduce Motion holds the text at a steady dim instead.
         The panel is rebuilt when the answer arrives, so the layer and its mask go away with the old body."""
@@ -6931,7 +6941,7 @@ class AppDelegate(NSObject):
     @objc.python_method
     def _build_choice_panel(self):
         style = NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel
-        panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
+        panel = CaptureChoicePanel.alloc().initWithContentRect_styleMask_backing_defer_(
             NSMakeRect(0, 0, 300, 420), style, NSBackingStoreBuffered, False)
         panel.setLevel_(BAR_LEVEL)
         panel.setFloatingPanel_(True)
@@ -6974,6 +6984,7 @@ class AppDelegate(NSObject):
         self.choice_question.setHidden_(True)
         self.choice_ask.setHidden_(True)
         self.choice_answer.setStringValue_("")
+        self._stop_shimmer(self.choice_answer)
         for view in list(self.choice_buttons.subviews()):
             view.removeFromSuperview()
         if box is None:
@@ -7033,6 +7044,11 @@ class AppDelegate(NSObject):
             return
         self.controls.put(("ask_jev", question))
         self._choice_shown_at = time.time()
+        # The Command-W capture path ends on this panel, not the result panel, so the pending line and its shimmer
+        # are set here. updateStatus_ stops the shimmer when the real answer arrives.
+        self._stop_shimmer(self.choice_answer)
+        self.choice_answer.setStringValue_(PENDING_CAPTURE_TEXT)
+        self._shimmer_body(self.choice_answer)
 
     @objc.python_method
     def _queue_choice(self, ident):
@@ -7539,6 +7555,7 @@ class AppDelegate(NSObject):
         if shown and getattr(self, "choice_answer", None) is not None:
             panel = getattr(self, "choice_panel", None)
             if panel is not None and panel.isVisible() and not capture_saved(shown):
+                self._stop_shimmer(self.choice_answer)
                 self.choice_answer.setStringValue_(shown)
         self._maybe_show_choices(detail)
         self._sync_orb()
@@ -7719,6 +7736,18 @@ def run_app():
     delegate = AppDelegate.alloc().init()
     app.setDelegate_(delegate)
     app.run()
+
+
+class CaptureChoicePanel(NSPanel):
+    """The post-capture panel (Ask Jev, Save to Notes, and so on). A borderless panel answers NO to canBecomeKey by
+    default, so its question field could never take a caret or keys. This one can become key (only when a click or
+    _open_choice_question asks, because becomesKeyOnlyIfNeeded stays on), and it never becomes main."""
+
+    def canBecomeKeyWindow(self):
+        return True
+
+    def canBecomeMainWindow(self):
+        return False
 
 
 # PR 8: the orb's Spotlight-style panel classes. Kept at the end so earlier helpers keep the first match.
