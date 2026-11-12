@@ -6940,6 +6940,8 @@ class AppDelegate(NSObject):
             self._show_capture_choices()
 
     def showCaptureResult_(self, sentence):
+        if capture_saved(sentence) and not getattr(self, "_inline_pending", None):
+            self._orb_hop("landed")  # a capture landed (the inline route hops when the orb arrives at the corner)
         if not (capture_saved(sentence) and getattr(self, "_inline_pending", None)):
             self._show_bar_reply(str(sentence or ""))  # the inline route has its own field, so the orb shows no sentence
         self._sync_recording_ui()
@@ -7045,9 +7047,7 @@ class AppDelegate(NSObject):
         if done:
             then = state["then"]
             self._inline_stop_move()
-            orb = getattr(self, "orb_view", None)
-            if orb is not None and not self._inline_reduce():
-                orb.dropJiggle()  # the orb settles with its usual landing wobble
+            self._orb_hop("landed")  # the orb lands at the corner with a hop (Reduce Motion: the eye shape only)
             if then:
                 self.performSelector_withObject_afterDelay_(then, None, 0.0)
 
@@ -7681,7 +7681,15 @@ class AppDelegate(NSObject):
             return  # the orb is turned off in Settings, or Jev is quitting
         if tucked:
             self._tuck_untuck("hotkey", instant=True)
+        self._orb_hop("summon")  # a bigger hop when Jev is summoned
         self.expandMiniBar_(None)
+
+    @objc.python_method
+    def _orb_hop(self, name):
+        """A one-shot hop reaction (summon or landed). The reaction queue handles cooldowns, hidden and Reduce Motion."""
+        orb = getattr(self, "orb_view", None)
+        if orb is not None:
+            orb.offerReaction(name)
 
     def hotkeyAfterClear_(self, _sender):
         """Second half of Control-Option-J when Home was open: Home is minimized now, so show the orb and open the pill."""
@@ -7690,6 +7698,7 @@ class AppDelegate(NSObject):
             return
         if self._tuck_active():
             self._tuck_untuck("hotkey", instant=True)  # showing the orb can restore it tucked at its screen edge
+        self._orb_hop("summon")
         self.expandMiniBar_(None)
 
     @objc.python_method

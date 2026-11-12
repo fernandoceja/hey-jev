@@ -27,10 +27,12 @@ EYE = 11.0
 EXPECTED_LOOK = {
     "blink": 1.0, "blink_stagger": 1.0, "double_blink": 1.0, "look_around": 0.0,
     "yawn": 0.0, "bounce": 0.5, "jiggle": 1.0, "happy": 0.0, "wave": 0.5, "balance_eyes": 0.2,
+    "hop": 0.4, "grow": 0.6,  # alive motion
 }
 EXPECTED_WEIGHT = {
     "blink": 30, "blink_stagger": 15, "double_blink": 10, "look_around": 12,
     "yawn": 6, "bounce": 8, "jiggle": 4, "happy": 8, "wave": 5, "balance_eyes": 2,
+    "hop": 14, "grow": 8,  # alive motion
 }
 
 
@@ -139,7 +141,7 @@ def test_pick_accent_matches_weights_within_five_percent():
     rng = random.Random(42)
     total = sum(EXPECTED_WEIGHT.values())
     counts = {name: 0 for name in EXPECTED_WEIGHT}
-    draws = 200000  # the rarest accent is 4%; 5% relative needs this many draws to be meaningful
+    draws = 600000  # the rarest accent is under 2%; 5% relative needs this many draws to be meaningful
     for _ in range(draws):
         counts[pick_accent(rng)] += 1
     for name, weight in EXPECTED_WEIGHT.items():
