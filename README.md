@@ -301,6 +301,8 @@ python3 -m venv .venv
 open "dist/Hey Jev - Fish Audio.app"
 ```
 
+**Keep macOS permissions across rebuilds.** py2app signs the alias build ad hoc, and an ad-hoc signature changes with every rebuild, so macOS asks for Screen Recording and the others again each time. After each `py2app -A`, run `scripts/sign_local.sh` (try `scripts/sign_local.sh --dry-run` first: it prints the plan and signs nothing). It re-signs the bundle with your Apple Development certificate and a fixed requirement (bundle id plus your team id), which does not change when the code changes. The first real signing can show a keychain dialog ("codesign wants to use your key"); click it yourself. It does nothing to Gatekeeper and types no passwords. Quit and reopen Jev afterward and allow the permissions once more. Check it with `scripts/sign_local.sh --verify`.
+
 The py2app line builds the app bundle in alias mode, so it runs the code straight from this folder. Build it once, and again if you move the folder or if `setup.py` changes. Calendar access is one of those `setup.py` changes: rebuild, then quit and reopen, or macOS never shows the new permission prompt. `py2app` itself is not in the runtime requirements; install it with `.venv/bin/pip install 'py2app~=0.28.9'` when you build. `0.28.10` requires Python 3.10. `requirements.txt` uses compatible-release pins (`~=`) chosen for this Python 3.9 venv. After pulling a pin change, reinstall with `.venv/bin/pip install -r requirements.txt`.
 
 First launch:
