@@ -202,8 +202,10 @@ from orb_motion import (
 )
 from orb_motion import peek_edge_allowed  # PR 8: a tuck never sits on a shared display edge
 from orb_motion import dock_strip, rects_overlap
-from capture_glimmer import (DragTracker, GLIMMER_BAND, GLIMMER_BASE_ALPHA, GLIMMER_BAND_ALPHA, GLIMMER_POLL_SECONDS,
-                             GLIMMER_REDUCED_ALPHA, glimmer_seconds, panel_delay)
+from capture_glimmer import (BAND_RGB, BORDER_RGB, DragTracker, GLIMMER_BAND, GLIMMER_BAND_ALPHA, GLIMMER_BORDER_ALPHA,
+                             GLIMMER_BORDER_WIDTH, GLIMMER_GLOW_OPACITY, GLIMMER_GLOW_RADIUS, GLIMMER_PAD,
+                             GLIMMER_POLL_SECONDS, GLIMMER_REDUCED_WASH_ALPHA, GLIMMER_WASH_ALPHA, SPARKLE_RGB, WASH_RGB,
+                             glimmer_seconds, panel_delay, rgba, sparkle_specs, star_points)
 from hotkey_helper import (LoginItemHelper, SHOW_ORB_NOTIFICATION, is_on as helper_is_on, show_orb_requested,
                            status_text as helper_status_text)
 from orb_character import disk_check, is_thanks, lookup_reaction, reaction_for_status, rough_drag
@@ -6976,21 +6978,28 @@ class AppDelegate(NSObject):
             "captureGlimmer:", json.dumps({"rect": list(rect), "reduce": reduce}), False)
 
     def captureGlimmer_(self, payload):
+        """Jev-blue glimmer over the captured region: a translucent wash, a thin glowing border, a shimmer sweep, a few
+        cyan sparkles near the edges and corners, then a smooth fade. Reduce Motion: the wash and border only, held
+        steady. Every color is the orb's own (see capture_glimmer). The overlay is made after the file is saved and
+        cannot be read by screen capture, so it is never in the picture."""
         try:
             info = json.loads(str(payload))
             x, y, w, h = [float(v) for v in info["rect"]]
             reduce = bool(info.get("reduce"))
         except (ValueError, KeyError, TypeError):
             return
-        from Quartz import CABasicAnimation, CAGradientLayer, CAMediaTimingFunction, CACurrentMediaTime
+        from Quartz import (CAAnimationGroup, CABasicAnimation, CAGradientLayer, CAKeyframeAnimation, CALayer,
+                            CAMediaTimingFunction, CAShapeLayer, CACurrentMediaTime, CGPathAddLineToPoint,
+                            CGPathCloseSubpath, CGPathCreateMutable, CGPathMoveToPoint)
         seconds = glimmer_seconds(reduce)
         self._glimmer_started = time.time()
         old = getattr(self, "_glimmer_panel", None)
         if old is not None:
             old.orderOut_(None)
+        pad = GLIMMER_PAD
         style = NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel
-        panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(NSMakeRect(x, y, w, h), style,
-                                                                              NSBackingStoreBuffered, False)
+        panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
+            NSMakeRect(x - pad, y - pad, w + 2 * pad, h + 2 * pad), style, NSBackingStoreBuffered, False)
         panel.setLevel_(BAR_LEVEL + 1)
         panel.setOpaque_(False)
         panel.setBackgroundColor_(NSColor.clearColor())
@@ -6999,18 +7008,38 @@ class AppDelegate(NSObject):
         panel.setReleasedWhenClosed_(False)
         panel.setCollectionBehavior_(BAR_COLLECTION)
         panel.setSharingType_(0)  # NSWindowSharingNone: not readable by any screen capture, even a later one
-        content = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, w, h))
+        content = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, w + 2 * pad, h + 2 * pad))
         content.setWantsLayer_(True)
-        layer = content.layer()
+        root = content.layer()
         panel.setContentView_(content)
-        white = lambda a: NSColor.colorWithCalibratedWhite_alpha_(1.0, a).CGColor()
-        if reduce:
-            layer.setBackgroundColor_(white(GLIMMER_REDUCED_ALPHA))  # steady and brief, no sweep
-        else:
-            layer.setBackgroundColor_(white(GLIMMER_BASE_ALPHA))
+
+        def color(rgb, alpha):
+            return NSColor.colorWithCalibratedRed_green_blue_alpha_(*rgba(rgb, alpha)).CGColor()
+
+        # The wash, border and glow.
+        box = CALayer.layer()
+        box.setFrame_(NSMakeRect(pad, pad, w, h))
+        box.setBackgroundColor_(color(WASH_RGB, GLIMMER_REDUCED_WASH_ALPHA if reduce else GLIMMER_WASH_ALPHA))
+        box.setBorderWidth_(GLIMMER_BORDER_WIDTH)
+        box.setBorderColor_(color(BORDER_RGB, GLIMMER_BORDER_ALPHA))
+        box.setShadowColor_(color(BORDER_RGB, 1.0))
+        box.setShadowOpacity_(GLIMMER_GLOW_OPACITY)
+        box.setShadowRadius_(GLIMMER_GLOW_RADIUS)
+        box.setShadowOffset_((0.0, 0.0))
+        root.addSublayer_(box)
+        if not reduce:
+            appear = CABasicAnimation.animationWithKeyPath_("opacity")
+            appear.setFromValue_(0.0)
+            appear.setToValue_(1.0)
+            appear.setDuration_(0.08)
+            box.addAnimation_forKey_(appear, "glimmerAppear")
+            # The shimmer sweep, clipped to the region.
+            clip = CALayer.layer()
+            clip.setFrame_(NSMakeRect(pad, pad, w, h))
+            clip.setMasksToBounds_(True)
             band = CAGradientLayer.layer()
-            band.setFrame_(layer.bounds())
-            band.setColors_([white(0.0), white(GLIMMER_BAND_ALPHA), white(0.0)])
+            band.setFrame_(clip.bounds())
+            band.setColors_([color(BAND_RGB, 0.0), color(BAND_RGB, GLIMMER_BAND_ALPHA), color(BAND_RGB, 0.0)])
             band.setStartPoint_((0.0, 0.5))
             band.setEndPoint_((1.0, 0.5))
             start = (-GLIMMER_BAND, -GLIMMER_BAND / 2.0, 0.0)
@@ -7019,10 +7048,44 @@ class AppDelegate(NSObject):
             sweep = CABasicAnimation.animationWithKeyPath_("locations")
             sweep.setFromValue_(list(start))
             sweep.setToValue_(list(end))
-            sweep.setDuration_(seconds * 0.8)
+            sweep.setDuration_(seconds * 0.75)
             sweep.setTimingFunction_(CAMediaTimingFunction.functionWithName_("easeInEaseOut"))
             band.addAnimation_forKey_(sweep, "glimmerSweep")
-            layer.addSublayer_(band)
+            clip.addSublayer_(band)
+            root.addSublayer_(clip)
+            # Cyan sparkles near the edges and corners, twinkling in turn.
+            now = CACurrentMediaTime()
+            for spec in sparkle_specs(w, h, seconds):
+                path = CGPathCreateMutable()
+                points = star_points(spec["size"])
+                CGPathMoveToPoint(path, None, points[0][0], points[0][1])
+                for px, py in points[1:]:
+                    CGPathAddLineToPoint(path, None, px, py)
+                CGPathCloseSubpath(path)
+                star = CAShapeLayer.layer()
+                star.setPath_(path)
+                star.setPosition_((pad + spec["x"], pad + spec["y"]))
+                star.setFillColor_(color(SPARKLE_RGB, 1.0))
+                star.setShadowColor_(color(SPARKLE_RGB, 1.0))
+                star.setShadowOpacity_(0.9)
+                star.setShadowRadius_(3.0)
+                star.setShadowOffset_((0.0, 0.0))
+                star.setOpacity_(0.0)
+                glow = CAKeyframeAnimation.animationWithKeyPath_("opacity")
+                glow.setValues_([0.0, 1.0, 0.0])
+                glow.setKeyTimes_([0.0, 0.4, 1.0])
+                grow = CAKeyframeAnimation.animationWithKeyPath_("transform.scale")
+                grow.setValues_([0.3, 1.0, 0.3])
+                grow.setKeyTimes_([0.0, 0.4, 1.0])
+                twinkle = CAAnimationGroup.animation()
+                twinkle.setAnimations_([glow, grow])
+                twinkle.setDuration_(spec["life"])
+                twinkle.setBeginTime_(now + spec["delay"])
+                twinkle.setFillMode_("both")
+                twinkle.setRemovedOnCompletion_(False)
+                star.addAnimation_forKey_(twinkle, "glimmerTwinkle")
+                root.addSublayer_(star)
+        # A smooth fade over the last 40% of the glimmer.
         fade = CABasicAnimation.animationWithKeyPath_("opacity")
         fade.setFromValue_(1.0)
         fade.setToValue_(0.0)
@@ -7030,7 +7093,7 @@ class AppDelegate(NSObject):
         fade.setDuration_(seconds * 0.4)
         fade.setFillMode_("both")
         fade.setRemovedOnCompletion_(False)
-        layer.addAnimation_forKey_(fade, "glimmerFade")
+        root.addAnimation_forKey_(fade, "glimmerFade")
         self._glimmer_panel = panel
         panel.orderFrontRegardless()
         self.performSelector_withObject_afterDelay_("captureGlimmerEnd:", panel, seconds + 0.05)
