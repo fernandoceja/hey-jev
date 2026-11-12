@@ -58,7 +58,7 @@ class BubbleWiringTests(unittest.TestCase):
 
     def test_the_popover_hides_the_bubble_label_while_docked(self):
         layout = _func(self.ui, "_layout_mini_bar")
-        self.assertIn("label.setHidden_(docked)", layout)
+        self.assertIn("label.setHidden_(docked or", layout)  # docked hides it; the offer buttons can also move it aside
         self.assertIn("self._orb_bubble_docked()", layout)
 
     def test_the_bubble_frame_is_clamped_inside_the_popover(self):
