@@ -103,7 +103,7 @@ from AppKit import (
 )
 from Foundation import NSSelectorFromString, NSStringFromSelector
 from Foundation import NSProcessInfo
-from Foundation import NSValue, NSInsetRect, NSAttributedString, NSMutableAttributedString, NSString, NSMakeSize, NSObject, NSURL, NSTimer, NSUserDefaults, NSDate, NSDefaultRunLoopMode
+from Foundation import NSDistributedNotificationCenter, NSProcessInfo, NSValue, NSInsetRect, NSAttributedString, NSMutableAttributedString, NSString, NSMakeSize, NSObject, NSURL, NSTimer, NSUserDefaults, NSDate, NSDefaultRunLoopMode
 from assistant_layout import (
     DEFAULT_H,
     DEFAULT_W,
@@ -202,6 +202,10 @@ from orb_motion import (
 )
 from orb_motion import peek_edge_allowed  # PR 8: a tuck never sits on a shared display edge
 from orb_motion import dock_strip, rects_overlap
+from capture_glimmer import (DragTracker, GLIMMER_BAND, GLIMMER_BASE_ALPHA, GLIMMER_BAND_ALPHA, GLIMMER_POLL_SECONDS,
+                             GLIMMER_REDUCED_ALPHA, glimmer_seconds, panel_delay)
+from hotkey_helper import (LoginItemHelper, SHOW_ORB_NOTIFICATION, is_on as helper_is_on, show_orb_requested,
+                           status_text as helper_status_text)
 from orb_character import disk_check, is_thanks, lookup_reaction, reaction_for_status, rough_drag
 from orb_tuck import (TUCK_CLOSE_SIZE, TUCK_FADE_IN_SECONDS, TUCK_FADE_OUT_SECONDS, TUCK_KEY, TUCK_SECONDS,
                       decode_tuck, encode_tuck, tuck_close_centre, tuck_edge, tuck_eye_centres, tucked_frame,
@@ -1656,6 +1660,13 @@ class AppDelegate(NSObject):
         ok_type, type_detail = self.type_hotkey.register()
         print("orb hotkey: registered ctrl-opt-J" if ok_type else "orb hotkey: not registered ({0})".format(type_detail),
               flush=True)
+        from commands.captures import set_area_hooks
+        set_area_hooks(self._glimmer_begin, self._glimmer_finish)  # the glimmer over an area capture's region
+        # The Ctrl-Option-J helper tells a running Jev through this notification, and launches a closed Jev with --show-orb.
+        NSDistributedNotificationCenter.defaultCenter().addObserver_selector_name_object_(
+            self, "showOrbRequested:", SHOW_ORB_NOTIFICATION, None)
+        if show_orb_requested(list(sys.argv) + [str(a) for a in NSProcessInfo.processInfo().arguments()]):
+            self.performSelector_withObject_afterDelay_("showOrbRequested:", None, 1.5)
         self._sync_mini_bar()
         self._hold_option_blocked = self.global_monitor is None or not self._accessibility_trusted()
         if missing_secrets():
@@ -2004,6 +2015,18 @@ class AppDelegate(NSObject):
         self.mini_toggle.setAction_("miniBarChanged:")
         self.mini_toggle.setState_(1 if self.bar.enabled else 0)
         page.addSubview_(self.mini_toggle)
+        self.hot_name = label("Ctrl-Option-J when Jev is closed", NSMakeRect(0, 0, 10, 10), 14, weight=0.6)
+        self.hot_hint = label("A small helper opens Jev when you press the hotkey and Jev is not running.",
+                              NSMakeRect(0, 0, 10, 10), 11, NSColor.secondaryLabelColor(), 0.0)
+        self.hot_toggle = NSButton.alloc().initWithFrame_(NSMakeRect(0, 0, 10, 10))
+        self.hot_toggle.setButtonType_(3)  # switch
+        self.hot_toggle.setTitle_("Open Jev with Ctrl-Option-J even when it is closed")
+        self.hot_toggle.setTarget_(self)
+        self.hot_toggle.setAction_("hotkeyHelperChanged:")
+        self.hot_status = label("", NSMakeRect(0, 0, 10, 10), 11, NSColor.secondaryLabelColor(), 0.0)
+        for view in (self.hot_name, self.hot_hint, self.hot_toggle, self.hot_status):
+            page.addSubview_(view)
+        self._refresh_hotkey_helper_row()
         self.update_name = label("Updates", NSMakeRect(0, 0, 10, 10), 14, weight=0.6)
         self.update_hint = label("Checks henryklunaris/hey-jev. Nothing is downloaded.", NSMakeRect(0, 0, 10, 10), 11,
                                  NSColor.secondaryLabelColor(), 0.0)
@@ -2187,6 +2210,10 @@ class AppDelegate(NSObject):
             _place(self.mini_name, page["mini_name"])
             _place(self.mini_hint, page["mini_hint"])
             _place(self.mini_toggle, page["mini_toggle"])
+            _place(self.hot_name, page["hot_name"])
+            _place(self.hot_hint, page["hot_hint"])
+            _place(self.hot_toggle, page["hot_toggle"])
+            _place(self.hot_status, page["hot_status"])
             _place(self.update_name, page["update_name"])
             _place(self.update_hint, page["update_hint"])
             _place(self.update_button, page["update_button"])
@@ -3199,6 +3226,27 @@ class AppDelegate(NSObject):
         self._expanded_size = (w, h)
         self._pill_frame_collapsed = False
         NSUserDefaults.standardUserDefaults().setObject_forKey_(format_size(w, h), SIZE_KEY)
+
+    @objc.python_method
+    def _refresh_hotkey_helper_row(self):
+        helper = getattr(self, "_login_helper", None) or LoginItemHelper()
+        self._login_helper = helper
+        status = helper.status()
+        self.hot_toggle.setState_(1 if helper_is_on(status) else 0)
+        self.hot_status.setStringValue_(helper_status_text(status))
+
+    def hotkeyHelperChanged_(self, sender):
+        """The user's switch. Registering can make macOS ask for approval in Login Items; Jev never clicks that."""
+        helper = getattr(self, "_login_helper", None) or LoginItemHelper()
+        self._login_helper = helper
+        status, error = helper.set_enabled(sender.state() == 1)
+        print("hotkey helper: status={0}{1}".format(status, " error=" + error if error else ""), flush=True)
+        self._refresh_hotkey_helper_row()
+
+    def showOrbRequested_(self, _notification):
+        """The helper's hotkey press (or its launch with --show-orb): the same as pressing Control-Option-J here."""
+        print("orb hotkey: from helper", flush=True)
+        self.focusTypeField_(None)
 
     def miniBarChanged_(self, sender):
         enabled = sender.state() == 1
@@ -6909,9 +6957,102 @@ class AppDelegate(NSObject):
         x, y = place_bar(saved, screens, size)
         return (x, y, size[0], size[1])
 
+    # The capture glimmer. While macOS's crosshair is up, a watcher notes where the left button goes down and up. Once
+    # the image file is saved (so the glimmer can never be in the picture), that region flashes for about half a second.
+    @objc.python_method
+    def _glimmer_begin(self):
+        watcher = GlimmerWatcher()
+        watcher.start()
+        return watcher
+
+    @objc.python_method
+    def _glimmer_finish(self, watcher, path):
+        rect = watcher.stop()
+        if not path or rect is None:
+            return
+        reduce = bool(getattr(getattr(self, "orb_view", None), "reduceMotion", False))
+        print("  capture glimmer: {0:.0f},{1:.0f} {2:.0f}x{3:.0f}".format(*rect), flush=True)
+        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+            "captureGlimmer:", json.dumps({"rect": list(rect), "reduce": reduce}), False)
+
+    def captureGlimmer_(self, payload):
+        try:
+            info = json.loads(str(payload))
+            x, y, w, h = [float(v) for v in info["rect"]]
+            reduce = bool(info.get("reduce"))
+        except (ValueError, KeyError, TypeError):
+            return
+        from Quartz import CABasicAnimation, CAGradientLayer, CAMediaTimingFunction, CACurrentMediaTime
+        seconds = glimmer_seconds(reduce)
+        self._glimmer_started = time.time()
+        old = getattr(self, "_glimmer_panel", None)
+        if old is not None:
+            old.orderOut_(None)
+        style = NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel
+        panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(NSMakeRect(x, y, w, h), style,
+                                                                              NSBackingStoreBuffered, False)
+        panel.setLevel_(BAR_LEVEL + 1)
+        panel.setOpaque_(False)
+        panel.setBackgroundColor_(NSColor.clearColor())
+        panel.setHasShadow_(False)
+        panel.setIgnoresMouseEvents_(True)
+        panel.setReleasedWhenClosed_(False)
+        panel.setCollectionBehavior_(BAR_COLLECTION)
+        panel.setSharingType_(0)  # NSWindowSharingNone: not readable by any screen capture, even a later one
+        content = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, w, h))
+        content.setWantsLayer_(True)
+        layer = content.layer()
+        panel.setContentView_(content)
+        white = lambda a: NSColor.colorWithCalibratedWhite_alpha_(1.0, a).CGColor()
+        if reduce:
+            layer.setBackgroundColor_(white(GLIMMER_REDUCED_ALPHA))  # steady and brief, no sweep
+        else:
+            layer.setBackgroundColor_(white(GLIMMER_BASE_ALPHA))
+            band = CAGradientLayer.layer()
+            band.setFrame_(layer.bounds())
+            band.setColors_([white(0.0), white(GLIMMER_BAND_ALPHA), white(0.0)])
+            band.setStartPoint_((0.0, 0.5))
+            band.setEndPoint_((1.0, 0.5))
+            start = (-GLIMMER_BAND, -GLIMMER_BAND / 2.0, 0.0)
+            end = (1.0, 1.0 + GLIMMER_BAND / 2.0, 1.0 + GLIMMER_BAND)
+            band.setLocations_(list(start))
+            sweep = CABasicAnimation.animationWithKeyPath_("locations")
+            sweep.setFromValue_(list(start))
+            sweep.setToValue_(list(end))
+            sweep.setDuration_(seconds * 0.8)
+            sweep.setTimingFunction_(CAMediaTimingFunction.functionWithName_("easeInEaseOut"))
+            band.addAnimation_forKey_(sweep, "glimmerSweep")
+            layer.addSublayer_(band)
+        fade = CABasicAnimation.animationWithKeyPath_("opacity")
+        fade.setFromValue_(1.0)
+        fade.setToValue_(0.0)
+        fade.setBeginTime_(CACurrentMediaTime() + seconds * 0.6)
+        fade.setDuration_(seconds * 0.4)
+        fade.setFillMode_("both")
+        fade.setRemovedOnCompletion_(False)
+        layer.addAnimation_forKey_(fade, "glimmerFade")
+        self._glimmer_panel = panel
+        panel.orderFrontRegardless()
+        self.performSelector_withObject_afterDelay_("captureGlimmerEnd:", panel, seconds + 0.05)
+
+    def captureGlimmerEnd_(self, panel):
+        panel.orderOut_(None)
+        if getattr(self, "_glimmer_panel", None) is panel:
+            self._glimmer_panel = None
+
+    def showChoicesAfterGlimmer_(self, _sender):
+        self._choices_delayed = False
+        self._show_capture_choices()
+
     @objc.python_method
     def _show_capture_choices(self):
         """Floating thumbnail and actions. Shown even when the main window is up and the pill is hidden."""
+        reduce = bool(getattr(getattr(self, "orb_view", None), "reduceMotion", False))
+        wait = panel_delay(getattr(self, "_glimmer_started", 0.0), time.time(), reduce)
+        if wait > 0.0 and not getattr(self, "_choices_delayed", False):
+            self._choices_delayed = True  # the panel waits for the glimmer to finish, then comes back here
+            self.performSelector_withObject_afterDelay_("showChoicesAfterGlimmer:", None, wait)
+            return
         import commands
         from commands.captures import BOOK
         last = BOOK.last or {}
@@ -7204,8 +7345,13 @@ class AppDelegate(NSObject):
         if hidden:
             self.bar.reveal()
             self._apply_bar_visibility()
+        if not self.bar.should_show() and self.bar.hotkey_can_clear_the_way():
+            # The Home window is the only thing hiding the orb. The hotkey means "bring up Jev", so tuck Home away.
+            print("orb hotkey: minimizing the Home window", flush=True)
+            self.panel.miniaturize_(None)
+            self._sync_mini_bar()
         if not self.bar.should_show():
-            return  # the main window is on screen, so the orb stays hidden by design
+            return  # the orb is turned off in Settings, or Jev is quitting
         if tucked:
             self._tuck_untuck("hotkey", instant=True)
         self.expandMiniBar_(None)
@@ -7736,6 +7882,34 @@ def run_app():
     delegate = AppDelegate.alloc().init()
     app.setDelegate_(delegate)
     app.run()
+
+
+class GlimmerWatcher:
+    """Samples the pointer on a background thread while the capture crosshair is up and keeps the drag's rectangle."""
+
+    def __init__(self):
+        self._tracker = DragTracker()
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def start(self):
+        self._thread.start()
+
+    def _run(self):
+        try:
+            from AppKit import NSEvent
+        except Exception:
+            return
+        while not self._stop.is_set():
+            point = NSEvent.mouseLocation()
+            pressed = bool(int(NSEvent.pressedMouseButtons()) & 1)
+            self._tracker.feed((float(point.x), float(point.y)), pressed)
+            self._stop.wait(GLIMMER_POLL_SECONDS)
+
+    def stop(self):
+        self._stop.set()
+        self._thread.join(timeout=0.5)
+        return self._tracker.rect()
 
 
 class CaptureChoicePanel(NSPanel):

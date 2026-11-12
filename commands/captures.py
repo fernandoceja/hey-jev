@@ -177,6 +177,38 @@ def _saved_sentence(kind, path):
     return "Saved {0} to {1}.".format(labels.get(kind, "a screenshot"), folder)
 
 
+# The UI can watch an area selection and flash the chosen region once the file is saved. commands stays free of
+# AppKit: the UI sets these two hooks. begin() returns a watcher. finish(watcher, path) gets the saved path, or
+# None when the capture was cancelled or failed. Both are optional and must never break a capture.
+AREA_HOOKS = {"begin": None, "finish": None}
+
+
+def set_area_hooks(begin, finish):
+    AREA_HOOKS["begin"] = begin
+    AREA_HOOKS["finish"] = finish
+
+
+def _area_begin(mode):
+    begin = AREA_HOOKS.get("begin")
+    if mode != "area" or begin is None:
+        return None
+    try:
+        return begin()
+    except Exception as exc:
+        print("  capture glimmer: could not start watching ({0})".format(exc))
+        return None
+
+
+def _area_finish(watcher, path):
+    finish = AREA_HOOKS.get("finish")
+    if finish is None or watcher is None:
+        return
+    try:
+        finish(watcher, path)
+    except Exception as exc:
+        print("  capture glimmer: failed ({0})".format(exc))
+
+
 def take_screenshot(mode="full", folder=None, when=None, run=None, book=None, env=None):
     """Capture the screen. mode is full, area, or window."""
     mode = mode if mode in ("full", "area", "window") else "full"
@@ -186,9 +218,11 @@ def take_screenshot(mode="full", folder=None, when=None, run=None, book=None, en
     path = os.path.join(dest, capture_name("screenshot", mode, when))
     runner = run or _run_capture
     timeout = 30 if mode == "full" else 180
+    watcher = _area_begin(mode)
     try:
         runner(screenshot_command(mode, path), timeout=timeout)
     except Exception as exc:
+        _area_finish(watcher, None)
         detail = str(exc).strip() or "command failed"
         if _is_area_cancel(mode, detail):
             return "Cancelled."  # quiet: a cancelled or zero-size selection is not a failure
@@ -203,6 +237,7 @@ def take_screenshot(mode="full", folder=None, when=None, run=None, book=None, en
         return "Couldn't take a screenshot."
     target = book if book is not None else BOOK
     target.remember(path, "screenshot")
+    _area_finish(watcher, path)  # the file is written, so the glimmer can never be in the picture
     return _saved_sentence(mode, path)
 
 
