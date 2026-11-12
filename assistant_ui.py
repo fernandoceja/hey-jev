@@ -232,7 +232,7 @@ from orb_motion import (
 )
 from mini_bar import FIND_IMAGE_HINT, TYPE_KEY_CODE, capture_outcome, menu_on_drop, orb_action_menu
 from mini_bar import TRANSLATE_CHIP_ID, set_translate_chip, translate_chip_on  # PR 8b
-from mini_bar import greeting_bubble_frame, orb_bubble_log_line
+from mini_bar import greeting_bubble_frame, offer_button_origins, orb_bubble_log_line
 import full_window as fw
 import at_picker as atp
 from ptt import PushToTalk
@@ -2642,17 +2642,7 @@ class AppDelegate(NSObject):
     def _show_brief_offer_buttons(self, show):
         """The offer's buttons, on the popover (and pill) and on the full window. They hide again when the window runs out."""
         self._brief_offer_showing = bool(show)
-        if show or getattr(self, "_brief_buttons", None) is not None:
-            root = self.mini_panel.contentView()
-            audio, no_thanks = self._offer_button_pair(root, "_brief_buttons")
-            if show:
-                bounds = root.bounds()
-                top = float(bounds.size.height) - 34.0
-                right = float(bounds.size.width) - 12.0
-                no_thanks.setFrameOrigin_(NSMakePoint(right - 96.0, top))
-                audio.setFrameOrigin_(NSMakePoint(right - 96.0 - 8.0 - 96.0, top))
-            audio.setHidden_(not show)
-            no_thanks.setHidden_(not show)
+        self._place_mini_offer_buttons()
         if show or getattr(self, "_full_brief_buttons", None) is not None:
             full_audio, full_no = self._offer_full_pair()
             if full_audio is not None:
@@ -2662,6 +2652,26 @@ class AppDelegate(NSObject):
                 full_no.setHidden_(not show)
         if show:
             self.performSelector_withObject_afterDelay_("hideBriefOfferButtons:", None, OFFER_WINDOW_SECONDS)
+
+    @objc.python_method
+    def _place_mini_offer_buttons(self):
+        """The offer's buttons on the orb's panel. They show only while the panel is wide enough to hold both inside
+        its bounds (the open pill). On the collapsed orb they are hidden, so no clipped fragment is left beside it."""
+        showing = bool(getattr(self, "_brief_offer_showing", False))
+        if not showing and getattr(self, "_brief_buttons", None) is None:
+            return
+        root = self.mini_panel.contentView()
+        audio, no_thanks = self._offer_button_pair(root, "_brief_buttons")
+        bounds = root.bounds()
+        origins = offer_button_origins(float(bounds.size.width), float(bounds.size.height)) if showing else None
+        if origins is None:
+            audio.setHidden_(True)
+            no_thanks.setHidden_(True)
+            return
+        audio.setFrameOrigin_(NSMakePoint(*origins["audio"]))
+        no_thanks.setFrameOrigin_(NSMakePoint(*origins["no_thanks"]))
+        audio.setHidden_(False)
+        no_thanks.setHidden_(False)
 
     @objc.python_method
     def _offer_full_pair(self):
@@ -7943,6 +7953,8 @@ class AppDelegate(NSObject):
         self._sync_recording_ui()
         self._sync_choice_dismiss()
         self._inline_sync()
+        if getattr(self, "_brief_offer_showing", False):
+            self._place_mini_offer_buttons()  # the pill opened, collapsed, tucked or docked: keep the buttons whole or hidden
         self._sync_action_menu_dismiss()
         self._sync_hint_dismiss()
         self._sync_zoe_ui()
