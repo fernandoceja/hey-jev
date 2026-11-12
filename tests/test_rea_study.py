@@ -48,7 +48,8 @@ def test_request_argv_logs_and_result(study, findings):
     assert 'findings.md' in argv[2] and 'ORIGINAL' in argv[2]
     assert argv[:2] == ['/claude', '-p']
     assert '--permission-mode' in argv and 'default' in argv
-    assert 'Write(/{}/**)'.format(result['output']) in argv
+    assert 'Edit(/{}/**)'.format(result['output']) in argv
+    assert not [arg for arg in argv if str(arg).startswith('Write(')]  # the current CLI rejects a Write(path) rule
     assert argv[argv.index('--tools') + 1] == 'Read,Glob,Grep,Write,Edit'
     kwargs = runner.popen.call_args.kwargs
     assert kwargs['cwd'] == str(runner.repo) and kwargs['start_new_session']
@@ -174,3 +175,18 @@ def test_shared_surfaces():
     # The Home sidebar shares the same non-phrase action as the mini-bar.
     rows, _ = sidebar_items()
     assert any(row.get('action') == ('quick', 'rea_research') for row in rows)
+
+
+def test_file_permission_rules_are_edit_only_in_every_rea_runner():
+    """The current Claude CLI matches file permission rules only as Edit(path) and rejects Write(path) with
+    "not matched by file permission checks". An Edit rule already covers Write, so no runner may pass a Write rule."""
+    import pathlib
+    import re
+    root = pathlib.Path(__file__).resolve().parent.parent / 'commands'
+    for name in ('rea_study.py', 'rea_builder.py', 'rea_existing.py'):
+        source = (root / name).read_text(encoding='utf-8')
+        code = '\n'.join(line for line in source.splitlines() if not line.lstrip().startswith('#'))
+        code = re.sub(r'#.*', '', code)
+        assert "'Write(" not in code and '"Write(' not in code, name
+        assert "'Edit(" in code, name
+        assert "'--tools', 'Read,Glob,Grep,Write,Edit'" in code, name  # the builtin tool set is unchanged
