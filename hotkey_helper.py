@@ -18,7 +18,7 @@ _STATUS_TEXT = {
     NOT_REGISTERED: "Off",
     ENABLED: "On. Ctrl-Option-J opens Jev even when it is closed.",
     REQUIRES_APPROVAL: "Waiting for your approval: System Settings > General > Login Items & Extensions.",
-    NOT_FOUND: "Not available in this build. Run scripts/build_hotkey_helper.sh, then rebuild and sign.",
+    NOT_FOUND: "Not available yet. Run scripts/build_hotkey_helper.sh, then scripts/sign_local.sh (macOS ignores ad-hoc signed apps here), then reopen Jev.",
 }
 
 

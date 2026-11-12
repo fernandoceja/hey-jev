@@ -186,6 +186,16 @@ class HotkeyBehaviourTests(unittest.TestCase):
         self.assertLess(body.index("miniaturize_"), body.index("self.expandMiniBar_(None)"))
         self.assertIn("if docked:", body)  # the docked full window is still left alone
 
+    def test_the_tucked_state_is_read_again_after_home_is_cleared(self):
+        body = _func(self.ui(), "focusTypeField_")
+        clear = body[body.index("miniaturize_"):body.index("if tucked:")]
+        self.assertIn("tucked = self._tuck_active()", clear)
+
+    def test_the_not_found_message_points_at_building_and_signing(self):
+        text = hh.status_text(hh.NOT_FOUND)
+        self.assertIn("build_hotkey_helper.sh", text)
+        self.assertIn("sign_local.sh", text)
+
     def ui(self):
         return _source("assistant_ui.py")
 
