@@ -232,7 +232,7 @@ from orb_motion import (
 )
 from mini_bar import FIND_IMAGE_HINT, TYPE_KEY_CODE, capture_outcome, menu_on_drop, orb_action_menu
 from mini_bar import TRANSLATE_CHIP_ID, set_translate_chip, translate_chip_on  # PR 8b
-from mini_bar import greeting_bubble_frame, offer_button_origins, orb_bubble_log_line
+from mini_bar import greeting_bubble_frame, offer_button_origins, offer_covers_greeting, orb_bubble_log_line
 import full_window as fw
 import at_picker as atp
 from ptt import PushToTalk
@@ -2664,14 +2664,39 @@ class AppDelegate(NSObject):
         audio, no_thanks = self._offer_button_pair(root, "_brief_buttons")
         bounds = root.bounds()
         origins = offer_button_origins(float(bounds.size.width), float(bounds.size.height)) if showing else None
+        label = getattr(self, "greeting_label", None)
         if origins is None:
             audio.setHidden_(True)
             no_thanks.setHidden_(True)
+            self._restore_greeting_after_offer()
             return
         audio.setFrameOrigin_(NSMakePoint(*origins["audio"]))
         no_thanks.setFrameOrigin_(NSMakePoint(*origins["no_thanks"]))
         audio.setHidden_(False)
         no_thanks.setHidden_(False)
+        if label is not None and offer_covers_greeting(origins, self._greeting_frame_now()):
+            label.setHidden_(True)  # the greeting steps aside, so the offer is never under it
+            self._greeting_hidden_for_offer = True
+        else:
+            self._restore_greeting_after_offer()
+
+    @objc.python_method
+    def _greeting_frame_now(self):
+        label = getattr(self, "greeting_label", None)
+        if label is None:
+            return None
+        frame = label.frame()
+        return (float(frame.origin.x), float(frame.origin.y), float(frame.size.width), float(frame.size.height))
+
+    @objc.python_method
+    def _restore_greeting_after_offer(self):
+        """The offer's buttons are gone, so the greeting comes back (unless a docked orb has no bubble)."""
+        if not getattr(self, "_greeting_hidden_for_offer", False):
+            return
+        self._greeting_hidden_for_offer = False
+        label = getattr(self, "greeting_label", None)
+        if label is not None:
+            label.setHidden_(self._orb_bubble_docked())
 
     @objc.python_method
     def _offer_full_pair(self):
@@ -5073,7 +5098,7 @@ class AppDelegate(NSObject):
             bubble.solidFill = chrome.get("material") == "solid"
             bubble.setNeedsDisplay_(True)
         if label is not None:
-            label.setHidden_(docked)  # PR 8c: a docked orb has no bubble; the full-window chat shows the message
+            label.setHidden_(docked or bool(getattr(self, "_greeting_hidden_for_offer", False)))  # PR 8c: a docked orb has no bubble; the greeting also steps aside for the offer buttons
             label.setStringValue_(greeting_text())
             _place(label, (gx + 8.0, gy + 6.0, max(40.0, gw - 16.0), max(16.0, gh - 12.0)))
         self._log_orb_bubble(greeting_text(), docked)
@@ -5212,7 +5237,8 @@ class AppDelegate(NSObject):
         visible = (panel.isVisible() or docked) and (self.bar.should_show() or docked)
         label = getattr(self, "greeting_label", None)
         if label is not None:
-            label.setHidden_(docked or bool(getattr(self, "pillCollapsed", False)))
+            label.setHidden_(docked or bool(getattr(self, "pillCollapsed", False))
+                             or bool(getattr(self, "_greeting_hidden_for_offer", False)))  # the offer buttons keep it aside
             self._log_orb_bubble(greeting_text(), docked)
         orb.configure(state, bool(getattr(self, "option_down", False)),
                       getattr(self, "_meter_unit", 0.0), visible,

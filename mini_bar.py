@@ -1460,6 +1460,23 @@ def offer_button_origins(width, height):
     return {"audio": (audio_x, top), "no_thanks": (no_x, top)}
 
 
+def rects_overlap(a, b):
+    """True when two (x, y, w, h) rectangles share any area."""
+    ax, ay, aw, ah = (float(v) for v in a)
+    bx, by, bw, bh = (float(v) for v in b)
+    return ax < bx + bw and bx < ax + aw and ay < by + bh and by < ay + ah
+
+
+def offer_covers_greeting(origins, greeting_frame):
+    """True when the offer buttons (from offer_button_origins) would sit on the popover's greeting text. Then the greeting
+    steps aside while the offer is showing, so "Play audio" is never hidden under it."""
+    if not origins or not greeting_frame:
+        return False
+    h = 24.0  # the buttons' height
+    return any(rects_overlap((origins[key][0], origins[key][1], OFFER_BUTTON_W, h), greeting_frame)
+               for key in ("audio", "no_thanks"))
+
+
 def orb_bubble_log_line(text, docked):
     """What the orb's speech bubble would show, and whether it was held back because the orb is docked."""
     if docked:

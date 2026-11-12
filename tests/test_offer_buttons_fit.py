@@ -54,6 +54,47 @@ class OfferButtonOriginTests(unittest.TestCase):
             self.assertIsNone(mb.offer_button_origins(bad, 100.0))
 
 
+class GreetingOverlapTests(unittest.TestCase):
+    """The bug: in the open popover "Play audio" sat under the greeting text at the top."""
+
+    def _popover(self):
+        layout = mb.popover_subframes((300.0, 400.0, 420.0, 44.0), (0.0, 0.0, 1710.0, 1107.0))
+        _px, _py, pw, ph = layout["panel"]
+        return layout, mb.offer_button_origins(pw, ph)
+
+    def test_in_the_default_popover_the_offer_row_lands_on_the_greeting(self):
+        layout, origins = self._popover()
+        self.assertIsNotNone(origins)
+        self.assertTrue(mb.offer_covers_greeting(origins, layout["greeting"]))  # the overlap that hid Play audio
+
+    def test_so_the_greeting_must_step_aside_and_comes_back_after(self):
+        wiring = _func(_ui(), "_place_mini_offer_buttons")
+        self.assertIn("offer_covers_greeting(origins, self._greeting_frame_now())", wiring)
+        self.assertIn("label.setHidden_(True)", wiring)
+        self.assertIn("self._restore_greeting_after_offer()", wiring)
+        restore = _func(_ui(), "_restore_greeting_after_offer")
+        self.assertIn("self._greeting_hidden_for_offer = False", restore)
+        self.assertIn("label.setHidden_(self._orb_bubble_docked())", restore)  # a docked orb still has no greeting
+
+    def test_neither_layout_nor_the_orb_sync_brings_the_greeting_back_while_the_offer_shows(self):
+        """The orb sync runs on every status update and also sets the greeting's visibility; both must respect the flag."""
+        ui = _ui()
+        for name in ("_layout_mini_bar", "_sync_orb"):
+            body = _func(ui, name)
+            self.assertIn('bool(getattr(self, "_greeting_hidden_for_offer", False))', body, name)
+
+    def test_nothing_changes_when_there_are_no_buttons_or_no_greeting(self):
+        self.assertFalse(mb.offer_covers_greeting(None, (0, 0, 10, 10)))
+        self.assertFalse(mb.offer_covers_greeting({"audio": (0, 0), "no_thanks": (200, 0)}, None))
+
+    def test_the_overlap_test_is_a_real_rectangle_test(self):
+        self.assertTrue(mb.rects_overlap((0, 0, 10, 10), (5, 5, 10, 10)))
+        self.assertFalse(mb.rects_overlap((0, 0, 10, 10), (10, 0, 10, 10)))  # touching edges do not overlap
+        self.assertFalse(mb.rects_overlap((0, 0, 10, 10), (0, 20, 10, 10)))
+        origins = {"audio": (232.0, 210.0), "no_thanks": (340.0, 210.0)}
+        self.assertFalse(mb.offer_covers_greeting(origins, (0.0, 100.0, 200.0, 34.0)))  # greeting elsewhere: untouched
+
+
 class WiringTests(unittest.TestCase):
     def setUp(self):
         self.ui = _ui()
