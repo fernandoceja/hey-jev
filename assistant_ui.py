@@ -7350,6 +7350,7 @@ class AppDelegate(NSObject):
             print("orb hotkey: minimizing the Home window", flush=True)
             self.panel.miniaturize_(None)
             self._sync_mini_bar()
+            tucked = self._tuck_active()  # showing the orb can restore it tucked at its screen edge
         if not self.bar.should_show():
             return  # the orb is turned off in Settings, or Jev is quitting
         if tucked:
