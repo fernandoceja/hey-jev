@@ -66,7 +66,7 @@ def test_builder(rea_request, study, tmp_path):
     repo = tmp_path / 'dev/my-app'
     assert runner.popen.call_args.kwargs['cwd'] == str(repo)
     assert 'mcp__rea__*' not in argv
-    assert 'Write(/{}/**)'.format(repo) in argv
+    assert not [arg for arg in argv if str(arg).startswith('Write(')]  # the current CLI rejects a Write(path) rule
     assert 'Edit(/{}/**)'.format(repo) in argv
     assert runner.run.call_args.args[0] == ['git', 'init']
     assert str(target) not in argv[2]

@@ -232,7 +232,7 @@ def test_worktree_build(rea_request, study, tmp_path, changed):
     argv = runner.popen.call_args.args[0]
     destination = root / 'hey-jev-tabs'
     assert runner.popen.call_args.kwargs['cwd'] == str(destination)
-    assert argv == ['/claude', '-p', argv[2], '--permission-mode', 'default', '--tools', 'Read,Glob,Grep,Write,Edit', '--allowedTools', 'Read', 'Glob', 'Grep', 'Write(/' + str(destination) + '/**)', 'Edit(/' + str(destination) + '/**)', '--disallowedTools', 'Bash', 'mcp__rea__*', '--setting-sources', '', '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}']
+    assert argv == ['/claude', '-p', argv[2], '--permission-mode', 'default', '--tools', 'Read,Glob,Grep,Write,Edit', '--allowedTools', 'Read', 'Glob', 'Grep', 'Edit(/' + str(destination) + '/**)', '--disallowedTools', 'Bash', 'mcp__rea__*', '--setting-sources', '', '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}']
     assert str(rea_request) not in argv[2]
     assert not any('push' in cmd for cmd in commands)
     assert (['git', '-C', str(destination), 'commit', '-m', 'Implement REA tabs'] in commands) == changed

@@ -68,7 +68,7 @@ def start_new_app(request, slug, callback, developer=DEVELOPER, runner=STUDY,
                   'Write only inside this new repo. Write README.md and NEXT_STEPS.md. Do not use REA.')
         scope = '/' + str(destination) + '/**'
         flags = ['--permission-mode', 'default', '--tools', 'Read,Glob,Grep,Write,Edit',
-                 '--allowedTools', 'Read', 'Glob', 'Grep', 'Write({})'.format(scope), 'Edit({})'.format(scope)]
+                 '--allowedTools', 'Read', 'Glob', 'Grep', 'Edit({})'.format(scope)]  # Edit(path) covers Write; a Write(path) rule is rejected
         (destination / 'builder-note.md').write_text(prompt + '\nPermission flags: ' + repr(flags) + '\n', encoding='utf-8')
         runner.logs.mkdir(parents=True, exist_ok=True)
         log = runner.logs / ('builder-' + slug + '.log')

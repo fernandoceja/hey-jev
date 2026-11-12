@@ -152,7 +152,7 @@ def _start(request, repo, slug, callback, runner=STUDY, root=None, platform=None
               'Write only within this worktree. Document missing dependencies in NEXT_STEPS.md.')
     scope = '/' + str(destination) + '/**'
     flags = ['--permission-mode', 'default', '--tools', 'Read,Glob,Grep,Write,Edit',
-             '--allowedTools', 'Read', 'Glob', 'Grep', 'Write(' + scope + ')', 'Edit(' + scope + ')',
+             '--allowedTools', 'Read', 'Glob', 'Grep', 'Edit(' + scope + ')',  # Edit(path) covers Write; a Write(path) rule is rejected
              '--disallowedTools', 'Bash', 'mcp__rea__*',
              '--setting-sources', '', '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}']
     runner.logs.mkdir(parents=True, exist_ok=True)

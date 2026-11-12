@@ -139,9 +139,10 @@ class Study:
                 (folder / 'request.md').write_text(prompt, encoding='utf-8')
                 # Claude absolute path tool patterns use // for filesystem-root paths.
                 scope = '/' + str(folder) + '/**'
+                # Current Claude CLIs match file permission rules only as Edit(path); an Edit rule covers every
+                # file-editing tool, Write included. A Write(path) allow rule is rejected, so none is passed.
                 flags = ['--permission-mode', 'default', '--tools', 'Read,Glob,Grep,Write,Edit',
-                         '--allowedTools', 'Read', 'Glob', 'Grep', 'Write({})'.format(scope),
-                         'Edit({})'.format(scope), 'mcp__rea__*']
+                         '--allowedTools', 'Read', 'Glob', 'Grep', 'Edit({})'.format(scope), 'mcp__rea__*']
                 argv = [cli, '-p', prompt] + flags
                 self.logs.mkdir(parents=True, exist_ok=True)
                 log = self.logs / (folder.name + '.log')
