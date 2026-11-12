@@ -7349,12 +7349,22 @@ class AppDelegate(NSObject):
             # The Home window is the only thing hiding the orb. The hotkey means "bring up Jev", so tuck Home away.
             print("orb hotkey: minimizing the Home window", flush=True)
             self.panel.miniaturize_(None)
-            self._sync_mini_bar()
-            tucked = self._tuck_active()  # showing the orb can restore it tucked at its screen edge
+            # Minimizing animates, so the window is not "minimized" yet. The orb and pill come up when it is.
+            self.performSelector_withObject_afterDelay_("hotkeyAfterClear:", None, 0.7)
+            return
         if not self.bar.should_show():
             return  # the orb is turned off in Settings, or Jev is quitting
         if tucked:
             self._tuck_untuck("hotkey", instant=True)
+        self.expandMiniBar_(None)
+
+    def hotkeyAfterClear_(self, _sender):
+        """Second half of Control-Option-J when Home was open: Home is minimized now, so show the orb and open the pill."""
+        self._sync_mini_bar()
+        if not self.bar.should_show():
+            return
+        if self._tuck_active():
+            self._tuck_untuck("hotkey", instant=True)  # showing the orb can restore it tucked at its screen edge
         self.expandMiniBar_(None)
 
     @objc.python_method

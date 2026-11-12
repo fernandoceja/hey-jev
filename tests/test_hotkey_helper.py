@@ -180,16 +180,17 @@ class HotkeyBehaviourTests(unittest.TestCase):
         bar.main_window_changed(False)
         self.assertFalse(bar.hotkey_can_clear_the_way())
 
-    def test_the_hotkey_minimizes_home_then_shows_the_orb(self):
+    def test_the_hotkey_minimizes_home_and_finishes_after_the_minimize(self):
         body = _func(self.ui(), "focusTypeField_")
         self.assertIn("hotkey_can_clear_the_way()", body)
-        self.assertLess(body.index("miniaturize_"), body.index("self.expandMiniBar_(None)"))
+        self.assertLess(body.index("miniaturize_"), body.index("hotkeyAfterClear:"))
         self.assertIn("if docked:", body)  # the docked full window is still left alone
 
-    def test_the_tucked_state_is_read_again_after_home_is_cleared(self):
-        body = _func(self.ui(), "focusTypeField_")
-        clear = body[body.index("miniaturize_"):body.index("if tucked:")]
-        self.assertIn("tucked = self._tuck_active()", clear)
+    def test_the_second_half_shows_the_orb_untucks_it_and_opens_the_pill(self):
+        body = _func(self.ui(), "hotkeyAfterClear_")
+        self.assertLess(body.index("_sync_mini_bar()"), body.index("self._tuck_active()"))
+        self.assertLess(body.index("_tuck_untuck"), body.index("self.expandMiniBar_(None)"))
+        self.assertIn("if not self.bar.should_show():", body)
 
     def test_the_not_found_message_points_at_building_and_signing(self):
         text = hh.status_text(hh.NOT_FOUND)
