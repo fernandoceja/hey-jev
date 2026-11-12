@@ -27,6 +27,9 @@ from orb_motion import (
     FLOAT_AMPLITUDE,
     FLOAT_FRAMES,
     CLIP_FPS,
+    HIGHLIGHT_DRIFT,
+    HIGHLIGHT_DRIFT_PERIODS,
+    TILT_EPS,
     GLYPH_RGB,
     HIGHLIGHT_ALPHA,
     LISTEN_GLYPH_RGB,
@@ -56,7 +59,9 @@ from orb_motion import (
     layer_geometry,
     mouth_height,
     pulse_mouth,
+    highlight_shift,
     shadow_for_bob,
+    shadow_for_height,
     sine_samples,
     squint_scale,
     stretch_matrix,
@@ -414,6 +419,8 @@ class OrbLayers:
         self.pupil_cursor = {"L": (0.0, 0.0), "R": (0.0, 0.0)}
         self.speech_glyph_pivot = False
         self.lean = 0.0  # body lean in degrees, from the current clip
+        self.tilt = 0.0  # a small extra lean toward the pointer, set by set_tilt
+        self.body_scale_now = 1.0  # the body's resting scale (the listening level), kept so a tilt can re-apply it
 
         # Restored from 1c63b74: a flat white oval, not a radial fade.
         hx, hy, hw, hh = geometry["highlight"]
@@ -495,7 +502,8 @@ class OrbLayers:
                 self.eye_masks[side].setPath_(self._eye_paths[shape])
                 self.eyes[side].setAffineTransform_(_eye_transform(side, scale_y))
             self.lean = lean
-            self.body_group.setTransform_(_body_transform(pose["body_scale"], lean))
+            self.body_scale_now = pose["body_scale"]
+            self.body_group.setTransform_(_body_transform(pose["body_scale"], lean + self.tilt))
             self.spinner.setHidden_(not spinning)
             self.set_pupil_look(pose["pupil_bias"] if clip is None else clip.bias, pose["pupil_size"])
         self._timed(POSE_SECONDS, update)
@@ -522,7 +530,17 @@ class OrbLayers:
 
     def set_listen_level(self, scale):
         """The listening body follows the mic level with a short ease, and keeps the clip's lean."""
-        self._timed(LEVEL_SECONDS, lambda: self.body_group.setTransform_(_body_transform(scale, self.lean)))
+        self.body_scale_now = scale
+        self._timed(LEVEL_SECONDS, lambda: self.body_group.setTransform_(_body_transform(scale, self.lean + self.tilt)))
+
+    def set_tilt(self, degrees):
+        """A small lean toward the pointer, on top of the clip's lean. Eases in 0.15 s and ignores tiny changes."""
+        degrees = float(degrees)
+        if abs(degrees - self.tilt) < TILT_EPS:
+            return
+        self.tilt = degrees
+        self._timed(0.15, lambda: self.body_group.setTransform_(
+            _body_transform(self.body_scale_now, self.lean + self.tilt)))
 
     def set_pupil_look(self, bias, size):
         """Bias and size for the pupils. The cursor offset is added on top of the bias, in set_pupils."""
@@ -605,6 +623,19 @@ class OrbLayers:
             self.glyph.addAnimation_forKey_(_loop("transform.scale.y", pairs, period), SPEECH_KEY)
         self._set_glyph_pivot(True)
 
+    @staticmethod
+    def _hop_extras(y_samples, duration):
+        """The tracks that make a hop read as 3D: the shadow shrinks and fades at the top, and the shine lags the body.
+        Returns {"shadowScale": (keypath, pairs), "shadowOpacity": ..., "shine": ...}."""
+        height = max((v for _t, v in y_samples), default=0.0)
+        if height <= 0.0:
+            return {}
+        return {
+            "shadowScale": ("transform.scale", [(t, shadow_for_height(y, height)[0]) for t, y in y_samples]),
+            "shadowOpacity": ("opacity", [(t, shadow_for_height(y, height)[1]) for t, y in y_samples]),
+            "shine": ("transform.translation.y", [(t, highlight_shift(y)) for t, y in y_samples]),
+        }
+
     def play_reaction(self, name, reduce_motion):
         """Start one reaction: the eye shape morphs, the body channel moves, and the sweat glyph shows for low disk.
 
@@ -623,11 +654,17 @@ class OrbLayers:
             self.eye_masks[side].addAnimation_forKey_(_track("path", morph, reaction.seconds), REACTION_KEY)
         tracks = reaction_body_tracks(name)
         keys = {"y": ("transform.translation.y", 1.0), "rot": ("transform.rotation.z", math.pi / 180.0),
-                "sy": ("transform.scale.y", 1.0), "scale": ("transform.scale", 1.0)}
+                "sx": ("transform.scale.x", 1.0), "sy": ("transform.scale.y", 1.0), "scale": ("transform.scale", 1.0)}
         for channel, samples in tracks.items():
             keypath, factor = keys[channel]
             pairs = [(t, value * factor) for t, value in samples]
             self.body_group.addAnimation_forKey_(_track(keypath, pairs, reaction.seconds), REACTION_KEY + channel)
+        if tracks.get("y") and reaction.body[0] == "big_hop":  # a hop: the shadow and the shine follow it
+            extras = self._hop_extras(tracks["y"], reaction.seconds)
+            for key, layer in (("shadowScale", self.shadow), ("shadowOpacity", self.shadow), ("shine", self.highlight)):
+                if key in extras:
+                    keypath, pairs = extras[key]
+                    layer.addAnimation_forKey_(_track(keypath, pairs, reaction.seconds), REACTION_KEY + key)
         if reaction.glyph:
             seconds = reaction.seconds
             fade = _track("opacity", [(0.0, 0.0), (0.2, 1.0), (seconds - 0.3, 1.0), (seconds, 0.0)], seconds)
@@ -637,8 +674,10 @@ class OrbLayers:
         """Remove every reaction animation. The eye poses come back from the state's clip, set by the view."""
         for layer in list(self.eye_masks.values()):
             layer.removeAnimationForKey_(REACTION_KEY)
-        for channel in ("y", "rot", "sy", "scale"):
+        for channel in ("y", "rot", "sx", "sy", "scale"):
             self.body_group.removeAnimationForKey_(REACTION_KEY + channel)
+        for key, layer in (("shadowScale", self.shadow), ("shadowOpacity", self.shadow), ("shine", self.highlight)):
+            layer.removeAnimationForKey_(REACTION_KEY + key)
         self.sweat.removeAnimationForKey_(REACTION_KEY)
 
     def stop_speech(self):
@@ -693,12 +732,19 @@ class OrbLayers:
                                           BOB_PERIOD), "shadowScale")
         shadow.addAnimation_forKey_(_loop("opacity", [(t, shadow_for_bob(off)[1]) for t, off in bob],
                                           BOB_PERIOD), "shadowOpacity")
+        # A soft specular highlight that slowly wanders across the body, on two different periods so it never repeats
+        # quickly. Render-server loops again, so this costs no Python time.
+        for axis, amplitude, period in zip(("x", "y"), HIGHLIGHT_DRIFT, HIGHLIGHT_DRIFT_PERIODS):
+            self.highlight.addAnimation_forKey_(
+                _loop("transform.translation." + axis, sine_samples(period, amplitude), period), "shineDrift" + axis)
 
     def _remove_passives(self):
         for key in ("bob", "float", "breathX", "breathY"):
             self.body_group.removeAnimationForKey_(key)
         for key in ("shadowScale", "shadowOpacity"):
             self.shadow.removeAnimationForKey_(key)
+        for key in ("shineDriftx", "shineDrifty"):
+            self.highlight.removeAnimationForKey_(key)
 
     def play_accent(self, name):
         """Start one idle accent and return its length in seconds. One group per layer, keyed 'accent'."""
@@ -720,8 +766,16 @@ class OrbLayers:
                     _track("transform.translation.x", timeline["pupil_x"], duration))
         if "body_y" in timeline:
             add("body", self.body_group, _track("transform.translation.y", timeline["body_y"], duration))
+        if "body_sx" in timeline:
+            add("body", self.body_group, _track("transform.scale.x", timeline["body_sx"], duration))
         if "body_sy" in timeline:
             add("body", self.body_group, _track("transform.scale.y", timeline["body_sy"], duration))
+        if "body_y" in timeline:  # a hop: the shadow shrinks and fades at the top, and the shine lags the body
+            extras = self._hop_extras(timeline["body_y"], duration)
+            if "shadowScale" in extras:
+                add("shadow", self.shadow, _track(extras["shadowScale"][0], extras["shadowScale"][1], duration))
+                add("shadow", self.shadow, _track(extras["shadowOpacity"][0], extras["shadowOpacity"][1], duration))
+                add("shine", self.highlight, _track(extras["shine"][0], extras["shine"][1], duration))
         if "body_scale" in timeline:
             add("body", self.body_group, _track("transform.scale", timeline["body_scale"], duration))
         if "body_rot" in timeline:  # PR 7b: balance_eyes tilts the body
@@ -789,8 +843,11 @@ class OrbLayers:
         """
         from Quartz import CATransform3DIdentity
         self.set_passives(False)
-        for layer in [self.body_group, self.mouth] + list(self.eye_masks.values()) + list(self.pupils.values()):
+        for layer in ([self.body_group, self.mouth, self.shadow, self.highlight] + list(self.eye_masks.values())
+                      + list(self.pupils.values())):
             layer.removeAnimationForKey_("accent")
+        self.tilt = 0.0  # the pointer lean is part of the idle motion
+        self._disable_actions(lambda: self.body_group.setTransform_(_body_transform(self.body_scale_now, self.lean)))
         self.squash.removeAnimationForKey_(SQUASH_KEY)
         self.pupil_cursor = {"L": (0.0, 0.0), "R": (0.0, 0.0)}
         self._disable_actions(lambda: self.squash.setTransform_(CATransform3DIdentity))

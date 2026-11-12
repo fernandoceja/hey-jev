@@ -14,6 +14,13 @@ from orb_motion import (
     BREATH_SCALE_X,
     BREATH_SCALE_Y,
     CLIP_FPS,
+    GROW_SECONDS,
+    HOP_HEIGHT_BIG,
+    HOP_HEIGHT_LAND,
+    HOP_HEIGHT_SMALL,
+    HOP_SECONDS,
+    grow_profile,
+    hop_tracks,
     sample_track,
     spring_decay,
 )
@@ -60,6 +67,9 @@ ACCENTS = (
     Accent("happy", 60, 8, 0.0),
     Accent("wave", 72, 5, 0.5),  # PR 7b: a small original hand nub sways at the body's upper right
     Accent("balance_eyes", 84, 2, 0.2),  # PR 7b: the body tilts left, then right, +-4 degrees (pupils are gone)
+    # Alive motion: a hop with squash and stretch (the shadow and shine follow it), and a playful size change.
+    Accent("hop", int(round(HOP_SECONDS * CLIP_FPS)), 14, 0.4),
+    Accent("grow", int(round(GROW_SECONDS * CLIP_FPS)), 8, 0.6),
 )
 _ACCENT_BY_NAME = {accent.name: accent for accent in ACCENTS}
 
@@ -160,6 +170,17 @@ def _tl_wave():
     return {"nub_rot": sway, "nub_opacity": [(0.0, 0.0), (0.05, 1.0), (1.12, 1.0), (1.2, 0.0)]}
 
 
+def _tl_hop():
+    """A hop with anticipation squash, a stretch on the way up and down, and a landing squash and rebound."""
+    tracks = hop_tracks(HOP_SECONDS, HOP_HEIGHT_SMALL)
+    return {"body_y": tracks["y"], "body_sx": tracks["sx"], "body_sy": tracks["sy"]}
+
+
+def _tl_grow():
+    """The playful size change: swell, dip a little under, settle."""
+    return {"body_scale": sample_track(grow_profile, GROW_SECONDS)}
+
+
 def _tl_balance_eyes():
     """One tilt cycle: left, then right, +-4 degrees about the body centre."""
     return {"body_rot": sample_track(lambda t: 4.0 * math.sin(math.tau * t / 1.4), 1.4)}
@@ -176,6 +197,8 @@ _TIMELINES = {
     "happy": _tl_happy,
     "wave": _tl_wave,
     "balance_eyes": _tl_balance_eyes,
+    "hop": _tl_hop,
+    "grow": _tl_grow,
 }
 
 
@@ -336,6 +359,10 @@ REACTIONS = {
     # Eney animations, item 3 (Jev's own art): a nod with a smile when a note is saved, and a small head tilt with
     # wide eyes when Jev starts looking something up. curious is rare (45 s) and low priority, so success always wins.
     "remember": Reaction("remember", 0.7, 2, 5.0, ((0.0, "smileClosed"),), ("nod", 3.0), False),
+    # Alive motion: a bigger hop when Jev is summoned (Ctrl-Option-J), and a smaller one when a capture lands. They
+    # outrank curious and tie with success and remember, so a later remember or success replaces them cleanly.
+    "summon": Reaction("summon", 0.64, 2, 0.5, ((0.0, "wide"), (0.4, "happy")), ("big_hop", HOP_HEIGHT_BIG), False),
+    "landed": Reaction("landed", 0.56, 2, 1.0, ((0.0, "wide"), (0.35, "open")), ("big_hop", HOP_HEIGHT_LAND), False),
     "curious": Reaction("curious", 0.8, 1, 45.0, ((0.0, "wide"),), ("tilt", 5.0), False),
 }
 
@@ -362,6 +389,9 @@ def reaction_body_tracks(name):
     elif channel == "wobble":
         tracks["rot"] = sample_track(
             lambda t: amount * math.sin(math.tau * 2.0 * t / seconds) * (1.0 - t / seconds), seconds)
+    elif channel == "big_hop":
+        hop = hop_tracks(seconds, amount)
+        tracks["y"], tracks["sx"], tracks["sy"] = hop["y"], hop["sx"], hop["sy"]
     elif channel == "nod":
         tracks["y"] = sample_track(lambda t: -amount * math.sin(math.tau * t / seconds) ** 2, seconds)
     elif channel == "tilt":

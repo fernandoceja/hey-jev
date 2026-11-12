@@ -210,7 +210,7 @@ class WiringTests(unittest.TestCase):
         show = _func(self.ui, "inlineShow_")
         self.assertIn("if not self._inline_reduce():", show)
         tick = _func(self.ui, "inlineMoveTick_")
-        self.assertIn("not self._inline_reduce()", tick)
+        self.assertIn('self._orb_hop("landed")', tick)  # the hop is a reaction, so Reduce Motion handles itself
 
     def test_the_move_uses_the_orbs_existing_snap_spring(self):
         self.assertIn("*SPRING_SNAP", _func(self.ui, "inlineMoveTick_"))

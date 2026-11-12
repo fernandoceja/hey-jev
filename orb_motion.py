@@ -146,6 +146,96 @@ def shadow_for_bob(offset):
     return scale, opacity
 
 
+# "Alive" motion (Eney-style, Jev's own): squash-and-stretch hops, a playful size change, a shadow that shrinks and grows
+# with each hop, a drifting specular highlight, and a lean toward the pointer. Everything is sized to fit inside the orb's
+# window, so a hop never clips and never needs a bigger window that could block clicks.
+TOP_HEADROOM = DESIGN_SIZE - (BODY_ORIGIN + BODY_SIZE)  # design points above the body inside the window (8)
+SIDE_HEADROOM = BODY_ORIGIN  # and to each side
+HOP_HEIGHT_SMALL = 3.2  # an idle hop
+HOP_HEIGHT_BIG = 4.2  # the summon hop. Hop + stretch + the idle bob and breath must fit inside TOP_HEADROOM
+HOP_HEIGHT_LAND = 3.5  # when a capture lands
+HOP_SQUASH = 0.13  # how far the body flattens before takeoff and on landing (the bigger hop is mostly shape)
+HOP_STRETCH = 0.07  # how far it stretches while moving fast
+HOP_SECONDS = 0.8  # the idle hop's length
+HOP_SHADOW_MIN_SCALE = 0.78  # the shadow at the top of a hop
+HOP_SHADOW_MIN_OPACITY = 0.35
+HIGHLIGHT_LAG = 0.35  # the shine lags a hop by this fraction, so it reads as light staying put
+HIGHLIGHT_DRIFT = (1.4, 0.7)  # design points: how far the specular highlight wanders, x and y
+HIGHLIGHT_DRIFT_PERIODS = (3.4, 2.3)  # seconds, different so the path does not repeat quickly
+GROW_SECONDS = 1.1
+GROW_PEAK = 1.12  # the playful size change: up, down a little under, then home
+GROW_DIP = 0.95
+TILT_MAX = 5.0  # degrees of lean toward the pointer
+TILT_REACH = 500.0  # screen points at which the lean is at its maximum
+TILT_EPS = 0.25  # a smaller change is not applied
+
+
+def _cos_interp(keys, t):
+    """Value at t from (time, value) keys, eased with a half cosine between neighbours. Flat outside the keys."""
+    if t <= keys[0][0]:
+        return keys[0][1]
+    for (t0, v0), (t1, v1) in zip(keys, keys[1:]):
+        if t <= t1:
+            u = (t - t0) / (t1 - t0)
+            e = (1.0 - math.cos(math.pi * u)) / 2.0
+            return v0 + (v1 - v0) * e
+    return keys[-1][1]
+
+
+def hop_profile(t, seconds, height, squash=HOP_SQUASH, stretch=HOP_STRETCH):
+    """(y, scale_x, scale_y) at time t of a hop: squash down, push off and stretch, hang at the top, stretch on the way
+    down, squash on landing, rebound, settle. y is design points up from rest and never below 0."""
+    u = max(0.0, min(1.0, float(t) / float(seconds)))
+    take, land = 0.16, 0.78
+    if u <= take or u >= land:
+        y = 0.0
+    else:
+        w = (u - take) / (land - take)
+        y = float(height) * 4.0 * w * (1.0 - w)
+    sy_keys = [(0.0, 1.0), (take, 1.0 - squash), (0.28, 1.0 + stretch), (0.47, 1.0), (0.66, 1.0 + 0.6 * stretch),
+               (land, 1.0 - 0.85 * squash), (0.90, 1.0 + 0.25 * squash), (1.0, 1.0)]
+    sx_keys = [(0.0, 1.0), (take, 1.0 + 0.8 * squash), (0.28, 1.0 - 0.7 * stretch), (0.47, 1.0),
+               (0.66, 1.0 - 0.42 * stretch), (land, 1.0 + 0.9 * squash), (0.90, 1.0 - 0.25 * squash), (1.0, 1.0)]
+    return y, _cos_interp(sx_keys, u), _cos_interp(sy_keys, u)
+
+
+def hop_tracks(seconds, height, squash=HOP_SQUASH, stretch=HOP_STRETCH):
+    """Sampled tracks {"y", "sx", "sy"} for one hop, at CLIP_FPS, each ending exactly at `seconds`."""
+    return {
+        "y": sample_track(lambda t: hop_profile(t, seconds, height, squash, stretch)[0], seconds),
+        "sx": sample_track(lambda t: hop_profile(t, seconds, height, squash, stretch)[1], seconds),
+        "sy": sample_track(lambda t: hop_profile(t, seconds, height, squash, stretch)[2], seconds),
+    }
+
+
+def grow_profile(t, seconds=GROW_SECONDS):
+    """Scale at time t of the playful size change: swell up, dip a little under, then settle home."""
+    u = max(0.0, min(1.0, float(t) / float(seconds)))
+    return _cos_interp([(0.0, 1.0), (0.30, GROW_PEAK), (0.60, GROW_DIP), (0.82, 1.03), (1.0, 1.0)], u)
+
+
+def shadow_for_height(y, height):
+    """Shadow (scale, opacity factor) for a hop at height y of `height`: the higher the orb, the smaller and fainter."""
+    t = max(0.0, min(1.0, float(y) / float(height))) if height else 0.0
+    return (1.0 - (1.0 - HOP_SHADOW_MIN_SCALE) * t, 1.0 - (1.0 - HOP_SHADOW_MIN_OPACITY) * t)
+
+
+def highlight_shift(y):
+    """How far the shine slides (design points, negative is down) while the body is y points up."""
+    return -HIGHLIGHT_LAG * float(y)
+
+
+def tilt_degrees(cursor, center, max_degrees=TILT_MAX, reach=TILT_REACH):
+    """A small lean toward the pointer, in degrees (counter-clockwise positive), 0 when the input is bad."""
+    try:
+        dx = float(cursor[0]) - float(center[0])
+    except (TypeError, ValueError, IndexError):
+        return 0.0
+    if not math.isfinite(dx) or reach <= 0.0:
+        return 0.0
+    return -float(max_degrees) * max(-1.0, min(1.0, dx / float(reach)))
+
+
 def spring_decay(k, c, t):
     """Free response of a unit spring (m = 1) released from rest at displacement 1. Underdamped only."""
     if t < 0.0:

@@ -10,10 +10,11 @@ from orb_motion import BODY_SIZE as ORB_SIZE
 from orb_motion import CURSOR_POLL_SECONDS, DESIGN_CENTER, EYE_CENTER_Y, EYE_SPACING
 from orb_motion import DESIGN_EXTENT as ORB_DESIGN_EXTENT
 from orb_motion import DESIGN_SIZE as PANEL_SIZE
-from orb_motion import cursor_moved, idle_active, pupil_offset, tracking_active, voice_pose, wav_envelope
+from orb_motion import cursor_moved, idle_active, pupil_offset, tilt_degrees, tracking_active, voice_pose, wav_envelope
 
 LOOK_EASE = 0.25  # lookIntensity eases over this many seconds when the character state changes
-TRACK_PUPILS = False  # PR 8: the eyes are white pills with no pupils, so the cursor-tracking poll stays off
+TRACK_PUPILS = False  # PR 8: the eyes are white pills with no pupils, so the pupils are not moved
+TRACK_TILT = True  # the orb leans a few degrees toward the pointer; the 20 Hz poll costs next to nothing and exits early
 SPEECH_WATCH_SECONDS = 0.2  # while the reply's WAV is not known yet, check for it this often
 SPEECH_WATCH_LIMIT = 30.0  # give up on the WAV after this long and keep the pulse
 
@@ -88,6 +89,8 @@ def make_orb_view(frame):
                     self.alive = False  # bob, breath and accents are running
                     self.tracking = False  # the pupil poll is running (it keeps going while docked)
                     self.asleep = False
+                    self.dragging = False  # a drag is in progress: idle accents and the pointer lean wait
+                    self.dragStamp = 0.0  # when the last drag frame arrived, so a drag that ends without a drop cannot stick
                     self.lastCursor = None
                     self.clipName = None
                     self.clipEnd = 0.0
@@ -170,6 +173,9 @@ def make_orb_view(frame):
                 self.accentTicker.fired()
                 if not self.alive or self.character != "idle" or self.cfg[3] or self.reactions.current() is not None:
                     return  # PR 7b: idle accents wait while a reaction plays
+                if self.dragActive():
+                    self.accentTicker.sync(True, self.scheduleAccent)  # no hops while the orb is being dragged; try later
+                    return
                 name = pick_accent(self.rng, self.previousAccent)
                 self.previousAccent = name
                 seconds = self.tree.play_accent(name)
@@ -375,11 +381,13 @@ def make_orb_view(frame):
                     self.lastCursor = None  # the pupils were just centred, so the next poll must place them
                 self.alive = alive
                 # PR 6a: docking stops the bob, but the pupils keep following the cursor.
-                self.tracking = tracking_active(visible, motion, self.asleep) and not self.halted and TRACK_PUPILS
+                self.tracking = tracking_active(visible, motion, self.asleep) and not self.halted and (TRACK_PUPILS or TRACK_TILT)
                 idle = alive and self.character == "idle"  # PR 7: every other character state suspends the idle motion
                 self.tree.set_passives(idle and not self.solid)
                 self.ticker.sync(self.tracking and not self.solid, self.scheduleCursor)
                 self.accentTicker.sync(idle and not popover and not self.solid, self.scheduleAccent)
+                if not (idle and not popover and not self.dragActive()):
+                    self.tree.set_tilt(0.0)  # typing in the pill, a drag, or another state: no lean toward the pointer
 
             @objc.python_method
             def followCursor(self):
@@ -388,6 +396,10 @@ def make_orb_view(frame):
                     return
                 mouse = NSEvent.mouseLocation()
                 cursor = (float(mouse.x), float(mouse.y))
+                if TRACK_TILT:
+                    self.applyTilt(cursor)
+                if not TRACK_PUPILS:
+                    return
                 now = time.monotonic()
                 target = look_intensity(self.character, self.currentClip())
                 easing = target != self.lookTo or now - self.lookStart < LOOK_EASE
@@ -401,6 +413,24 @@ def make_orb_view(frame):
                     dx, dy = pupil_offset(self.eyeOnScreen(sign), cursor)
                     offsets[side] = (dx * intensity / scale, dy * intensity / scale)
                 self.tree.set_pupils(offsets)
+
+            @objc.python_method
+            def dragActive(self):
+                """True while drag frames are arriving. It times out, so a drag that ends without a drop cannot stick."""
+                return self.dragging and time.monotonic() - self.dragStamp < 0.6
+
+            @objc.python_method
+            def applyTilt(self, cursor):
+                """A few degrees of lean toward the pointer, only while the orb is idle, on screen and not being used."""
+                calm = (self.character == "idle" and not self.cfg[2] and not self.cfg[3] and not self.dragActive()
+                        and not self.reduceMotion and not self.asleep)
+                if not calm:
+                    self.tree.set_tilt(0.0)
+                    return
+                frame = self.window().frame()
+                centre = (float(frame.origin.x) + float(frame.size.width) / 2.0,
+                          float(frame.origin.y) + float(frame.size.height) / 2.0)
+                self.tree.set_tilt(tilt_degrees(cursor, centre))
 
             @objc.python_method
             def eyeOnScreen(self, sign):
@@ -453,13 +483,17 @@ def make_orb_view(frame):
             @objc.python_method
             def dragStretch(self, sx, sy, angle):
                 """Stretch the orb along its direction of travel while dragging."""
+                self.dragging = True
+                self.dragStamp = time.monotonic()
                 if self.solid or self.reduceMotion:
                     return
+                self.tree.set_tilt(0.0)
                 self.tree.set_stretch(sx, sy, angle)
 
             @objc.python_method
             def dropJiggle(self):
                 """A drag ends. Returns the jiggle's settling time, or 0 when it did nothing."""
+                self.dragging = False
                 if self.solid or self.reduceMotion:
                     return 0.0
                 return self.tree.drop_jiggle()
