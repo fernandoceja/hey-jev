@@ -271,8 +271,8 @@ BRIDGE_POLL_SECONDS = 2
 # Reply files sit in iCloud until something deletes them. The phone shortcut
 # is not built yet, so the Mac removes them once they are older than this.
 OUTBOX_TTL_SECONDS = 10 * 60
+# Accepted nonces are kept until their timestamp window ends (see commands/bridge.py). There is no count limit.
 NONCE_LOG = os.path.expanduser("~/Library/Application Support/Hey Jev/bridge-nonces.json")
-NONCE_LIMIT = 200
 NONCE_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
 # Phone commands that may run. No quit-all, no message reading, no confirmation,
 # no general shortcut (a Jev shortcut can send a text). Focus runs two fixed names.
