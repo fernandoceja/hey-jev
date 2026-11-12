@@ -1435,6 +1435,31 @@ def greeting_bubble_frame(frame, bounds, inset=ORB_EDGE_INSET):
     return (x, y, w, h)
 
 
+OFFER_BUTTON_W = 96.0
+OFFER_BUTTON_GAP = 8.0
+OFFER_RIGHT_INSET = 12.0
+OFFER_LEFT_INSET = 8.0
+OFFER_TOP_OFFSET = 34.0  # from the top of the panel to the buttons' bottom edge
+
+
+def offer_button_origins(width, height):
+    """Where the brief offer's "Play audio" and "No thanks" buttons go in a panel width x height, or None.
+
+    Both buttons must fit wholly inside the panel. A collapsed orb window (44 pt) cannot hold them, so they are hidden
+    there instead of being clipped to a stray fragment such as "ks".
+    Returns {"audio": (x, y), "no_thanks": (x, y)} in the panel's own coordinates."""
+    try:
+        width, height = float(width), float(height)
+    except (TypeError, ValueError):
+        return None
+    no_x = width - OFFER_RIGHT_INSET - OFFER_BUTTON_W
+    audio_x = no_x - OFFER_BUTTON_GAP - OFFER_BUTTON_W
+    top = height - OFFER_TOP_OFFSET
+    if audio_x < OFFER_LEFT_INSET or top < 0.0:
+        return None
+    return {"audio": (audio_x, top), "no_thanks": (no_x, top)}
+
+
 def orb_bubble_log_line(text, docked):
     """What the orb's speech bubble would show, and whether it was held back because the orb is docked."""
     if docked:
