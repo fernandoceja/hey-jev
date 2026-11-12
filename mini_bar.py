@@ -2024,6 +2024,10 @@ class BarController:
     def should_show(self):
         return bool(self.enabled) and not self.quitting and not self.main_on_screen and not self.dismissed
 
+    def hotkey_can_clear_the_way(self):
+        """Ctrl-Option-J may minimize the main window when that window is the only thing keeping the orb hidden."""
+        return bool(self.enabled) and not self.quitting and self.main_on_screen
+
     def main_window_changed(self, on_screen):
         """on_screen means ordered in and not miniaturized. Restoring clears a one-shot Esc hide."""
         self.main_on_screen = bool(on_screen)

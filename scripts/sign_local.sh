@@ -76,11 +76,19 @@ csreq -r="$REQ" -t >/dev/null  # syntax check only; fails loudly on a typo
 EXE="$(find "$EXE_DIR" -maxdepth 1 -type f -perm -u+x | head -1)"
 SIGN=(codesign --force --sign "$IDENTITY" --identifier "$BUNDLE_ID" --timestamp=none --requirements "=$REQ")
 
+HELPER="$APP/Contents/Library/LoginItems/Jev Hotkey.app"
+HELPER_ID="com.heyjev.app.hotkey"
+HELPER_REQ="designated => identifier \"$HELPER_ID\" and anchor apple generic and certificate leaf[subject.OU] = \"$TEAM\""
+HELPER_SIGN=(codesign --force --sign "$IDENTITY" --identifier "$HELPER_ID" --timestamp=none --requirements "=$HELPER_REQ")
+csreq -r="$HELPER_REQ" -t >/dev/null
 echo "identity:    $IDENTITY"
 echo "team:        $TEAM"
 echo "requirement: $REQ"
 echo "app:         $APP"
 if [ "$MODE" = "dry-run" ]; then
+  if [ -d "$HELPER" ]; then
+    echo "would run:   ${HELPER_SIGN[*]} \"$HELPER\"   (the Ctrl-Option-J helper, signed first)"
+  fi
   echo "would run:   ${SIGN[*]} \"$EXE\""
   echo "would run:   ${SIGN[*]} \"$APP\""
   echo "would run:   codesign --verify \"$APP\""
@@ -88,8 +96,11 @@ if [ "$MODE" = "dry-run" ]; then
   exit 0
 fi
 
-# 4. Sign the executable, then the bundle. (No --strict on verify: alias builds symlink their resources into this repo.)
+# 4. Sign the helper (if built), then the executable, then the bundle. (No --strict on verify: alias builds symlink their resources into this repo.)
 #    Sign the executable, then the bundle. If macOS asks for keychain access here, click it yourself.
+if [ -d "$HELPER" ]; then
+  "${HELPER_SIGN[@]}" "$HELPER"
+fi
 "${SIGN[@]}" "$EXE"
 "${SIGN[@]}" "$APP"
 codesign --verify --verbose=2 "$APP"

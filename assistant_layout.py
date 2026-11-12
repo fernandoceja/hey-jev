@@ -381,7 +381,9 @@ def _settings(page_w, page_h):
     model_top = top + (112.0 if stacked else 90.0)
     mini_top = model_top + (112.0 if stacked else 90.0)
     # The mini-bar switch ends 72pt below mini_top. The update block follows it.
-    update_top = mini_top + 88.0
+    hot_top = mini_top + 88.0
+    # The hotkey helper block is a name, a hint, a switch and a status line (about 98 pt), then the update block.
+    update_top = hot_top + 112.0
     content_h = update_top + 72.0 + 24.0
     doc_h = max(page_h, content_h)
     header = _header(doc_h, page_w, search=False)
@@ -406,6 +408,10 @@ def _settings(page_w, page_h):
     mini_name = (float(MARGIN), _from_top(doc_h, mini_top, 20.0), text_w, 20.0)
     mini_hint = (float(MARGIN), _from_top(doc_h, mini_top + 22.0, 18.0), text_w, 18.0)
     mini_toggle = (float(MARGIN), _from_top(doc_h, mini_top + 46.0, 26.0), text_w, 26.0)
+    hot_name = (float(MARGIN), _from_top(doc_h, hot_top, 20.0), text_w, 20.0)
+    hot_hint = (float(MARGIN), _from_top(doc_h, hot_top + 22.0, 18.0), text_w, 18.0)
+    hot_toggle = (float(MARGIN), _from_top(doc_h, hot_top + 46.0, 26.0), text_w, 26.0)
+    hot_status = (float(MARGIN), _from_top(doc_h, hot_top + 74.0, 32.0), text_w, 32.0)
     update_name = (float(MARGIN), _from_top(doc_h, update_top, 20.0), text_w, 20.0)
     update_hint = (float(MARGIN), _from_top(doc_h, update_top + 22.0, 18.0), text_w, 18.0)
     update_button = (float(MARGIN), _from_top(doc_h, update_top + 46.0, 26.0), min(220.0, text_w), 26.0)
@@ -423,6 +429,10 @@ def _settings(page_w, page_h):
         "mini_name": mini_name,
         "mini_hint": mini_hint,
         "mini_toggle": mini_toggle,
+        "hot_name": hot_name,
+        "hot_hint": hot_hint,
+        "hot_toggle": hot_toggle,
+        "hot_status": hot_status,
         "update_name": update_name,
         "update_hint": update_hint,
         "update_button": update_button,
