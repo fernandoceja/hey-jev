@@ -206,6 +206,9 @@ from capture_glimmer import (BAND_RGB, BORDER_RGB, DragTracker, GLIMMER_BAND, GL
                              GLIMMER_BORDER_WIDTH, GLIMMER_GLOW_OPACITY, GLIMMER_GLOW_RADIUS, GLIMMER_PAD,
                              GLIMMER_POLL_SECONDS, GLIMMER_REDUCED_WASH_ALPHA, GLIMMER_WASH_ALPHA, SPARKLE_RGB, WASH_RGB,
                              glimmer_seconds, panel_delay, rgba, sparkle_specs, star_points)
+from capture_inline import (FIELD_H, PLACEHOLDER as INLINE_PLACEHOLDER, idle_expired as inline_idle_expired, inline_frame,
+                            orb_target_origin, pick_corner, pill_size, should_start as inline_should_start, tidy_answer,
+                            clip_answer)
 from hotkey_helper import (LoginItemHelper, SHOW_ORB_NOTIFICATION, is_on as helper_is_on, show_orb_requested,
                            status_text as helper_status_text)
 from orb_character import disk_check, is_thanks, lookup_reaction, reaction_for_status, rough_drag
@@ -2439,6 +2442,9 @@ class AppDelegate(NSObject):
     @objc.python_method
     def _local_key(self, event):
         if event.keyCode() == 53:
+            if self._inline_active_now():
+                self._inline_open_capture_panel()  # Esc in the inline field opens the capture panel
+                return None
             if getattr(self, "_at", None):
                 self._at_hide()  # PR 8a-2: Esc with the picker open closes only the picker
                 return None
@@ -3117,6 +3123,7 @@ class AppDelegate(NSObject):
     def _pill_drag_began(self):
         """An orb drag started: hide the typing pill at once. Logs what it hid, or that nothing was visible."""
         self._close_orb_spotlight("orb drag")
+        self._inline_end(restore=False)  # dragging the orb ends the inline field; the orb stays where it is dragged
         if getattr(self, "_pill_drag_hidden", None):
             return
         views = self._pill_drag_views()
@@ -4519,7 +4526,7 @@ class AppDelegate(NSObject):
     @objc.python_method
     def _peek_is_busy(self):
         """Popover, menu, drag, listening, thinking or speaking. Busy keeps the orb out."""
-        if not getattr(self, "pillCollapsed", False) or self._orb_dragging:
+        if not getattr(self, "pillCollapsed", False) or self._orb_dragging or self._inline_active_now():
             return True
         if getattr(self, "_pill_menu_open", False) or self._action_menu_open:
             return True  # PR 5a: a tuck waits while the action menu is open
@@ -5415,6 +5422,9 @@ class AppDelegate(NSObject):
 
     def expandOrbToFull_(self, _sender):
         """A single click on the orb (R2). On a docked orb it collapses instead, the same as a click on the orb."""
+        if self._inline_active_now():
+            self._inline_open_capture_panel()  # the second click: open the capture panel, not the full window
+            return
         self._close_orb_spotlight("orb click")
         if self._orb_docked_now():
             self._collapse_orb_from_full()
@@ -6866,12 +6876,15 @@ class AppDelegate(NSObject):
 
     @objc.python_method
     def _capture_for_bar(self, mode="full"):
+        self._inline_expected = mode == "area"  # this capture ends with the orb at the corner and the inline field
         try:
             import commands
             sentence = commands.take_screenshot(mode)
         except Exception as exc:
             sentence = "Couldn't take a screenshot."
             print(f"  mini bar screenshot failed: {exc}")
+        finally:
+            self._inline_expected = False
         self.performSelectorOnMainThread_withObject_waitUntilDone_("showCaptureResult:", str(sentence or ""), False)
 
     def _run_capture_kind(self, kind):
@@ -6927,7 +6940,8 @@ class AppDelegate(NSObject):
             self._show_capture_choices()
 
     def showCaptureResult_(self, sentence):
-        self._show_bar_reply(str(sentence or ""))
+        if not (capture_saved(sentence) and getattr(self, "_inline_pending", None)):
+            self._show_bar_reply(str(sentence or ""))  # the inline route has its own field, so the orb shows no sentence
         self._sync_recording_ui()
         self._maybe_show_choices(sentence)
 
@@ -6959,6 +6973,242 @@ class AppDelegate(NSObject):
         x, y = place_bar(saved, screens, size)
         return (x, y, size[0], size[1])
 
+    # The orb at the selection's corner, and the inline "What is this?" field. Started by _show_capture_choices after
+    # the glimmer. The capture panel opens only from a second click on the orb (expandOrbToFull_) or Esc in the field.
+    @objc.python_method
+    def _inline_active_now(self):
+        return bool(getattr(self, "_inline_active", False))
+
+    @objc.python_method
+    def _inline_begin(self, info):
+        panel = getattr(self, "mini_panel", None)
+        if panel is None or not hasattr(self, "pill"):
+            return False
+        if self._tuck_active():
+            self._tuck_untuck("capture", instant=True)  # a tucked orb comes out before it moves
+        orb_visible = bool(panel.isVisible() and self.bar.should_show())
+        if not inline_should_start(orb_visible, getattr(self, "pillCollapsed", False), self._orb_docked_now(),
+                                   self._peek_is_busy(), bool(info.get("rect"))):
+            return False
+        screens = self._visible_screens() or [(0.0, 0.0, 1440.0, 900.0)]
+        rect = tuple(info["rect"])
+        screen = screen_for_frame(rect, screens) or screens[0]
+        frame = panel.frame()
+        home = (float(frame.origin.x), float(frame.origin.y))
+        size = (float(frame.size.width), float(frame.size.height))
+        corner = pick_corner(rect, info.get("release"))
+        target = orb_target_origin(rect, corner, size, screen)
+        self._inline_active = True
+        self._inline_home = home
+        self._inline_shown_at = time.time()
+        self._inline_answer = ""
+        print("  capture inline: orb to {0} corner".format(corner), flush=True)
+        self._inline_move_orb(target, then="inlineShow:")
+        return True
+
+    @objc.python_method
+    def _inline_move_orb(self, target, then=None):
+        """Spring the orb to a point (a plain move with Reduce Motion), then run the selector `then` if given."""
+        panel = self.mini_panel
+        self._inline_stop_move()
+        reduce = self._inline_reduce()
+        frame = panel.frame()
+        origin = (float(frame.origin.x), float(frame.origin.y))
+        if reduce or (abs(origin[0] - target[0]) < 1.0 and abs(origin[1] - target[1]) < 1.0):
+            panel.setFrameOrigin_(NSMakePoint(target[0], target[1]))
+            if then:
+                self.performSelector_withObject_afterDelay_(then, None, 0.0)
+            return
+        self._inline_move = {"origin": origin, "target": target, "started": time.monotonic(), "then": then}
+        self._inline_move_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            DRAG_TICK_SECONDS, self, "inlineMoveTick:", None, True)
+
+    @objc.python_method
+    def _inline_stop_move(self):
+        timer = getattr(self, "_inline_move_timer", None)
+        if timer is not None:
+            timer.invalidate()
+        self._inline_move_timer = None
+        self._inline_move = None
+
+    def inlineMoveTick_(self, _timer):
+        state = getattr(self, "_inline_move", None)
+        panel = getattr(self, "mini_panel", None)
+        if state is None or panel is None:
+            self._inline_stop_move()
+            return
+        elapsed = time.monotonic() - state["started"]
+        axes = [spring(elapsed, state["origin"][i], state["target"][i], *SPRING_SNAP) for i in (0, 1)]
+        done = all(spring_done(axes[i][0], axes[i][1], state["target"][i]) for i in (0, 1))
+        x, y = state["target"] if done else (axes[0][0], axes[1][0])
+        panel.setFrameOrigin_(NSMakePoint(x, y))
+        if done:
+            then = state["then"]
+            self._inline_stop_move()
+            orb = getattr(self, "orb_view", None)
+            if orb is not None and not self._inline_reduce():
+                orb.dropJiggle()  # the orb settles with its usual landing wobble
+            if then:
+                self.performSelector_withObject_afterDelay_(then, None, 0.0)
+
+    @objc.python_method
+    def _inline_reduce(self):
+        return bool(getattr(getattr(self, "orb_view", None), "reduceMotion", False))
+
+    @objc.python_method
+    def _build_inline_panel(self):
+        style = NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel
+        panel = CaptureChoicePanel.alloc().initWithContentRect_styleMask_backing_defer_(
+            NSMakeRect(0, 0, 270, FIELD_H), style, NSBackingStoreBuffered, False)
+        panel.setLevel_(BAR_LEVEL)
+        panel.setFloatingPanel_(True)
+        panel.setHidesOnDeactivate_(False)
+        panel.setBecomesKeyOnlyIfNeeded_(True)
+        panel.setOpaque_(False)
+        panel.setBackgroundColor_(NSColor.clearColor())
+        panel.setHasShadow_(True)
+        panel.setCollectionBehavior_(BAR_COLLECTION)
+        panel.setReleasedWhenClosed_(False)
+        panel.setAccessibilityLabel_("Jev capture question")
+        panel.escHandler = self._inline_open_capture_panel
+        if NSWorkspace.sharedWorkspace().accessibilityDisplayShouldReduceTransparency():
+            root = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, 270, FIELD_H))
+            root.setWantsLayer_(True)
+            root.layer().setBackgroundColor_(NSColor.colorWithCalibratedWhite_alpha_(0.12, 0.96).CGColor())
+        else:
+            root = NSVisualEffectView.alloc().initWithFrame_(NSMakeRect(0, 0, 270, FIELD_H))
+            root.setMaterial_(NSVisualEffectMaterialHUDWindow)
+            root.setBlendingMode_(NSVisualEffectBlendingModeBehindWindow)
+            root.setState_(NSVisualEffectStateActive)
+            root.setWantsLayer_(True)
+        root.layer().setCornerRadius_(14.0)
+        root.layer().setMasksToBounds_(True)
+        self.inline_field = text_field(NSMakeRect(12, 6, 246, 28), INLINE_PLACEHOLDER)
+        self.inline_field.setTarget_(self)
+        self.inline_field.setAction_("inlineAsk:")
+        self.inline_answer = NSTextField.wrappingLabelWithString_("")
+        self.inline_answer.setFrame_(NSMakeRect(14, 8, 242, 16))
+        self.inline_answer.setFont_(NSFont.systemFontOfSize_(12))
+        self.inline_answer.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(0.86, 1.0))
+        self.inline_answer.setHidden_(True)
+        for view in (self.inline_field, self.inline_answer):
+            root.addSubview_(view)
+        panel.setContentView_(root)
+        self.inline_panel = panel
+        return panel
+
+    def inlineShow_(self, _sender):
+        """The orb has landed. Pop the field up beside it and focus it."""
+        if not self._inline_active_now():
+            return
+        panel = getattr(self, "inline_panel", None) or self._build_inline_panel()
+        self.inline_field.setStringValue_("")
+        self._inline_waiting = False
+        self.inline_answer.setHidden_(True)
+        self._stop_shimmer(self.inline_answer)
+        self._inline_layout(None)
+        panel.orderFrontRegardless()
+        panel.makeKeyAndOrderFront_(None)
+        panel.makeFirstResponder_(self.inline_field)
+        self._inline_shown_at = time.time()
+        if not self._inline_reduce():
+            self._inline_pop_in(panel.contentView().layer())
+
+    @objc.python_method
+    def _inline_pop_in(self, layer):
+        """A quick scale and fade in, the same calm easing as the result panel."""
+        from Quartz import CABasicAnimation, CAMediaTimingFunction
+        for key, start in (("transform.scale", 0.92), ("opacity", 0.0)):
+            anim = CABasicAnimation.animationWithKeyPath_(key)
+            anim.setFromValue_(start)
+            anim.setToValue_(1.0)
+            anim.setDuration_(RESULT_FADE_SECONDS)
+            anim.setTimingFunction_(CAMediaTimingFunction.functionWithName_("easeOut"))
+            layer.addAnimation_forKey_(anim, "inlinePop" + key)
+
+    @objc.python_method
+    def _inline_layout(self, answer):
+        """Size the pill for the field (and the reply, when there is one) and put it beside the orb."""
+        panel = self.inline_panel
+        size = pill_size(answer)
+        orb = self.mini_panel.frame()
+        screens = self._visible_screens() or [(0.0, 0.0, 1440.0, 900.0)]
+        orb_rect = (float(orb.origin.x), float(orb.origin.y), float(orb.size.width), float(orb.size.height))
+        screen = screen_for_frame(orb_rect, screens) or screens[0]
+        x, y, w, h, _side = inline_frame(orb_rect, screen, size)
+        panel.setFrame_display_(NSMakeRect(x, y, w, h), True)
+        root = panel.contentView()
+        root.setFrame_(NSMakeRect(0, 0, w, h))
+        self.inline_field.setFrame_(NSMakeRect(12, h - FIELD_H + 6, w - 24, 28))
+        self.inline_answer.setFrame_(NSMakeRect(14, 8, w - 28, max(16.0, h - FIELD_H - 8.0)))
+
+    def inlineAsk_(self, _sender):
+        """Return in the inline field: ask Jev about the capture, on the same path as the capture panel's Ask."""
+        if not self._inline_active_now():
+            return
+        question = str(self.inline_field.stringValue() or "").strip() or INLINE_PLACEHOLDER
+        if not self.worker_started:
+            self._inline_set_answer("Add your API keys in the main window first.", pending=False)
+            return
+        self.controls.put(("ask_jev", question))
+        self._inline_shown_at = time.time()
+        self._inline_waiting = True  # the next reply is the answer to this question
+        self._inline_set_answer(PENDING_CAPTURE_TEXT, pending=True)
+
+    @objc.python_method
+    def _inline_set_answer(self, text, pending):
+        if not pending:
+            text = clip_answer(tidy_answer(text))  # plain text, and cut with an ellipsis if it would not fit
+        self._stop_shimmer(self.inline_answer)
+        self.inline_answer.setStringValue_(text)
+        self.inline_answer.setHidden_(False)
+        self._inline_answer = "" if pending else text
+        if not pending:
+            self._inline_waiting = False
+        self._inline_layout(text)
+        if pending:
+            self._shimmer_body(self.inline_answer)
+
+    @objc.python_method
+    def _inline_end(self, restore):
+        """Close the inline field. restore=True springs the orb back to where it was; False leaves it where it is."""
+        if not self._inline_active_now():
+            return
+        self._inline_active = False
+        self._inline_stop_move()
+        panel = getattr(self, "inline_panel", None)
+        if panel is not None and panel.isVisible():
+            self._stop_shimmer(self.inline_answer)
+            panel.orderOut_(None)
+        home = getattr(self, "_inline_home", None)
+        if restore and home is not None and getattr(self, "mini_panel", None) is not None:
+            self._inline_move_orb(home)
+
+    @objc.python_method
+    def _inline_open_capture_panel(self):
+        """The second click on the orb, or Esc in the field: close the inline field and open the capture panel."""
+        if not self._inline_active_now():
+            return
+        self._inline_end(restore=False)  # the panel anchors to the orb, which stays at the corner
+        self._show_capture_choices()
+
+    @objc.python_method
+    def _inline_sync(self):
+        """Called every tick: the inline field closes by itself after a quiet stretch, and the orb returns."""
+        if not self._inline_active_now():
+            return
+        panel = getattr(self, "inline_panel", None)
+        if panel is None or not panel.isVisible():
+            return
+        loc = NSEvent.mouseLocation()
+        frame = panel.frame()
+        hovered = pointer_inside((float(loc.x), float(loc.y)),
+                                 (float(frame.origin.x), float(frame.origin.y), float(frame.size.width),
+                                  float(frame.size.height)))
+        editing = bool(panel.isKeyWindow())
+        if inline_idle_expired(getattr(self, "_inline_shown_at", 0.0), time.time(), hovered, editing):
+            self._inline_end(restore=True)
+
     # The capture glimmer. While macOS's crosshair is up, a watcher notes where the left button goes down and up. Once
     # the image file is saved (so the glimmer can never be in the picture), that region flashes for about half a second.
     @objc.python_method
@@ -6974,8 +7224,11 @@ class AppDelegate(NSObject):
             return
         reduce = bool(getattr(getattr(self, "orb_view", None), "reduceMotion", False))
         print("  capture glimmer: {0:.0f},{1:.0f} {2:.0f}x{3:.0f}".format(*rect), flush=True)
+        release = watcher.release_point()
         self.performSelectorOnMainThread_withObject_waitUntilDone_(
-            "captureGlimmer:", json.dumps({"rect": list(rect), "reduce": reduce}), False)
+            "captureGlimmer:", json.dumps({"rect": list(rect), "reduce": reduce, "path": path,
+                                           "release": list(release) if release else None,
+                                           "inline": bool(getattr(self, "_inline_expected", False))}), False)
 
     def captureGlimmer_(self, payload):
         """Jev-blue glimmer over the captured region: a translucent wash, a thin glowing border, a shimmer sweep, a few
@@ -6993,6 +7246,9 @@ class AppDelegate(NSObject):
                             CGPathCloseSubpath, CGPathCreateMutable, CGPathMoveToPoint)
         seconds = glimmer_seconds(reduce)
         self._glimmer_started = time.time()
+        # The Command-W / orb-menu area capture ends with the orb at the corner and the inline field (not the panel).
+        self._inline_pending = ({"rect": [x, y, w, h], "release": info.get("release"), "path": info.get("path") or ""}
+                                if info.get("inline") else None)
         old = getattr(self, "_glimmer_panel", None)
         if old is not None:
             old.orderOut_(None)
@@ -7116,6 +7372,11 @@ class AppDelegate(NSObject):
             self._choices_delayed = True  # the panel waits for the glimmer to finish, then comes back here
             self.performSelector_withObject_afterDelay_("showChoicesAfterGlimmer:", None, wait)
             return
+        pending = getattr(self, "_inline_pending", None)
+        if pending is not None:
+            self._inline_pending = None
+            if self._inline_begin(pending):
+                return  # the capture panel opens later, from a second click on the orb or Esc in the field
         import commands
         from commands.captures import BOOK
         last = BOOK.last or {}
@@ -7391,6 +7652,7 @@ class AppDelegate(NSObject):
         It never opens or focuses the full window. That happens only from the orb click, Open Jev, or Settings.
         """
         self._close_orb_spotlight("hotkey")
+        self._inline_end(restore=False)
         if not hasattr(self, "pill"):
             return
         docked = self._orb_docked_now()
@@ -7661,6 +7923,7 @@ class AppDelegate(NSObject):
                 self.pill.keep_typing()
         self._sync_recording_ui()
         self._sync_choice_dismiss()
+        self._inline_sync()
         self._sync_action_menu_dismiss()
         self._sync_hint_dismiss()
         self._sync_zoe_ui()
@@ -7752,7 +8015,7 @@ class AppDelegate(NSObject):
             self._refresh_home_history()
             self._refresh_full_window()
         option_down = bool(getattr(self, "option_down", False))
-        show_line = bool(shown) and status_shows_in_pill(state, option_down)
+        show_line = bool(shown) and status_shows_in_pill(state, option_down) and not self._inline_active_now()
         displayed = False
         if show_line and getattr(self, "mini_panel", None) is not None and self.mini_panel.isVisible():
             displayed = True
@@ -7772,6 +8035,9 @@ class AppDelegate(NSObject):
             self._sync_level_meter(True)
         else:
             self._sync_level_meter(False)
+        if shown and self._inline_active_now() and getattr(self, "_inline_waiting", False) \
+                and getattr(self, "inline_answer", None) is not None and not capture_saved(shown):
+            self._inline_set_answer(shown, pending=False)  # the reply shows in the inline pill
         if shown and getattr(self, "choice_answer", None) is not None:
             panel = getattr(self, "choice_panel", None)
             if panel is not None and panel.isVisible() and not capture_saved(shown):
@@ -7985,6 +8251,9 @@ class GlimmerWatcher:
         self._thread.join(timeout=0.5)
         return self._tracker.rect()
 
+    def release_point(self):
+        return self._tracker.release_point()
+
 
 class CaptureChoicePanel(NSPanel):
     """The post-capture panel (Ask Jev, Save to Notes, and so on). A borderless panel answers NO to canBecomeKey by
@@ -7996,6 +8265,14 @@ class CaptureChoicePanel(NSPanel):
 
     def canBecomeMainWindow(self):
         return False
+
+    def cancelOperation_(self, sender):
+        """Esc with a field focused. The inline capture field sets escHandler to open the capture panel."""
+        handler = getattr(self, "escHandler", None)
+        if handler is not None:
+            handler()
+            return
+        objc.super(CaptureChoicePanel, self).cancelOperation_(sender)
 
 
 # PR 8: the orb's Spotlight-style panel classes. Kept at the end so earlier helpers keep the first match.
