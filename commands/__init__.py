@@ -129,7 +129,6 @@ from .config import (
     BRIDGE_POLL_SECONDS,
     OUTBOX_TTL_SECONDS,
     NONCE_LOG,
-    NONCE_LIMIT,
     NONCE_RE,
     BRIDGE_ALLOW,
     KNOWN_APPS,

@@ -740,3 +740,147 @@ class TestBridgeValidation(unittest.TestCase):
             reply = self._reply(nonce)
             self.assertFalse(reply["ok"], phrase)
             self.assertIn("can't do that from your phone", reply["reply"])
+
+
+class TestNonceStore(unittest.TestCase):
+    """Accepted nonces are kept until their window ends. No count limit, and junk files record nothing."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.outbox = os.path.join(self.tmp.name, "outbox")
+        self.nonce_log = os.path.join(self.tmp.name, "nonces.json")
+        os.makedirs(self.outbox)
+        self.now = [NOW]
+        patches = [
+            mock.patch.object(bridge, "BRIDGE_OUTBOX", self.outbox),
+            mock.patch.object(bridge, "NONCE_LOG", self.nonce_log),
+            mock.patch.object(bridge, "_bridge_secret", return_value=SECRET),
+            mock.patch.object(bridge.time, "time", side_effect=lambda: self.now[0]),
+        ]
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+        self.calls = []
+
+    def _run_text(self, text):
+        self.calls.append(text)
+        return "Handled on the Mac."
+
+    def _send(self, nonce, cmd="what time is it", ts=None, sig=None):
+        ts = self.now[0] if ts is None else ts
+        sig = _sign(cmd, ts, nonce) if sig is None else sig
+        path = os.path.join(self.tmp.name, "f-%s.json" % nonce)
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump({"cmd": cmd, "ts": ts, "nonce": nonce, "sig": sig}, handle)
+        bridge._process_bridge_file(path, self._run_text)
+
+    def _reply(self, nonce):
+        with open(os.path.join(self.outbox, nonce + ".json"), encoding="utf-8") as handle:
+            return json.load(handle)
+
+    def _stored(self):
+        with open(self.nonce_log, encoding="utf-8") as handle:
+            return json.load(handle)
+
+    # --- the two cases that were asked for
+
+    def test_a_flood_of_junk_files_cannot_push_real_nonces_out(self):
+        self._send("realnonce001")
+        self.assertEqual(self.calls, ["what time is it"])
+        for i in range(1000):  # far more than the old 200-entry log
+            self._send("junk%06d" % i, sig="0" * 64)
+        self.assertEqual(list(self._stored()), ["realnonce001"])  # not one junk nonce was recorded
+        self.calls.clear()
+        self._send("realnonce001")  # the same signed file again, still inside its window
+        self.assertEqual(self.calls, [])
+        self.assertEqual(self._reply("realnonce001")["reply"], "I already did that.")
+
+    def test_a_replayed_command_inside_the_window_is_still_rejected(self):
+        self._send("replayme0001", cmd="what's the weather")
+        self.assertEqual(self.calls, ["what's the weather"])
+        self.now[0] = NOW + 100  # still inside the 120 s window
+        self.calls.clear()
+        self._send("replayme0001", cmd="what's the weather", ts=NOW)
+        self.assertEqual(self.calls, [])
+        self.assertEqual(self._reply("replayme0001")["reply"], "I already did that.")
+
+    # --- the store itself
+
+    def test_there_is_no_count_limit(self):
+        for i in range(300):  # the old log kept 200
+            self._send("accepted%05d" % i)
+        self.assertEqual(len(self.calls), 300)
+        self.assertEqual(len(self._stored()), 300)
+        self.calls.clear()
+        self._send("accepted00000")  # the very first one is still remembered
+        self.assertEqual(self.calls, [])
+        self.assertEqual(self._reply("accepted00000")["reply"], "I already did that.")
+
+    def test_an_entry_lasts_exactly_as_long_as_its_window(self):
+        self._send("windowed0001")
+        expiry = self._stored()["windowed0001"]
+        self.assertEqual(expiry, NOW + bridge.BRIDGE_MAX_AGE + 1)
+        # Last moment the age check would still pass: the nonce must still be remembered.
+        self.now[0] = NOW + bridge.BRIDGE_MAX_AGE
+        self.assertIn("windowed0001", bridge._load_nonces())
+        # Past the window the entry goes; the file would be refused as too old anyway.
+        self.now[0] = NOW + bridge.BRIDGE_MAX_AGE + 2
+        self.assertNotIn("windowed0001", bridge._load_nonces())
+
+    def test_a_future_dated_file_is_remembered_until_its_own_window_ends(self):
+        future = NOW + 100  # accepted: within 120 s of now
+        self._send("futurefile01", ts=future)
+        self.assertEqual(self._stored()["futurefile01"], future + bridge.BRIDGE_MAX_AGE + 1)
+        self.now[0] = NOW + 210  # the replay would still pass the age check (110 s from its timestamp)
+        self.calls.clear()
+        self._send("futurefile01", ts=future)
+        self.assertEqual(self.calls, [])
+        self.assertEqual(self._reply("futurefile01")["reply"], "I already did that.")
+
+    def test_expired_entries_are_dropped_when_the_store_is_rewritten(self):
+        self._send("firstentry01")
+        self.now[0] = NOW + 600
+        self._send("secondentry1")
+        self.assertEqual(list(self._stored()), ["secondentry1"])
+
+    def test_a_good_signature_with_an_old_timestamp_records_nothing(self):
+        self._send("oldstamp0001", ts=NOW - 1000)
+        self.assertEqual(self.calls, [])
+        self.assertEqual(self._reply("oldstamp0001")["reply"], "That command was too old. Try again.")
+        self.assertFalse(os.path.exists(self.nonce_log))
+
+    def test_a_bad_signature_records_nothing_even_once(self):
+        self._send("badsig000001", sig="f" * 64)
+        self.assertEqual(self._reply("badsig000001")["reply"], "I couldn't verify that command.")
+        self.assertFalse(os.path.exists(self.nonce_log))
+
+    def test_a_refused_but_authentic_command_is_still_single_use(self):
+        self._send("notallowed01", cmd="quit all apps")  # not on the allowlist
+        self.assertIn("notallowed01", self._stored())
+
+    def test_the_old_list_format_is_read_and_replaced(self):
+        with open(self.nonce_log, "w", encoding="utf-8") as handle:
+            json.dump(["legacy000001", "legacy000002"], handle)
+        self._send("legacy000001")
+        self.assertEqual(self.calls, [])  # still refused as a replay
+        self._send("freshone0001")
+        stored = self._stored()
+        self.assertIsInstance(stored, dict)
+        self.assertIn("legacy000001", stored)
+        self.assertIn("freshone0001", stored)
+
+    def test_a_damaged_store_reads_as_empty(self):
+        with open(self.nonce_log, "w", encoding="utf-8") as handle:
+            handle.write("{not json")
+        self.assertEqual(bridge._load_nonces(), {})
+        with open(self.nonce_log, "w", encoding="utf-8") as handle:
+            json.dump({"ok00000001": NOW + 50, "bad": "x", "old": NOW - 5, "flag": True}, handle)
+        self.assertEqual(list(bridge._load_nonces()), ["ok00000001"])
+
+    def test_the_count_limit_is_gone_from_the_code(self):
+        import inspect
+        source = inspect.getsource(bridge)
+        self.assertNotIn("NONCE_LIMIT", source)
+        self.assertNotIn("[-NONCE", source)
+        self.assertFalse(hasattr(commands, "NONCE_LIMIT"))

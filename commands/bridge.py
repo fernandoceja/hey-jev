@@ -6,7 +6,7 @@ import os
 import re
 import threading
 import time
-from .config import BRIDGE_ALLOW, BRIDGE_INBOX, BRIDGE_MAX_AGE, BRIDGE_MAX_CMD, BRIDGE_OUTBOX, BRIDGE_POLL_SECONDS, BRIDGE_SECRET_ACCOUNT, CONFIRM, NONCE_LIMIT, NONCE_LOG, NONCE_RE, OUTBOX_TTL_SECONDS
+from .config import BRIDGE_ALLOW, BRIDGE_INBOX, BRIDGE_MAX_AGE, BRIDGE_MAX_CMD, BRIDGE_OUTBOX, BRIDGE_POLL_SECONDS, BRIDGE_SECRET_ACCOUNT, CONFIRM, NONCE_LOG, NONCE_RE, OUTBOX_TTL_SECONDS
 from .routing import route_before_api
 
 # --------------------------------------------------------------------------- iPhone bridge (iCloud files only, no listener)
@@ -53,22 +53,45 @@ def _expected_sig(secret, cmd, ts_canon, nonce):
     return hmac.new(secret.encode("utf-8"), payload, hashlib.sha256).hexdigest()
 
 
-def _load_nonces():
+def _nonce_expiry(ts_canon):
+    """When an accepted nonce can stop being remembered: the end of its timestamp's window.
+
+    A file is refused once it is more than BRIDGE_MAX_AGE seconds from now, whichever side of now its timestamp is
+    on, so ts + BRIDGE_MAX_AGE is the last moment a replay could still pass the age check. Derived from the signed
+    timestamp, never from the sender's own say-so."""
+    return int(ts_canon) + BRIDGE_MAX_AGE + 1
+
+
+def _load_nonces(now=None):
+    """{nonce: expires_at} for every accepted nonce still inside its window. There is no count limit.
+
+    The old format was a bare list of the last 200 nonces. It is read as nonces that expire after two windows, which
+    is long enough to cover any file that was valid when the list was written."""
+    now = time.time() if now is None else now
     try:
         with open(NONCE_LOG, encoding="utf-8") as handle:
             data = json.load(handle)
     except (OSError, ValueError):
-        return []
-    if not isinstance(data, list):
-        return []
-    return [item for item in data if isinstance(item, str)]
+        return {}
+    if isinstance(data, list):
+        return {item: now + 2 * BRIDGE_MAX_AGE for item in data if isinstance(item, str)}
+    if not isinstance(data, dict):
+        return {}
+    seen = {}
+    for nonce, expires in data.items():
+        if isinstance(nonce, str) and isinstance(expires, (int, float)) and not isinstance(expires, bool) and expires > now:
+            seen[nonce] = float(expires)
+    return seen
 
 
-def _remember_nonce(nonce):
+def _remember_nonce(nonce, expires_at):
+    """Record one ACCEPTED nonce until expires_at. Entries that have expired are dropped as the file is rewritten.
+
+    Only files with a good signature, a fresh timestamp and an unused nonce get here, so junk files cannot add
+    entries and so cannot push real ones out."""
     os.makedirs(os.path.dirname(NONCE_LOG), exist_ok=True)
-    seen = [item for item in _load_nonces() if item != nonce]
-    seen.append(nonce)
-    seen = seen[-NONCE_LIMIT:]
+    seen = _load_nonces()
+    seen[nonce] = float(expires_at)
     tmp = NONCE_LOG + ".tmp"
     with open(tmp, "w", encoding="utf-8") as handle:
         json.dump(seen, handle)
@@ -163,8 +186,7 @@ def _process_bridge_file(path, run_text):
     expected = _expected_sig(secret, cmd, ts_canon, nonce)
     if not hmac.compare_digest(expected, sig.strip().lower()):
         _write_outbox(nonce, False, "I couldn't verify that command.")
-        _remember_nonce(nonce)
-        _delete_inbox(path)
+        _delete_inbox(path)  # a bad signature is never remembered: junk files must not be able to push real nonces out
         return
     try:
         age = abs(time.time() - int(ts_canon))
@@ -172,14 +194,13 @@ def _process_bridge_file(path, run_text):
         age = BRIDGE_MAX_AGE + 1
     if age > BRIDGE_MAX_AGE:
         _write_outbox(nonce, False, "That command was too old. Try again.")
-        _remember_nonce(nonce)
-        _delete_inbox(path)
+        _delete_inbox(path)  # it can never pass the age check again, so there is nothing to remember
         return
     if _nonce_used(nonce):
         _write_outbox(nonce, False, "I already did that.")
         _delete_inbox(path)
         return
-    _remember_nonce(nonce)
+    _remember_nonce(nonce, _nonce_expiry(ts_canon))  # accepted: single use until its window ends
     if len(cmd) > BRIDGE_MAX_CMD:
         _write_outbox(nonce, False, "That command is too long.")
         _delete_inbox(path)
