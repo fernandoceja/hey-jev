@@ -120,6 +120,7 @@ class DragTracker:
         self._start = None
         self._last = None
         self._rect = None
+        self._release = None
         self._done = False
 
     @property
@@ -146,12 +147,17 @@ class DragTracker:
                 self._last = tuple(point)
             else:
                 self._rect = rect_from_points(self._start, tuple(point))
+                self._release = tuple(point)
                 self._done = True
         self._was_down = pressed
 
     def rect(self):
         """The drag's rectangle once the button came up, else None (no drag, or too small)."""
         return self._rect
+
+    def release_point(self):
+        """Where the pointer was when the button came up, else None."""
+        return self._release
 
 
 def glimmer_seconds(reduce_motion):
