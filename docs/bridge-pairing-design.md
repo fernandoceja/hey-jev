@@ -1,44 +1,63 @@
-# iPhone bridge: QR pairing and read-only phone summaries (design for review)
+# iPhone bridge: QR pairing (design, updated with Fernando's answers)
 
-Status: **design only, no code written.** Review this before any code. Nothing here changes behaviour until a PR is approved.
+Status: **design only. No pairing code is written, and none will be until Fernando approves this updated document.** Replay protection (section 4) is already fixed and merged (#149). Everything else here is a plan.
 
-Constraints from Fernando: free only. No CloudKit, no Apple push, no local servers or listening sockets, no vendor clouds. ntfy is optional and off by default. Jev's standing guardrails still apply: no money-moving commands and no My Love on the bridge, every bridge command allowlisted, keys in the Keychain, no bridge security changes without review (this document is that review).
+Constraints: free only. No CloudKit, no Apple push, no local servers or listening sockets, no vendor clouds. ntfy is an optional later extra, off by default. Standing guardrails still apply: no money-moving commands and no My Love on the bridge, every bridge command allowlisted, keys in the Keychain, no bridge security change without review (this document is that review), and nothing is deleted without being asked.
 
 ## 1. Where we are today
 
-`commands/bridge.py` already gives the phone a command path with no listening socket:
+`commands/bridge.py` gives the phone a command path with no listening socket:
 
-- The phone drops a JSON file in `iCloud Drive/Jev/inbox`. The Mac polls the folder every 2 s, runs the command if it is on `BRIDGE_ALLOW`, writes a reply to `iCloud Drive/Jev/outbox`, and deletes the inbox file.
-- One shared secret, `JEV_BRIDGE_SECRET`, lives in the Mac Keychain (set by running `python siri.py --bridge-secret`). Each file carries `cmd`, `ts`, `nonce` and `sig = HMAC-SHA256(secret, cmd|ts|nonce)`.
-- Checks: signature, timestamp within 120 s, nonce not seen (the last 200 are remembered), command length at most 2000, command on the allowlist, not a confirmation command, no message reads. Replies are deleted after 10 minutes.
-- The comment in `config.py` says the phone shortcut "is not built yet". So the phone side does not exist, and today's pairing is a secret typed by hand.
+- The phone drops a JSON file in `iCloud Drive/Jev/inbox`. The Mac polls every 2 s, runs the command if it is on `BRIDGE_ALLOW`, writes a reply to `iCloud Drive/Jev/outbox`, and deletes the inbox file.
+- One shared secret, `JEV_BRIDGE_SECRET`, lives in the Mac Keychain (set with `python siri.py --bridge-secret`). Each file carries `cmd`, `ts`, `nonce` and `sig = HMAC-SHA256(secret, cmd|ts|nonce)`.
+- Checks: signature, timestamp within 120 s, nonce unused, command length at most 2000, on the allowlist, not a confirmation command, no message reads. Replies are deleted after 10 minutes.
+- The phone side does not exist yet ("the phone shortcut is not built yet" in `config.py`), so today's pairing is a secret typed by hand.
 
-What this design adds: a safe way to **get the secret onto the phone**, a phone-side signer, signed replies, and **read-only summaries** the phone can show. It adds no new command types and no network client.
+This design adds a safe way to **get a secret onto the phone**, a phone-side signer, and signed replies. It adds no new command types and no network client.
 
-## 2. The phone-side constraint (the main decision)
+## 2. The phone runtime: Scriptable, with a gate (decision made, not fully confirmed)
 
-The signature is HMAC-SHA256. iOS Shortcuts has no HMAC action (its Hash action is a plain hash, and "hash of key plus message" is not an HMAC and is open to length-extension). So a bare Shortcut cannot sign.
+iOS Shortcuts has no HMAC action (its Hash action is a plain hash, and "hash of key plus message" is not an HMAC and is open to length-extension). So the phone needs a small script runtime. **Fernando's answer: Scriptable is OK, but only after its Keychain and iCloud file access are confirmed from Scriptable's own documentation.** I read the developer documentation at docs.scriptable.app. Result: **confirmed in part, not fully. So the rule stands: no phone-side code until the gaps below are closed.**
 
-Recommended, free: **Shortcuts plus the free Scriptable app.** A Shortcut scans the QR code ("Scan QR/Barcode" action) and passes the text to a Scriptable script. The script stores the secret, builds and signs inbox files, and reads outbox and summary files, using a small pure-JavaScript SHA-256 HMAC (a CryptoJS-style module kept in the script). Scriptable is a third-party app; its Keychain and iCloud Drive file access and its Shortcuts hook must be **verified against its own documentation before coding** (I found App Store and community pages, not the developer docs).
+**Confirmed from Scriptable's own docs:**
+- **Keychain exists.** `Keychain.contains(key)`, `set(key, value)`, `get(key)` (throws if missing) and `remove(key)`, string values, described as stored "in an encrypted database".
+- **iCloud file access exists.** `FileManager.iCloud()` returns a file manager for iCloud, with `read`, `readString`, `write`, `writeString`, `listContents`, `fileExists`, `createDirectory`, `joinPath`, plus `isFileDownloaded` and `downloadFileFromiCloud` for files not yet local.
+- **Access outside Scriptable's own folder is by file bookmarks.** Bookmarks made in Scriptable's settings work only when a script runs inside the app. From Shortcuts or Siri the bookmark must be made with Scriptable's "Create File Bookmark" Shortcuts action.
+- **Shortcuts hand-off exists.** Input arrives as `args.shortcutParameter` or `args.plainTexts`. Output goes back with `Script.setShortcutOutput(value)` (text, number, boolean or dictionary).
+- **Modules exist.** `importModule('name')` loads another script file, so a signing helper can live in its own file.
 
-Alternatives if Scriptable is rejected: a Safari "Run JavaScript on Web Page" action (needs a secure context for WebCrypto, so likely awkward), or a small sideloaded Swift app (the free personal team expires every 7 days, so not really free to live with). Decision needed (section 9).
+**Not confirmed, and it matters:**
+1. **Whether the Keychain is device-only or syncs through iCloud Keychain.** The Keychain page does not say. If it synced, the pairing secret would be copied to the user's other devices (end-to-end encrypted by Apple, but not "this phone only"). Needs a test on the iPhone, or Fernando accepts that.
+2. **Whether a bookmark can point at `iCloud Drive/Jev/` (outside Scriptable's own folder) and be read and written from a script run by Shortcuts.** The docs describe bookmarks for "files and folders outside Scriptable's documents directory" in general but do not say this exact case works. Needs a test on the iPhone.
+3. **Scriptable has no crypto, hash or HMAC API at all.** The 60-entry API index lists none (it has `Data`, `Keychain`, `FileManager`, `Request`, `UUID` and so on). So the HMAC-SHA256 must be our own small pure-JavaScript module (kept in a script and loaded with `importModule`), and it needs its own known-answer tests on the Mac. The phone also has no documented random-byte API, so nonces would come from `UUID` plus the timestamp (a nonce must be unique, not secret).
 
-## 3. QR pairing secret: create, store, rotate
+**Fallback if (2) fails:** point the bridge folders at Scriptable's own iCloud folder instead of `iCloud Drive/Jev`. That avoids bookmarks, but it is unverified: no Scriptable iCloud container exists on this Mac to check, so the Mac-side path is unknown.
 
-**Create.** In Jev Settings, **Pair iPhone** makes one new secret per phone: 32 random bytes from `secrets.token_bytes`, plus an 8-byte pairing id. The QR holds `jev-pair-1`, the pairing id, the secret (base64url) and an expiry. It is shown only after the click, for 120 s, with a countdown.
-- The QR window is created so screen capture cannot read it (the same `NSWindowSharingNone` approach the capture glimmer uses), it takes no clicks, and it closes on success, on Esc, or at expiry. The secret travels by camera only and never goes into iCloud.
-- The secret is not shown as text, logged, or put on the clipboard.
+**Gate before any phone-side code:** a short manual device test on Fernando's iPhone: (a) a Shortcut-run script reads and writes a file in `iCloud Drive/Jev/inbox` through a bookmark, (b) a Keychain value stays on that phone (or Fernando accepts that it syncs), (c) the pure-JS HMAC matches the Mac's known-answer values. Until (a) to (c) pass, only Mac-side work can be planned. If Scriptable fails, the alternatives are a Safari "Run JavaScript on Web Page" action or a sideloaded Swift app (7-day personal-team expiry, so not really free).
+
+## 3. QR pairing: create, store, rotate
+
+**Where it lives (decision):** Jev's **Settings** only, a "Pair iPhone" button. **Touch ID is asked before the QR is shown**, every time (no cached approval). Jev uses Apple's standard device-owner authentication (Touch ID, with the system's own Mac-password fallback). Jev never sees or handles a password, and never clicks the prompt. Fernando clicks it.
+
+**Create.** After the Touch ID prompt succeeds, Jev makes one new secret per phone: 32 random bytes from `secrets.token_bytes`, plus an 8-byte pairing id. The QR holds a format tag, the pairing id, the secret (base64url) and an expiry. It shows for 120 s with a countdown.
+- The QR window is created so screen capture cannot read it (the same `NSWindowSharingNone` approach the capture glimmer uses), takes no clicks, and closes on success, on Esc, or at expiry. The secret travels by camera only and never goes into iCloud.
+- The secret is never shown as text, logged, or put on the clipboard.
 
 **Store.**
-- Mac: one Keychain item per phone (account `JEV_BRIDGE_PAIR_<id>`), plus a small non-secret list (id, name, paired date, last seen) in Application Support. Not in `.env`, not in files.
-- Phone: Scriptable's Keychain on that phone (to be verified as device-local, not iCloud-synced).
+- Mac: one Keychain item per phone (account `JEV_BRIDGE_PAIR_<id>`), plus a small non-secret list (id, name, paired date, last seen) in Application Support.
+- Phone: Scriptable's Keychain (see the open question in section 2).
 
-**Pair completes.** The phone writes a signed `ack` file (its name and id) to the inbox. The Mac checks the signature and that the pairing id is waiting and unexpired, then marks the phone paired and discards the single-use pairing window. A second ack for the same id is rejected. Maximum 3 phones.
+**Pair completes.** The phone writes a signed `ack` file (its name and id) to the inbox. The Mac checks the signature and that the pairing id is waiting and unexpired, marks the phone paired and discards the single-use pairing window. A second ack for the same id is rejected. Maximum 3 phones.
 
 **Rotate and revoke.**
-- **Revoke** (Settings, per phone or "Revoke all"): deletes the Keychain item at once. The next file from that phone fails verification. "Revoke all" also clears the nonce store and deletes the summary files.
-- **Rotate**: pair again with a new QR (new secret, new id), then revoke the old one. There is no silent automatic rotation, since it needs a camera scan. Jev shows a gentle reminder after 180 days.
-- The old single global `JEV_BRIDGE_SECRET` keeps working during a transition (v1 files below), then is removed in a later PR.
+- **Revoke** (Settings, per phone or "Revoke all") makes the Mac stop trusting that phone's secret at once, so its next file fails verification. Removing the Keychain item is part of revoke and is shown as such; Jev asks before it removes anything.
+- **Rotate** means pairing again with a new QR (new secret, new id), then revoking the old one. No silent automatic rotation, since it needs a camera scan. Jev shows a reminder after 180 days.
+
+**The old shared secret (decision): keep it for 7 days after a phone pairs, then retire it.**
+- The 7 days start when the **first** phone's pairing completes. During that time old-format (v1) files signed with `JEV_BRIDGE_SECRET` are still accepted.
+- After 7 days Jev **stops accepting v1 files**. Settings shows the countdown and a "Retire now" button for anyone who wants it earlier.
+- Retiring only stops Jev from accepting the old secret. **Removing the old Keychain item is a separate, explicit step Fernando clicks ("Remove old secret").** Nothing is deleted automatically.
+- If no phone ever pairs, the old secret keeps working as it does today.
 
 ## 4. Signed single-use files
 
@@ -49,74 +68,65 @@ Alternatives if Scriptable is rejected: a Safari "Run JavaScript on Web Page" ac
  "ts": 1731372000, "nonce": "<16 to 22 chars, A-Z a-z 0-9 _ ->", "sig": "<hex>"}
 ```
 
-- `kind` is `cmd`, `ack` (pairing) or `req` (ask for fresh summaries). Nothing else is accepted.
-- `sig = HMAC-SHA256(secret, "jev-bridge-v2|" + kind + "|" + pid + "|" + cmd + "|" + ts + "|" + nonce)`. The fixed prefix and the `kind` keep a signature from one purpose being reused for another, and `pid` ties it to one phone.
-- v1 files (the current format) are still accepted for the legacy secret during the transition.
+- `kind` is `cmd` or `ack` (pairing). Nothing else is accepted in the first version.
+- `sig = HMAC-SHA256(secret, "jev-bridge-v2|" + kind + "|" + pid + "|" + cmd + "|" + ts + "|" + nonce)`. The fixed prefix and `kind` keep a signature for one purpose from being reused for another, and `pid` ties it to one phone.
+- v1 files (the current format) stay valid for the old secret during the 7-day window above.
 
 **Mac checks, in order:** regular file only (no symlinks), at most 4 KB, valid JSON and fields, known `pid`, signature (constant-time compare), `ts` within 120 s, nonce unused, command length, `cmd` on `BRIDGE_ALLOW`, not a confirmation command. Anything else is refused with a generic reply and the file is deleted.
 
-**Replay protection (a change).** Today the last 200 nonces are remembered, and a bad-signature nonce is also remembered. Someone who can write to the iCloud folder could flood 200 files to push a real nonce out and replay a captured command inside its 120 s window. New rule: remember every nonce for **at least 5 minutes** (more than twice the window), pruned by age, not by count, and do **not** record nonces from unsigned or badly signed files. A file older than 120 s is refused whatever its nonce.
+**Replay protection: done (#149).** Every accepted nonce is now remembered until the end of its own timestamp window (`ts + 120 s + 1`), with no count limit. Files with a bad signature or an old timestamp record nothing, so junk files cannot push real nonces out. A replay inside the window is still refused. The v2 format keeps using this store.
 
 **Expiry.** The Mac's own 120 s window is the only validity rule. The file carries no `exp`, since a sender-chosen expiry could be set far out. Outbox replies still expire after 10 minutes.
 
-**Reply file (Mac to phone)** now carries `sig = HMAC-SHA256(secret, "jev-bridge-v2|reply|" + pid + "|" + nonce + "|" + ok + "|" + reply)`. The phone script verifies it before showing the text, so a fake "done" planted in iCloud is rejected.
+**Reply file (Mac to phone)** gets `sig = HMAC-SHA256(secret, "jev-bridge-v2|reply|" + pid + "|" + nonce + "|" + ok + "|" + reply)`. The phone script verifies it before showing the text, so a fake "done" planted in iCloud is rejected.
 
-## 5. Read-only summaries for the phone
-
-A folder `iCloud Drive/Jev/summaries/` written by the Mac, a few files, each signed, versioned, with a `generated` time, at most 16 KB. The phone shows "Jev's Mac is asleep" when a file is older than 15 minutes. Written only while Jev is running, and only when the user has turned summaries on in Settings (**off by default**).
-
-**Goes in (small and already phone-askable):**
-- `today.json`: date, weather one-liner, next event time and title, today's shift, due-list titles, battery percent. These match commands already on `BRIDGE_ALLOW` (`info_today`, `info_next_event`, `info_due`, `info_battery` and so on), so no new kind of data is exposed.
-- `recent.json` (a second toggle, off by default): the last 10 turns **whose action is on `BRIDGE_ALLOW`**, as time, the command text and a reply summary of at most 240 characters. Turns that went to the AI model, and everything else, are excluded.
-
-**Never leaves the Mac, in any file:**
-- Secrets: every Keychain item and API key, pairing secrets, anything from the password commands.
-- Attachments and captures: screenshots, recordings, files, their paths, and cleanup or storage-scan results.
-- Message content (Messages, Mail, My Love) and the Eney-style "memory" equivalents: notes bodies, the dictionary and vocabulary, dictation history, clipboard history.
-- Money details. The spoken `info_rent`, `info_bills` and `info_payday` replies stay ephemeral (10 minutes in the outbox) and are not written into the persistent summary files.
-- Anything not on an explicit summary allowlist. A new summary field needs a new reviewed entry, like `BRIDGE_ALLOW`.
-
-Why persistent files are stricter than replies: they sit in iCloud until replaced, so they carry less than a 10-minute reply could.
-
-## 6. What changes in Jev's security model
+## 5. What changes in Jev's security model
 
 | Area | Today | After this design |
 |---|---|---|
-| Secret | One global Keychain item, typed in by hand | One Keychain item per phone, from a single-use QR, individually revocable. Legacy secret kept only during transition |
-| Signature | HMAC over `cmd, ts, nonce` | HMAC over `version, kind, pid, cmd, ts, nonce`, with domain separation. Replies signed too |
-| Replay | Last 200 nonces; bad-signature nonces also stored | Every valid nonce kept at least 5 min, pruned by age; unsigned or bad files never stored |
-| File types | `cmd` only | `cmd`, `ack`, `req` (inbox); reply and signed summaries (outbox side) |
+| Replay | Last 200 nonces; junk could push real ones out | **Fixed in #149:** every accepted nonce kept until its window ends |
+| Secret | One global Keychain item, typed in by hand | One Keychain item per phone, from a Touch ID-gated single-use QR, individually revocable. Old secret accepted for 7 days after the first pairing, then retired (removal is a separate click) |
+| Signature | HMAC over `cmd, ts, nonce` | HMAC over `version, kind, pid, cmd, ts, nonce` with domain separation. Replies signed too |
+| File types | `cmd` only | `cmd` and `ack` in; signed replies out |
 | Commands | `BRIDGE_ALLOW` | **Unchanged.** No new command, no confirmation commands, no money-moving, no My Love, no message reads |
-| Network | None (iCloud files only) | **None.** No listening socket, no outbound client, no new service. The Mac reads and writes a local iCloud Drive folder |
-| Data to the phone | Spoken replies, 10 min | Replies plus optional signed summaries from an explicit allowlist |
-| UI | None | Pair iPhone sheet, paired-phone list (name, last seen), Revoke and Revoke all, summaries toggles |
+| Network | None (iCloud files only) | **None.** No listening socket, no outbound client, no new service |
+| UI | None | Settings: Pair iPhone (behind Touch ID), paired-phone list, Revoke and Revoke all, legacy countdown with Retire now and Remove old secret |
 
 Threat notes:
-- **iCloud account compromise.** An attacker with iCloud access can read plain inbox, outbox and summary files, but cannot run a command or forge a reply without a phone's secret. Mitigations: minimal summaries, Apple's Advanced Data Protection (user's choice), and optional payload encryption later (needs a cipher on both sides, so a second step).
-- **Lost phone.** Revoke it from the Mac at once. The secret never travels over iCloud or the network.
-- **Clock skew.** More than 120 s apart yields a clear "too old" reply. No loosening.
-- **Mac asleep.** Files wait. A valid file that is already stale is refused, and the phone is told.
+- **iCloud account compromise.** An attacker with iCloud access can read plain inbox and outbox files, but cannot run a command or forge a reply without a phone's secret. Payload encryption is **out of this version** (below).
+- **Lost phone.** Revoke from the Mac at once. The secret never travels over iCloud or the network.
+- **Clock skew.** More than 120 s apart gives a clear "too old" reply. No loosening.
+- **Mac asleep.** Files wait. A valid file that is already stale is refused and the phone is told.
 
-## 7. Optional: ntfy (off by default)
+## 6. Later options (not in the first version)
 
-Only to say "Jev replied". Settings toggle with a plain disclosure. The Mac makes one outbound HTTPS POST to a random topic derived from the pairing secret (so it cannot be guessed), with a fixed title and **no content**. The free ntfy iPhone app shows it. No listening socket on the Mac. ntfy's service sees the topic, the timing and the IP address, but not the reply. Nothing depends on it: without it the phone just reads the outbox, which already works.
+**Phone summaries.** **Decision: off by default, and not part of the first version.** The allowlist below is kept as a later option. If it is ever built, it is a separate reviewed PR, behind a Settings toggle that starts off.
+- A folder `iCloud Drive/Jev/summaries/` of signed, versioned JSON files, each at most 16 KB, stale after 15 minutes ("Jev's Mac is asleep").
+- *Could go in:* `today.json` (date, weather one-liner, next event time and title, today's shift, due-list titles, battery percent; all already phone-askable through `BRIDGE_ALLOW`), and a second, separate toggle for `recent.json` (the last 10 turns whose action is on `BRIDGE_ALLOW`, command text plus a reply summary of at most 240 characters).
+- *Never leaves the Mac, in any file:* secrets and every Keychain item; attachments, captures, files and their paths, cleanup or scan results; message content (Messages, Mail, My Love) and notes bodies, the dictionary, dictation and clipboard history; money details (rent, bills and payday replies stay ephemeral in the outbox); and anything not on an explicit summary allowlist.
 
-## 8. Costs
+**Payload encryption.** **Decision: out for this version; noted as a future option.** It would hide command and reply text from anyone with access to the iCloud files. It needs an authenticated cipher on both the Mac and the phone (Scriptable has none, so it would be another hand-written module with its own tests), so it is a second step with its own review.
+
+**ntfy nudge.** Optional, off by default, free: one outbound HTTPS POST from the Mac to a random topic with a fixed title and no content, shown by the free ntfy iPhone app. No listening socket. Nothing depends on it.
+
+## 7. Costs
 
 All free: iCloud Drive (already used), Shortcuts, and Scriptable (free app). No paid Apple Developer membership, no server, no subscription.
 
-## 9. Decisions needed from Fernando
+## 8. Decisions (answered by Fernando)
 
-1. Phone runtime: **Scriptable** (recommended), or another route from section 2.
-2. Summaries: on at all? Which of `today.json` and `recent.json`? Keep both off by default?
-3. Where Pair iPhone lives (Settings page, plus a Quick Command?) and whether pairing also asks for Touch ID on the Mac.
-4. How long to keep the legacy v1 secret path (suggested: one release, then remove).
-5. Payload encryption: now, later, or not at all.
+1. **Phone runtime:** Scriptable is OK, but only once its Keychain and iCloud file access are confirmed from its own documentation. *Result:* confirmed in part (section 2). Two things are unconfirmed and one needs our own code, so **no phone-side code until the device test passes.**
+2. **Summaries:** off by default; the allowlist stays in this document as a later option (section 6).
+3. **Pair iPhone:** in Jev's Settings, behind Touch ID before the QR shows. Fernando clicks the prompt.
+4. **Old shared secret:** keep for 7 days after a phone pairs, then retire it (stop accepting it); removing it from the Keychain is a separate, explicit click.
+5. **Payload encryption:** out for this version; a future option.
 
-## 10. Build order (when approved, one small PR each, tests and local suite first)
+## 9. Build order (when this document is approved; one small PR each, local suite first)
 
-1. Time-based nonce store and v2 verification, with the replay fixes (no UI).
-2. Per-phone Keychain store, pairing ack, revoke, and the QR sheet.
-3. Signed replies and the summaries writer, toggles off by default.
-4. The Scriptable script and Shortcut, with a setup guide (docs only).
-5. Optional ntfy nudge.
+1. ~~Time-based nonce store and replay fixes~~ **Done (#149).**
+2. Manual iPhone device test of Scriptable (section 2 gate). No code; Fernando runs it, or approves a test script to run.
+3. v2 verification on the Mac, per-phone Keychain store, pairing `ack`, revoke, and the legacy 7-day timer (no UI yet), with tests.
+4. Settings: Pair iPhone with the Touch ID prompt, the QR window, the paired-phone list, Retire now and Remove old secret.
+5. Signed replies.
+6. The Scriptable script and Shortcut, with a setup guide, only after step 2 passes.
+7. Later, each its own review: summaries, ntfy, payload encryption.
