@@ -228,3 +228,69 @@ def test_row_details_wrap_instead_of_clipping():
     assert 'wrappingLabelWithString_' in source and 'def detail_label' in source
     assert "self.detail_label(f'{row.path}\\n{row.reason}'" in source
     assert "self.label(f'{row.path}" not in source
+
+
+def test_scan_timeout_finishes_once_even_when_worker_is_stuck(monkeypatch):
+    from commands import storage_scan
+
+    entered = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    results = []
+    stages = []
+
+    def scan_stuck(*, cancel, progress):
+        progress('Downloads')
+        entered.set()
+        release.wait(5)
+        assert cancel.is_set()
+        progress('Late progress')
+        return ['late result']
+
+    def done(*result):
+        results.append(result)
+        finished.set()
+
+    monkeypatch.setattr(storage_scan, 'scan', scan_stuck)
+    task = storage_scan.ScanTask(done, timeout=0.25, progress=stages.append)
+    try:
+        assert entered.wait(2)
+        assert finished.wait(2)
+        assert task.thread.is_alive()
+        assert results == [([], None, 'Storage scan timed out after 0.25 seconds. Nothing selected for Trash.')]
+    finally:
+        release.set()
+        task.thread.join(2)
+    assert len(results) == 1
+    assert stages == ['Downloads']
+
+
+def test_scan_skips_mobile_documents_dataless_and_jarvis(tmp_path, monkeypatch):
+    from unittest.mock import Mock
+    from commands import cleanup_rules
+
+    cloud = tmp_path / 'Library/Mobile Documents'
+    dataless = tmp_path / 'Documents/placeholder'
+    jarvis = tmp_path / 'Documents/Jarvis'
+    for folder in (cloud, dataless, jarvis):
+        folder.mkdir(parents=True)
+    original_lstat = Path.lstat
+    original_scandir = os.scandir
+
+    def lstat(path):
+        info = original_lstat(path)
+        if path == dataless:
+            return Mock(wraps=info, st_mode=info.st_mode, st_flags=cleanup_rules.SF_DATALESS)
+        return info
+
+    def scandir(path):
+        assert Path(path) not in (cloud, dataless, jarvis)
+        return original_scandir(path)
+
+    monkeypatch.setattr(Path, 'lstat', lstat)
+    monkeypatch.setattr(os, 'scandir', scandir)
+    stages = []
+    rows = scan(home=tmp_path, paths={'User caches': cloud, 'Downloads': dataless},
+                snapshots=lambda: '', progress=stages.append)
+    assert 'Documents and Desktop' in stages and 'Large files' in stages
+    assert not {str(cloud), str(dataless), str(jarvis)} & {row.path for row in rows}

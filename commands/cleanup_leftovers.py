@@ -5,7 +5,7 @@ import plistlib
 import re
 
 from .cleanup_gate import Proposal
-from .cleanup_rules import protected_reason
+from .cleanup_rules import protected_reason, skip_storage_path
 
 APP_LOCATIONS = ('Application Support', 'Caches', 'Containers', 'Preferences',
                  'Saved Application State', 'HTTPStorages', 'WebKit', 'Logs',
@@ -41,7 +41,7 @@ def leftovers(home, candidates, installed, measure, cancel, extra=()):
     known = {identifier for identifier in ids.values() if identifier}
     for location in APP_LOCATIONS:
         root = home / 'Library' / location
-        if root.is_symlink() or protected_reason(root, home, extra):
+        if skip_storage_path(root, home) or root.is_symlink() or protected_reason(root, home, extra):
             continue
         try:
             with os.scandir(root) as entries:
@@ -51,7 +51,7 @@ def leftovers(home, candidates, installed, measure, cancel, extra=()):
                     path = Path(entry.path)
                     if any(part.casefold() in {'eney', 'setapp'} for part in entry.name.split('.')):
                         continue
-                    if entry.is_symlink() or protected_reason(path, home, extra) or entry.name.startswith('com.apple.'):
+                    if skip_storage_path(path, home) or entry.is_symlink() or protected_reason(path, home, extra) or entry.name.startswith('com.apple.'):
                         continue
                     groups = [row for row in candidates if ids.get(Path(row.path)) and
                               matches(location, entry.name, ids[Path(row.path)], row.category)]

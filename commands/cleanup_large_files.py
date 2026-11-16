@@ -8,7 +8,7 @@ import stat
 import time
 
 from .cleanup_gate import Proposal
-from .cleanup_rules import DATABASE_SUFFIXES, protected_reason, recently_modified
+from .cleanup_rules import DATABASE_SUFFIXES, is_dataless, protected_reason, recently_modified, skip_storage_path
 
 CATEGORY = 'Large & Old Files'
 BUCKET = 'large_files'
@@ -27,10 +27,6 @@ DEPENDENCY_NAMES = frozenset({
 
 def dependency_directory(path, home):
     return path == home / '.npm' or path.name in DEPENDENCY_NAMES
-
-
-# Darwin's stat.h: a placeholder without local file contents.
-SF_DATALESS = 0x40000000
 
 
 def _number(environ, key, default, minimum):
@@ -63,6 +59,8 @@ def candidates(home, cancel, local, *, min_bytes, min_age, reader=None, limit=10
     skipped_roots = {home / 'Library', home / '.Trash', home / '.ollama/models'}
     while pending and not cancel.is_set():
         directory = pending.popleft()
+        if skip_storage_path(directory, home):
+            continue
         try:
             with os.scandir(directory) as entries:
                 for entry in entries:
@@ -77,7 +75,10 @@ def candidates(home, cancel, local, *, min_bytes, min_age, reader=None, limit=10
                     if path in skipped_roots:
                         continue
                     try:
-                        if entry.is_dir(follow_symlinks=False):
+                        info = entry.stat(follow_symlinks=False)
+                        if is_dataless(info):
+                            continue
+                        if stat.S_ISDIR(info.st_mode):
                             if path.suffix.casefold() in PACKAGE_SUFFIXES:
                                 packages_skipped += 1
                                 continue
@@ -87,9 +88,6 @@ def candidates(home, cancel, local, *, min_bytes, min_age, reader=None, limit=10
                             if not protected_reason(path, home, local) and not (path / '.git').exists():
                                 pending.append(path)
                             continue
-                        if not entry.is_file(follow_symlinks=False):
-                            continue
-                        info = entry.stat(follow_symlinks=False)
                         if not stat.S_ISREG(info.st_mode) or info.st_size < min_bytes:
                             continue
                         if min_age and now - info.st_mtime < min_age:
@@ -97,8 +95,6 @@ def candidates(home, cancel, local, *, min_bytes, min_age, reader=None, limit=10
                         database = path.name.casefold().endswith(DATABASE_SUFFIXES)
                         protection = protected_reason(path, home, local)
                         if protection and not (database and protection.endswith('(size only)')):
-                            continue
-                        if getattr(info, 'st_flags', 0) & SF_DATALESS:
                             continue
                         cloud = reader(path) if reader is not None and not database else {}
                         if cloud.get('cloud_only'):
@@ -109,7 +105,7 @@ def candidates(home, cancel, local, *, min_bytes, min_age, reader=None, limit=10
                         if database:
                             reason, actionable = 'Database · path and size only', False
                         elif cloud.get('IsUbiquitousItem'):
-                            reason, actionable = 'iCloud file · use the iCloud cleanup action for local copies', False
+                            reason, actionable = 'iCloud file · report only', False
                         elif recently_modified(info.st_mtime, now):
                             reason, actionable = 'Changed in the last 24 hours', False
                         yield Proposal(str(path), size, CATEGORY, reason, 'ask_first', actionable, bucket=BUCKET)

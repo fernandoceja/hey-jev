@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 
 from .cleanup_gate import Proposal
+from .cleanup_rules import protected_reason, skip_storage_path
 
 BUCKET = 'folders'
 CATEGORY = 'Folder summaries (report only)'
@@ -37,7 +38,7 @@ def summary_rows(home, measure, cancel, limit=100000, paths=None):
         if cancel.is_set():
             break
         folder = Path(paths.get(name, home / name))
-        if folder.is_symlink() or not folder.is_dir():
+        if skip_storage_path(folder, home) or protected_reason(folder, home) or folder.is_symlink() or not folder.is_dir():
             continue
         count, readable = top_level_count(folder, limit)
         if not readable:

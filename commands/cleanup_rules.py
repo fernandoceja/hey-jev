@@ -4,6 +4,24 @@ import os
 from pathlib import Path
 import re
 
+
+SF_DATALESS = 0x40000000  # Darwin stat.h
+
+
+def is_dataless(info):
+    return bool(getattr(info, "st_flags", 0) & SF_DATALESS)
+
+
+def skip_storage_path(path, home):
+    path = Path(path)
+    cloud = Path(home) / "Library/Mobile Documents"
+    if cloud == path or cloud in path.parents:
+        return True
+    try:
+        return is_dataless(path.lstat())
+    except OSError:
+        return False
+
 PROTECTED_NAMES = {"voicestudio", "luigi", "highonlife", "dmios", "jarvis"}
 DATABASE_SUFFIXES = (".db", ".sqlite", ".sqlite3", ".sqlite-wal", ".sqlite-shm")
 ALWAYS_PROTECTED_FILES = {"notestore.sqlite", "omnivoice.db"}

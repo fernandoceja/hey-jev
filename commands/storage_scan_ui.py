@@ -48,8 +48,11 @@ def start(ui):
                 self.doc = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, 400, 300))
                 self.scroll.setDocumentView_(self.doc)
                 host.full_root.addSubview_(self.scroll)
+                self.scan_finished = False
                 self.render('Scanning storage… Read only.')
-                self.task = ScanTask(lambda rows, free, error: callAfter(self.finished, rows, free, error), home=self.home)
+                self.task = ScanTask(
+                    lambda rows, free, error: callAfter(self.finished, rows, free, error),
+                    home=self.home, progress=lambda stage: callAfter(self.progress, stage))
 
             @objc.python_method
             def label(self, text, y, width):
@@ -94,7 +97,7 @@ def start(ui):
                            if key not in ('left_alone', 'fernando') or self.show_protected}
                 height = max(220, 205 + 42 * len(visible) + 92 * sum(map(len, visible.values())))
                 self.doc.setFrame_(NSMakeRect(0, 0, width, height))
-                self.label(message, height - 48, width)
+                self.detail_label(message, height - 6, width, limit=46)
                 self.checks = []
                 y = height - 88
                 for key, entries in visible.items():
@@ -105,7 +108,7 @@ def start(ui):
                         check = self.button(f'{row.category} · {row.size / 1048576:.1f} MB', 'toggle:', 10, y, width - 20)
                         check.setButtonType_(3)
                         check.setEnabled_(row.deletable and key in ('safe', 'your_call', 'large_files', 'apps'))
-                        check.setState_(int(key == 'safe' and row.deletable))
+                        check.setState_(0)
                         self.checks.append((index, check))
                         self.detail_label(f'{row.path}\n{row.reason}', y - 3, width)
                         y -= 92
@@ -113,7 +116,8 @@ def start(ui):
                     self.button('Hide protected rows' if self.show_protected else 'Show protected rows',
                                 'protected:', 10, 48, 190)
                 if self.card:
-                    self.button('Review and move to Trash…', 'approve:', 10, 10, 220)
+                    self.review_button = self.button('Review and move to Trash…', 'approve:', 10, 10, 220)
+                    self.review_button.setEnabled_(False)
                 elif self.moves:
                     self.button('Undo', 'undo:', 10, 10, 90)
                 if self.cloud_paths:
@@ -130,15 +134,23 @@ def start(ui):
                 self.render(self.message)
 
             def toggle_(self, sender):
-                pass
+                if self.card:
+                    self.review_button.setEnabled_(any(check.state() for _, check in self.checks if check.isEnabled()))
+
+            @objc.python_method
+            def progress(self, stage):
+                if not self.closed and not self.scan_finished:
+                    self.render(f'Scanning storage… {stage}. Read only.')
 
             @objc.python_method
             def finished(self, rows, free, error):
                 if self.closed:
                     return
+                self.scan_finished = True
                 self.rows = rows
                 self.card = self.gate.present(rows) if not error else None
-                self.render(error or ('Storage scan — Free space: ' + ('{:.1f} GB'.format(free / 1e9) if free is not None else 'unavailable')))
+                self.render(error or ('Storage scan — Free space: ' + ('{:.1f} GB'.format(free / 1e9) if free is not None else 'unavailable')
+                                      + '. Nothing selected for Trash.'))
 
             def pastCleanups_(self, sender):
                 import json

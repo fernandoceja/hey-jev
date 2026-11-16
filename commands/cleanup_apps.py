@@ -7,7 +7,7 @@ import subprocess
 import time
 
 from .cleanup_gate import Proposal
-from .cleanup_rules import fernando_reason, protected_app, protected_reason, recently_modified
+from .cleanup_rules import fernando_reason, protected_app, protected_reason, recently_modified, skip_storage_path
 
 UNUSED_APP_DAYS = 90
 
@@ -15,21 +15,22 @@ UNUSED_APP_DAYS = 90
 def app_paths(roots, *, include_setapp=False):
     for root in roots:
         root = Path(root)
-        if root.is_symlink():
+        if skip_storage_path(root, Path.home()) or root.is_symlink():
             continue
         try:
             entries = list(root.iterdir())
         except OSError:
             continue
         for path in entries:
-            if path.is_symlink() or not path.is_dir():
+            if skip_storage_path(path, Path.home()) or path.is_symlink() or not path.is_dir():
                 continue
             if path.suffix.lower() == '.app':
                 yield path
-            elif path.name != 'Utilities' and (include_setapp or path.name != 'Setapp') and not path.name.startswith('.'):
+            elif path.name != 'Utilities' and (include_setapp or path.name != 'Setapp') and not path.name.startswith('.') and not protected_reason(path, root):
                 try:
                     yield from (p for p in path.iterdir()
-                                if p.suffix.lower() == '.app' and not p.is_symlink() and p.is_dir())
+                                if p.suffix.lower() == '.app' and not skip_storage_path(p, Path.home())
+                                and not p.is_symlink() and p.is_dir())
                 except OSError:
                     continue
 
