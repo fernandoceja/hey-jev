@@ -13,7 +13,11 @@ import subprocess
 
 MARKER = "Hey Jev Matrix"
 INSTALL_LINE = "Fernando, install cmatrix with brew install cmatrix."
-CMATRIX_CANDIDATES = ("/opt/homebrew/bin/cmatrix", "/usr/local/bin/cmatrix")
+CMATRIX_CANDIDATES = (
+    os.path.expanduser("~/bin/cmatrix"),
+    "/opt/homebrew/bin/cmatrix",
+    "/usr/local/bin/cmatrix",
+)
 _TTY_RE = re.compile(r"^/dev/tty[a-zA-Z0-9]+$")
 _UNSAFE = set("\"'`\n\r$\\;|&<> \t")
 
@@ -33,7 +37,7 @@ def _is_exec(path):
 
 
 def find_cmatrix(which=None, isfile=None):
-    """cmatrix on PATH, then the usual Homebrew locations. Else None."""
+    """cmatrix on PATH, then ~/bin, then the usual Homebrew locations. Else None."""
     check = isfile or _is_exec
     probe = shutil.which if which is None else which
     found = None

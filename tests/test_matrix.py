@@ -426,3 +426,12 @@ class TestStop(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HomeBinCandidateTest(unittest.TestCase):
+    def test_home_bin_found_when_not_on_path(self):
+        import os
+        from commands.matrix import find_cmatrix
+        home_bin = os.path.expanduser("~/bin/cmatrix")
+        got = find_cmatrix(which=lambda name: None, isfile=lambda p: p == home_bin)
+        self.assertEqual(got, home_bin)
