@@ -124,7 +124,7 @@ JEV_DOCS = os.path.expanduser("~/Documents/Fernando Ceja/Developer/AI-Projects/J
 # stay in the path. expanduser runs again when the folder is opened, which
 # turns a leading ~ into the home directory without a shell. The folder is
 # not created when it is missing.
-VIDEOS_FOLDER = os.path.expanduser("/Users/fernandoceja/Documents/Fernando Ceja/Videos")
+VIDEOS_FOLDER = os.path.expanduser("~/Documents/Fernando Ceja/Videos")
 # God's Eye, a local Vite app. Mac-only. Not on the iPhone bridge.
 # JEV_GODS_EYE_DIR overrides the folder. The dev server is expected at
 # GODS_EYE_URL. Jev connects as a client to see if the port is open.

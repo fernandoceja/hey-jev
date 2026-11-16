@@ -9,7 +9,7 @@ import sys
 import threading
 from . import cleanup_large_files, cleanup_summaries, tidy_downloads
 from .cleanup_gate import Proposal
-from .cleanup_rules import DATABASE_SUFFIXES, load_protected, protected_reason, recently_modified
+from .cleanup_rules import DATABASE_SUFFIXES, is_dataless, load_protected, protected_reason, recently_modified, skip_storage_path
 
 # category, relative path, safety, deletable, irreplaceable
 LOCATIONS = (
@@ -44,6 +44,9 @@ def _measure(path, cancel, limit=100000, protected=None):
             break
         try:
             st = p.lstat()
+            if is_dataless(st):
+                partial = True
+                continue
             newest = max(newest, st.st_mtime)
             database |= p.name.lower().endswith(DATABASE_SUFFIXES)
             if stat.S_ISLNK(st.st_mode):
@@ -81,9 +84,10 @@ def free_space(home):
 
 
 def download_rows(folder, home, local, cancel, limit):
-    if folder.is_symlink() or protected_reason(folder, home, local):
+    if skip_storage_path(folder, home) or folder.is_symlink() or protected_reason(folder, home, local):
         return
     files, _ = tidy_downloads.scan_folder(folder, max_files=limit)
+    files = [item for item in files if not skip_storage_path(item['path'], home)]
     copies = {copy['path'] for copy, _ in tidy_downloads.find_duplicates(files)}
     now = time.time()
     for item in files:
@@ -110,16 +114,27 @@ def download_rows(folder, home, local, cancel, limit):
         yield Proposal(str(path), size, category, reason, 'ask_first', not partial and days >= 1)
 
 
-def scan(home=None, paths=None, cancel=None, snapshots=None, limit=100000):
+def scan(home=None, paths=None, cancel=None, snapshots=None, limit=100000, progress=None):
     home = Path(home or Path.home())
     cancel = cancel or threading.Event()
     paths = paths or {}
     rows = []
     local = load_protected(home / "Library/Application Support/Hey Jev/cleanup-protected.json")
+
+    def guard(item):
+        return skip_storage_path(item, home) or protected_reason(item, home, local)
+
+    def report(stage):
+        if progress and not cancel.is_set():
+            progress(stage)
+
     for category, relative, safety, deletable, irreplaceable in LOCATIONS:
         if cancel.is_set():
             break
+        report(category)
         path = Path(paths.get(category, home / relative))
+        if skip_storage_path(path, home):
+            continue
         targets = [path]
         split = category in ('User caches', 'User logs', 'Xcode DerivedData') or category.endswith('DeviceSupport')
         if split and path.is_dir() and not path.is_symlink() and not protected_reason(path, home, local):
@@ -132,10 +147,9 @@ def scan(home=None, paths=None, cancel=None, snapshots=None, limit=100000):
         for target in targets:
             if cancel.is_set():
                 break
-            if not target.exists() or target.is_symlink():
+            if skip_storage_path(target, home) or not target.exists() or target.is_symlink():
                 continue
-            guard = lambda item: protected_reason(item, home, local)
-            protected = guard(target)
+            protected = protected_reason(target, home, local)
             size, partial, newest, symlink, database = _measure(target, cancel, limit, guard)
             reason = 'Review before moving to Trash'
             label = category
@@ -162,15 +176,20 @@ def scan(home=None, paths=None, cancel=None, snapshots=None, limit=100000):
             rows.append(Proposal(str(target), size, label, reason, effective,
                                  allowed, irreplaceable, bucket=bucket))
     if not cancel.is_set():
+        report('Downloads')
         rows.extend(download_rows(Path(paths.get('Downloads', home / 'Downloads')), home, local, cancel, limit))
     if not cancel.is_set():
+        report('Documents and Desktop')
         rows.extend(cleanup_summaries.summary_rows(
             home, lambda folder: _measure(folder, cancel, limit,
-                                          lambda item: protected_reason(item, home, local))[:2],
+                                          guard)[:2],
             cancel, limit, paths))
     for relative in ('Library/iTunes/Software Updates', 'Library/iTunes/iPhone Software Updates', 'Library/iTunes/iPad Software Updates'):
+        if cancel.is_set():
+            break
+        report('Installers and updates')
         folder = Path(paths.get(relative, home / relative))
-        if folder.is_symlink() or protected_reason(folder, home, local):
+        if skip_storage_path(folder, home) or folder.is_symlink() or protected_reason(folder, home, local):
             continue
         # Bounded traversal for installer files; no directory symlink traversal.
         count = 0
@@ -178,18 +197,19 @@ def scan(home=None, paths=None, cancel=None, snapshots=None, limit=100000):
             count += 1
             if count > limit or cancel.is_set():
                 break
-            dirs[:]  = [d for d in dirs if not (Path(root) / d).is_symlink() and not protected_reason(Path(root) / d, home, local)]
+            dirs[:]  = [d for d in dirs if not skip_storage_path(Path(root) / d, home) and not (Path(root) / d).is_symlink() and not protected_reason(Path(root) / d, home, local)]
             for name in files:
                 count += 1
                 if count > limit or cancel.is_set():
                     break
                 p = Path(root) / name
-                if p.suffix.lower() in ('.dmg', '.pkg', '.ipsw') and not p.is_symlink() and not protected_reason(p, home, local):
+                if p.suffix.lower() in ('.dmg', '.pkg', '.ipsw') and not skip_storage_path(p, home) and not p.is_symlink() and not protected_reason(p, home, local):
                     size, partial = measure(p, cancel, limit)
                     rows.append(Proposal(str(p), size, 'Installers / updates', 'Installer; review first', 'ask_first', not partial))
             if count > limit or cancel.is_set():
                 break
     if not cancel.is_set() and sys.platform == 'darwin' and home == Path.home():
+        report('Applications')
         from .cleanup_apps import app_paths, running_apps, unused_apps
         from .cleanup_leftovers import leftovers
         roots = (Path('/Applications'), home / 'Applications')
@@ -209,29 +229,22 @@ def scan(home=None, paths=None, cancel=None, snapshots=None, limit=100000):
                          for row in apps if row.group and row.reason != 'app is running']
         rows.extend(leftovers(home, leftover_apps, installed,
                               lambda path: _measure(path, cancel, limit,
-                                                    lambda item: protected_reason(item, home, local)),
+                                                    guard),
                               cancel, local))
-    if not cancel.is_set() and sys.platform == 'darwin' and home == Path.home():
-        from .cleanup_icloud import candidates
-        rows.extend(candidates(home, cancel, local, limit=limit))
     if not cancel.is_set():
+        report('Large files')
         reader = None
         if sys.platform == 'darwin' and home == Path.home():
             from .cleanup_icloud import metadata
             reader = metadata
         min_bytes, min_age = cleanup_large_files.settings(os.environ)
-        large = list(cleanup_large_files.candidates(home, cancel, local, min_bytes=min_bytes,
-                                                   min_age=min_age, reader=reader, limit=limit))
-        large_by_path = {Path(row.path).resolve(): row for row in large}
-        for row in rows:
-            key = Path(row.path).resolve()
-            if row.kind == 'icloud' and key in large_by_path:
-                candidate = large_by_path[key]
-                large_by_path[key] = replace(row, category=candidate.category,
-                                             size=candidate.size, bucket=candidate.bucket)
-        rows = [row for row in rows if Path(row.path).resolve() not in large_by_path]
-        rows.extend(large_by_path.values())
+        large = cleanup_large_files.candidates(home, cancel, local, min_bytes=min_bytes,
+                                               min_age=min_age, reader=reader, limit=limit)
+        large = {row.path: row for row in large}
+        rows = [row for row in rows if row.path not in large]
+        rows.extend(large.values())
     if not cancel.is_set():
+        report('Time Machine snapshots')
         try:
             output = snapshots() if snapshots else (subprocess.run(
                 ['tmutil', 'listlocalsnapshots', '/'], capture_output=True, text=True, timeout=10).stdout
@@ -243,14 +256,43 @@ def scan(home=None, paths=None, cancel=None, snapshots=None, limit=100000):
 
 
 class ScanTask:
-    def __init__(self, done, **kwargs):
+    def __init__(self, done, *, timeout=25, progress=None, **kwargs):
         self.cancel = threading.Event()
+        finished = threading.Event()
+        lock = threading.Lock()
+
+        def complete(rows, available, error, *, timed_out=False):
+            with lock:
+                if finished.is_set() or self.cancel.is_set():
+                    return
+                finished.set()
+                if timed_out:
+                    self.cancel.set()
+            timer.cancel()
+            done(rows, available, error)
+
+        def report(stage):
+            with lock:
+                if progress and not finished.is_set() and not self.cancel.is_set():
+                    progress(stage)
+
+        def expire():
+            complete([], None, f'Storage scan timed out after {timeout:g} seconds. Nothing selected for Trash.',
+                     timed_out=True)
+
         def work():
             try:
-                rows = scan(cancel=self.cancel, **kwargs)
+                rows = scan(cancel=self.cancel, progress=report, **kwargs)
+                if self.cancel.is_set():
+                    return
+                report('Free space')
                 available = free_space(kwargs.get('home') or Path.home())
-                done(rows, available, None)
+                complete(rows, available, None)
             except Exception as exc:
-                done([], None, str(exc))
+                complete([], None, str(exc))
+
+        timer = threading.Timer(timeout, expire)
+        timer.daemon = True
         self.thread = threading.Thread(target=work, daemon=True)
+        timer.start()
         self.thread.start()

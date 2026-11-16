@@ -1,6 +1,8 @@
 """Open Fernando's Videos folder in Finder. subprocess is mocked, so Finder stays closed."""
+import importlib.util
 import inspect
 import os
+from pathlib import Path
 import tempfile
 import unittest
 from unittest import mock
@@ -9,7 +11,8 @@ import commands
 from commands.system import _finder_open_args
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-VIDEOS = "/Users/fernandoceja/Documents/Fernando Ceja/Videos"
+VIDEOS_RELATIVE = Path("Documents/Fernando Ceja/Videos")
+VIDEOS = str(Path.home() / VIDEOS_RELATIVE)
 
 PHRASES = (
     "open videos",
@@ -97,6 +100,14 @@ class TestVideosFolder(unittest.TestCase):
         self.assertIn("VIDEOS_FOLDER", config)
         self.assertNotIn("videos_open", open(os.path.join(ROOT, "commands", "bridge.py"), encoding="utf-8").read())
         self.assertNotIn("VIDEOS_FOLDER", open(os.path.join(ROOT, "secrets_store.py"), encoding="utf-8").read())
+
+    def test_videos_default_resolves_under_a_different_home(self):
+        home = Path(self.tmp.name) / "a different account"
+        spec = importlib.util.spec_from_file_location("commands._test_config", Path(ROOT) / "commands/config.py")
+        config = importlib.util.module_from_spec(spec)
+        with mock.patch.dict(os.environ, {"HOME": str(home)}):
+            spec.loader.exec_module(config)
+        self.assertEqual(config.VIDEOS_FOLDER, str(home / VIDEOS_RELATIVE))
 
     def test_phrases_open_the_folder_and_leave_apps_and_video_tools_alone(self):
         for phrase in PHRASES:
@@ -242,7 +253,7 @@ class TestVideosFolder(unittest.TestCase):
         self.assertIn("Videos folder", commands.speak_help())
         readme = open(os.path.join(ROOT, "README.md"), encoding="utf-8").read()
         self.assertIn("Opening your Videos folder.", readme)
-        self.assertIn(VIDEOS, readme)
+        self.assertIn("~/" + str(VIDEOS_RELATIVE), readme)
         self.assertIn("VIDEOS_FOLDER", readme)
 
 
