@@ -1,9 +1,12 @@
-"""Every command reply is text first, with the offer; explicit audio asks, Zoe, and bridge turns stay spoken (PR 8c)."""
+"""Reply offers and direct speech for commands and explicit audio asks."""
 import ast
 import contextlib
 import os
 import threading
 import unittest
+from unittest.mock import Mock
+
+import commands
 
 from commands.brief_offer import answer_kind, audio_request_kind
 
@@ -77,6 +80,43 @@ class DirectSpeechTests(unittest.TestCase):
             worker.start()
             worker.join()
         self.assertEqual(seen, [False])
+
+
+def test_local_time_and_matrix_replies_autoplay_while_other_replies_keep_the_offer():
+    tree = ast.parse(_source("siri.py"))
+    names = {"_DIRECT", "direct_speech", "_direct_speech_on", "_deliver", "_run_local",
+             "AUTOPLAY_LOCAL_REPLIES"}
+    body = [
+        node for node in tree.body
+        if (isinstance(node, ast.Assign) and any(getattr(t, "id", None) in names for t in node.targets))
+        or (isinstance(node, ast.FunctionDef) and node.name in names)
+    ]
+    speak = Mock()
+    offer = Mock()
+    emit = Mock()
+    replies = {"info_time": "It's 8:12 PM.", "matrix_on": "Matrix is on.",
+               "matrix_off": "Matrix is off.", "info_weather": "It's sunny."}
+    actions = {action: Mock(return_value=reply) for action, reply in replies.items()}
+    namespace = {
+        "threading": threading, "contextlib": contextlib, "commands": commands,
+        "ACTIONS": actions, "SPEAK_FIRST": set(), "say": speak, "_offer_reply": offer,
+        "_remember_reply": Mock(), "emit": emit, "display_text": str,
+        "_speak_result": lambda action, result, key, fmt: result,
+    }
+    exec(compile(ast.Module(body=body, type_ignores=[]), "siri-extract", "exec"), namespace)
+
+    for action, reply in replies.items():
+        sink = []
+        namespace["_run_local"]([(1, action, None, action, {})], "command", None, sink)
+        assert sink == [reply]
+        actions[action].assert_called_once_with(None, "command")
+        if action == "info_weather":
+            offer.assert_called_once_with(reply, None, failed=False, offer=True)
+        else:
+            speak.assert_called_once_with(reply, None)
+            emit.assert_called_with(None, "Ready", reply)
+            offer.assert_not_called()
+        speak.reset_mock()
 
 
 class ReplyWiringTests(unittest.TestCase):

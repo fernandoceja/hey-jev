@@ -594,6 +594,7 @@ REPLIES = {
 
 TARGETS = ("app", "volume", "display", "media", "system", "timer", "info", "shortcut", "browser")
 SPEAK_FIRST = {"volume_mute", "system_lock", "system_sleep"}
+AUTOPLAY_LOCAL_REPLIES = {"info_time", "matrix_on", "matrix_off"}
 
 
 def say_line(key, **fmt):
@@ -1658,7 +1659,9 @@ def _run_local(payload, text, notify, reply_sink):
     if action == "info_brief" and isinstance(result, str):
         _deliver_brief(result, notify, reply_sink)  # PR 8c: text first, audio only on a yes
         return
-    _deliver(_speak_result(action, result, reply_key, fmt), notify, reply_sink)
+    line = _speak_result(action, result, reply_key, fmt)
+    with direct_speech() if action in AUTOPLAY_LOCAL_REPLIES else contextlib.nullcontext():
+        _deliver(line, notify, reply_sink)
 
 
 # --------------------------------------------------------------------------- Mic + push to talk
