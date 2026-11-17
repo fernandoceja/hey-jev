@@ -8110,6 +8110,10 @@ class AppDelegate(NSObject):
 
     def updateStatus_(self, payload):
         state = str(payload["state"])
+        if state == "Web Search":
+            from commands.web_search_ui import open_search_panel
+            open_search_panel(json.loads(str(payload["detail"])))
+            return
         if state == "REA Kickoff":
             from commands.rea_study_ui import kickoff
             kickoff(self, str(payload["detail"]))

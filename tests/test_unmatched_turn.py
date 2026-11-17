@@ -9,6 +9,7 @@ import ast
 import os
 import types
 import unittest
+from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -100,7 +101,10 @@ class Harness:
         self.delivered.append({"line": line, "failed": failed, "offer": offer})
 
     def run(self, text):
-        return self.handle(text, None, None)
+        # These regressions isolate the pre-existing classify/deliver branch.
+        # Search routing has its own executable tests and must not fetch real pages here.
+        with mock.patch("commands.web_search.is_search_request", return_value=False):
+            return self.handle(text, None, None)
 
 
 class UnmatchedInputTests(unittest.TestCase):
