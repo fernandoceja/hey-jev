@@ -222,7 +222,7 @@ from orb_motion import (  # PR 6a: expand from the orb, dock on the divider, col
 )
 from commands.brief_offer import BRIEF_OFFER_LINE, OFFER_WINDOW_SECONDS
 from commands.translate_chip import TranslateChip, log_line  # PR 8b
-from area_hotkey import CARBON_CONTROL, CARBON_OPTION, AreaCaptureHotKey, CarbonHotKey
+from area_hotkey import AreaCaptureHotKey, CarbonHotKey, SUMMON_PREF, summon_shortcut
 from orb_motion import (
     MENU_CORNER_RADIUS, MENU_FILL_HOVER, MENU_FILL_REST, MENU_HOVER_SECONDS,
     HINT_SECONDS, HINT_TEXT_INSET, RESULT_FADE_SECONDS, RESULT_SCALE_FROM, TEXT_ACTIONS,
@@ -230,7 +230,7 @@ from orb_motion import (
     hint_layout, is_pending_text, menu_layout, result_frames,
     result_layout, shimmer_locations,
 )
-from mini_bar import FIND_IMAGE_HINT, TYPE_KEY_CODE, capture_outcome, menu_on_drop, orb_action_menu
+from mini_bar import FIND_IMAGE_HINT, capture_outcome, menu_on_drop, orb_action_menu
 from mini_bar import TRANSLATE_CHIP_ID, set_translate_chip, translate_chip_on  # PR 8b
 from mini_bar import greeting_bubble_frame, offer_button_origins, offer_covers_greeting, orb_bubble_log_line
 import full_window as fw
@@ -1660,11 +1660,10 @@ class AppDelegate(NSObject):
         _ok, hotkey_detail = self.area_hotkey.register()
         print("  area hotkey: {0}".format(hotkey_detail))
         # PR 7b follow-up: Control-Option-J is a Carbon hotkey too, so it works while another app is in front.
-        self.type_hotkey = CarbonHotKey(self._type_hotkey_pressed, TYPE_KEY_CODE, CARBON_CONTROL | CARBON_OPTION,
-                                        "Control-Option-J", hotkey_id=2)
-        ok_type, type_detail = self.type_hotkey.register()
-        print("orb hotkey: registered ctrl-opt-J" if ok_type else "orb hotkey: not registered ({0})".format(type_detail),
-              flush=True)
+        self.type_hotkey = None
+        self._summon_retries = 0
+        self._register_summon_hotkey()
+        self.performSelector_withObject_afterDelay_("retrySummonHotkey:", None, 0.5)
         from commands.captures import set_area_hooks
         set_area_hooks(self._glimmer_begin, self._glimmer_finish)  # the glimmer over an area capture's region
         # The Ctrl-Option-J helper tells a running Jev through this notification, and launches a closed Jev with --show-orb.
@@ -2020,12 +2019,15 @@ class AppDelegate(NSObject):
         self.mini_toggle.setAction_("miniBarChanged:")
         self.mini_toggle.setState_(1 if self.bar.enabled else 0)
         page.addSubview_(self.mini_toggle)
-        self.hot_name = label("Ctrl-Option-J when Jev is closed", NSMakeRect(0, 0, 10, 10), 14, weight=0.6)
-        self.hot_hint = label("A small helper opens Jev when you press the hotkey and Jev is not running.",
-                              NSMakeRect(0, 0, 10, 10), 11, NSColor.secondaryLabelColor(), 0.0)
+        self.hot_name = label("Global shortcut (default: ⌃⌥J)", NSMakeRect(0, 0, 10, 10), 14, weight=0.6)
+        self.hot_hint = NSTextField.alloc().initWithFrame_(NSMakeRect(0, 0, 10, 10))
+        self.hot_hint.setStringValue_(self._saved_summon_shortcut()[0])
+        self.hot_hint.setTarget_(self)
+        self.hot_hint.setAction_("summonShortcutChanged:")
+        self.hot_hint.setToolTip_("Shortcut: ctrl+alt+j (press Return to save)")
         self.hot_toggle = NSButton.alloc().initWithFrame_(NSMakeRect(0, 0, 10, 10))
         self.hot_toggle.setButtonType_(3)  # switch
-        self.hot_toggle.setTitle_("Open Jev with Ctrl-Option-J even when it is closed")
+        self.hot_toggle.setTitle_("Use the global shortcut even when Jev is closed")
         self.hot_toggle.setTarget_(self)
         self.hot_toggle.setAction_("hotkeyHelperChanged:")
         self.hot_status = label("", NSMakeRect(0, 0, 10, 10), 11, NSColor.secondaryLabelColor(), 0.0)
@@ -3277,7 +3279,59 @@ class AppDelegate(NSObject):
         self._login_helper = helper
         status = helper.status()
         self.hot_toggle.setState_(1 if helper_is_on(status) else 0)
-        self.hot_status.setStringValue_(helper_status_text(status))
+        self.hot_status.setStringValue_(helper_status_text(status) + " " + getattr(self, "_summon_status", ""))
+
+    @objc.python_method
+    def _saved_summon_shortcut(self):
+        try:
+            return summon_shortcut(NSUserDefaults.standardUserDefaults().stringForKey_(SUMMON_PREF))
+        except ValueError:
+            return summon_shortcut()
+
+    @objc.python_method
+    def _register_summon_hotkey(self):
+        chord, key, modifiers = self._saved_summon_shortcut()
+        candidate = CarbonHotKey(self._type_hotkey_pressed, key, modifiers, chord, hotkey_id=2)
+        ok, detail = candidate.register()
+        if ok:
+            self.type_hotkey = candidate
+        self._summon_status = detail
+        print("orb hotkey: " + detail, flush=True)
+        return ok
+
+    def retrySummonHotkey_(self, _sender):
+        # The helper yields on application launch; retry after its workspace notification has run.
+        if self.type_hotkey is None:
+            self._register_summon_hotkey()
+            self._summon_retries += 1
+            if self.type_hotkey is None and self._summon_retries < 6:
+                self.performSelector_withObject_afterDelay_("retrySummonHotkey:", None, 0.5)
+        if hasattr(self, "hot_status"):
+            self._refresh_hotkey_helper_row()
+
+    def summonShortcutChanged_(self, sender):
+        defaults = NSUserDefaults.standardUserDefaults()
+        try:
+            chord, key, modifiers = summon_shortcut(sender.stringValue())
+        except ValueError as exc:
+            self.hot_status.setStringValue_(str(exc))
+            return
+        if self.type_hotkey is not None:
+            self.type_hotkey.unregister()
+        self.type_hotkey = None
+        candidate = CarbonHotKey(self._type_hotkey_pressed, key, modifiers, chord, hotkey_id=2)
+        ok, detail = candidate.register()
+        if not ok:
+            self._register_summon_hotkey()
+            sender.setStringValue_(self._saved_summon_shortcut()[0])
+            self.hot_status.setStringValue_("Shortcut unavailable: " + detail)
+            return
+        self.type_hotkey = candidate
+        defaults.setObject_forKey_(chord, SUMMON_PREF)
+        defaults.synchronize()
+        sender.setStringValue_(chord)
+        self._summon_status = detail
+        self._refresh_hotkey_helper_row()
 
     def hotkeyHelperChanged_(self, sender):
         """The user's switch. Registering can make macOS ask for approval in Login Items; Jev never clicks that."""
@@ -7697,7 +7751,11 @@ class AppDelegate(NSObject):
 
         It never opens or focuses the full window. That happens only from the orb click, Open Jev, or Settings.
         """
+        spotlight = (getattr(self, "_spotlight", None) or {}).get("panel")
+        spotlight_focused = spotlight is not None and spotlight.isKeyWindow()
         self._close_orb_spotlight("hotkey")
+        if spotlight_focused:
+            return
         self._inline_end(restore=False)
         if not hasattr(self, "pill"):
             return
@@ -7706,8 +7764,10 @@ class AppDelegate(NSObject):
         hidden = not self.bar.should_show()
         print("orb hotkey: show orb (tucked={0}, hidden={1})".format(tucked, hidden), flush=True)
         if docked:
-            return  # the full window is already open with its own field, and this hotkey leaves it alone
-        if self.pill.expanded and not getattr(self, "pillCollapsed", False):
+            self._collapse_orb_from_full()
+            self.performSelector_withObject_afterDelay_("hotkeyAfterClear:", None, 0.7)
+            return
+        if self.pill.expanded and not getattr(self, "pillCollapsed", False) and self.mini_panel.isKeyWindow():
             print("orb hotkey: hide pill", flush=True)
             self.pill.escape()
             self._restore_front_app()
@@ -7739,6 +7799,10 @@ class AppDelegate(NSObject):
 
     def hotkeyAfterClear_(self, _sender):
         """Second half of Control-Option-J when Home was open: Home is minimized now, so show the orb and open the pill."""
+        if self._orb_docked_now():
+            self._collapse_orb_from_full()
+            self.performSelector_withObject_afterDelay_("hotkeyAfterClear:", None, 0.1)
+            return
         self._sync_mini_bar()
         if not self.bar.should_show():
             return

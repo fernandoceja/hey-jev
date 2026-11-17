@@ -96,8 +96,8 @@ class SwiftHelperTests(unittest.TestCase):
 
     def test_it_registers_control_option_j_with_a_carbon_hotkey_only(self):
         self.assertIn("RegisterEventHotKey", self.swift)
-        self.assertIn("kVK_ANSI_J", self.swift)
-        self.assertIn("controlKey | optionKey", self.swift)
+        self.assertIn('"ctrl+alt+j"', self.swift)
+        self.assertIn('"ctrl": UInt32(controlKey), "alt": UInt32(optionKey)', self.swift)
         for forbidden in ("CGEvent.tapCreate", "AXIsProcessTrusted", "addGlobalMonitor", "NSAppleScript", "Process(",
                           "URLSession", "socket"):
             self.assertNotIn(forbidden, self.swift, forbidden)
@@ -183,7 +183,7 @@ class HotkeyBehaviourTests(unittest.TestCase):
     def test_the_hotkey_minimizes_home_and_finishes_after_the_minimize(self):
         body = _func(self.ui(), "focusTypeField_")
         self.assertIn("hotkey_can_clear_the_way()", body)
-        self.assertLess(body.index("miniaturize_"), body.index("hotkeyAfterClear:"))
+        self.assertIn('self.performSelector_withObject_afterDelay_("hotkeyAfterClear:"', body[body.index("miniaturize_"):])
         self.assertIn("if docked:", body)  # the docked full window is still left alone
 
     def test_the_second_half_shows_the_orb_untucks_it_and_opens_the_pill(self):

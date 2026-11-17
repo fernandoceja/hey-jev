@@ -18,6 +18,9 @@ for arg in "$@"; do
   esac
 done
 APP="${APP:-$ROOT/dist/Hey Jev - Fish Audio.app}"
+case "$APP" in
+  *[Jj][Aa][Rr][Vv][Ii][Ss]*|*"Mobile Documents"*) echo "Refusing excluded app path" >&2; exit 1 ;;
+esac
 DEST="$APP/Contents/Library/LoginItems/Jev Hotkey.app"
 
 if [ ! -d "$APP" ]; then
@@ -32,13 +35,17 @@ if [ "$DRY" = "1" ]; then
   exit 0
 fi
 
-rm -rf "$OUT"
+mkdir -p "$ROOT/build"
+OUT="$(mktemp -d "$ROOT/build/hotkey.XXXXXX")"
 mkdir -p "$OUT/Jev Hotkey.app/Contents/MacOS"
 swiftc -O "$SRC/main.swift" -o "$OUT/Jev Hotkey.app/Contents/MacOS/JevHotkey" -framework AppKit -framework Carbon
 cp "$SRC/Info.plist" "$OUT/Jev Hotkey.app/Contents/Info.plist"
 codesign --force --sign - --identifier com.heyjev.app.hotkey --timestamp=none "$OUT/Jev Hotkey.app"
 
 mkdir -p "$APP/Contents/Library/LoginItems"
-rm -rf "$DEST"
-cp -R "$OUT/Jev Hotkey.app" "$DEST"
+
+mkdir -p "$DEST/Contents/MacOS"
+cp "$OUT/Jev Hotkey.app/Contents/MacOS/JevHotkey" "$DEST/Contents/MacOS/JevHotkey"
+cp "$SRC/Info.plist" "$DEST/Contents/Info.plist"
+codesign --force --sign - --identifier com.heyjev.app.hotkey --timestamp=none "$DEST"
 echo "helper installed. Now run scripts/sign_local.sh, then quit and reopen Jev."

@@ -584,3 +584,20 @@ not a filesystem sandbox: use a trusted REA configuration that honors the
 request's read-only target and request-local output rules. All studies require
 lawful research, no proprietary extraction, no target modification or license /
 DRM / signing bypass, no Ryujinx/games/keys, and no installs or model downloads.
+
+
+The global summon shortcut defaults to **⌃⌥J**. Edit the shortcut field in Settings
+(e.g. `ctrl+alt+j`) and press Return to save. Modifiers are `ctrl`, `alt`, `cmd`,
+and `shift`, followed by one ANSI letter. Invalid chords and the reserved area
+capture shortcut **⌃⌥⌘W** are rejected. If Carbon reports a shortcut already in use,
+the previous shortcut is restored and Settings shows the error. No Accessibility
+permission or new dependency is needed for either Carbon shortcut.
+
+The login helper yields ownership while Jev runs and reacquires the saved shortcut
+when Jev quits. It only launches its enclosing installed Jev bundle under
+`/Applications` or `~/Applications`, verifies the bundle identifier, and refuses
+Jarvis/iCloud paths. It never falls back to a bundle-ID search. Install the built
+app in one of those Applications folders before enabling the existing login-item
+switch; approve it in macOS Login Items if requested. The helper must be included
+and signed with the app for launch after restart. An open input panel hides on a
+second press while it has keyboard focus; pressing from another app focuses input.

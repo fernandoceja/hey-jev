@@ -88,7 +88,7 @@ class CarbonHotKey:
                 status = carbon.GetEventParameter(
                     event, _EVENT_PARAM_DIRECT_OBJECT, _TYPE_EVENT_HOT_KEY_ID, None,
                     ctypes.sizeof(pressed), None, ctypes.byref(pressed))
-                if status == _NO_ERROR and pressed.id != self._id:
+                if status != _NO_ERROR or pressed.signature != _HOTKEY_SIGNATURE or pressed.id != self._id:
                     return _EVENT_NOT_HANDLED
                 self._on_press()
             except Exception as exc:  # a hotkey must never raise into Carbon
@@ -134,3 +134,26 @@ class AreaCaptureHotKey(CarbonHotKey):
     def __init__(self, on_press):
         super().__init__(on_press, AREA_CAPTURE_KEY_CODE, AREA_CAPTURE_MODIFIERS,
                          "Control-Option-Command-W", hotkey_id=1)
+
+
+SUMMON_PREF = "summon_shortcut"
+SUMMON_DEFAULT = "ctrl+alt+j"
+# Physical ANSI key codes; identical table is used by the tiny Swift helper.
+LETTER_CODES = dict(zip("abcdefghijklmnopqrstuvwxyz",
+                        (0, 11, 8, 2, 14, 3, 5, 4, 34, 38, 40, 37, 46,
+                         45, 31, 35, 12, 15, 1, 17, 32, 9, 13, 7, 16, 6)))
+
+
+def summon_shortcut(value=None):
+    """Return canonical preference, key code and Carbon modifiers, or reject invalid/conflicting input."""
+    text = SUMMON_DEFAULT if value is None else str(value).strip().lower()
+    parts = text.split("+")
+    flags = {"ctrl": CARBON_CONTROL, "alt": CARBON_OPTION, "cmd": CARBON_COMMAND, "shift": 0x0200}
+    if (len(parts) < 2 or parts[-1] not in LETTER_CODES or
+            any(p not in flags for p in parts[:-1]) or len(set(parts[:-1])) != len(parts[:-1])):
+        raise ValueError("Use modifiers ctrl, alt, cmd, shift plus a letter, e.g. ctrl+alt+j")
+    modifiers = sum(flags[p] for p in parts[:-1])
+    code = LETTER_CODES[parts[-1]]
+    if code == AREA_CAPTURE_KEY_CODE and modifiers == AREA_CAPTURE_MODIFIERS:
+        raise ValueError("Control-Option-Command-W is reserved for area capture")
+    return "+".join(p for p in flags if p in parts[:-1]) + "+" + parts[-1], code, modifiers

@@ -68,7 +68,8 @@ class HotkeyWiringTests(unittest.TestCase):
         self.assertIn("self.pill.escape()", self.handler)
         self.assertIn("self._restore_front_app()", self.handler)
 
-    def test_a_docked_window_is_left_alone(self):
+    def test_a_docked_window_collapses_before_opening_input(self):
+        self.assertIn("self._collapse_orb_from_full()", self.handler)
         self.assertIn("if docked:", self.handler)
         self.assertLess(self.handler.index("if docked:"), self.handler.index("self.expandMiniBar_(None)"))
 
@@ -83,9 +84,9 @@ class HotkeyWiringTests(unittest.TestCase):
         self.assertIn("focusTypeField:", self.ui)
 
     def test_the_hotkey_is_a_carbon_registration_not_an_app_only_binding(self):
-        self.assertIn("CarbonHotKey(self._type_hotkey_pressed, TYPE_KEY_CODE", self.ui)
-        self.assertIn('"Control-Option-J", hotkey_id=2', self.ui)
-        self.assertIn('"orb hotkey: registered ctrl-opt-J"', self.ui)
+        self.assertIn("CarbonHotKey(self._type_hotkey_pressed, key, modifiers", self.ui)
+        self.assertIn("chord, hotkey_id=2", self.ui)
+        self.assertIn("self._register_summon_hotkey()", self.ui)
         self.assertIn("self.focusTypeField_(None)", _func(self.ui, "_type_hotkey_pressed"))
         self.assertIn("self.type_hotkey.unregister()", self.ui)
 
