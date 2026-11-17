@@ -601,3 +601,34 @@ app in one of those Applications folders before enabling the existing login-item
 switch; approve it in macOS Login Items if requested. The helper must be included
 and signed with the app for launch after restart. An open input panel hides on a
 second press while it has keyboard focus; pressing from another app focuses input.
+
+
+## Grounded web search
+
+Type or say a question (for example “What is the capital of Peru?” or “How do I
+cook rice?”), enter a short topic such as “jaguar”, or use `search for …`.
+Existing local commands run first. General questions and explicit searches bypass
+paid classification, answer APIs, and speech prefetch. The search window shows a
+short answer with numbered source links, followed by up to five web results with
+titles, URLs, and snippets. If there are fewer results, Jev shows only those returned.
+“Open in Google” sends the exact search query to your default browser.
+
+The existing Apple Foundation Models service must already be running at
+`127.0.0.1:1976`. Search never starts a listener, uses an API key, or falls back to a
+paid model. To prevent invented answer prose, the model selects 2–4 complete
+sentences from fetched evidence; Jev validates their IDs and attaches source
+links itself. It abstains when the evidence is insufficient or the selection is
+invalid. For ambiguity it can offer one other meaning using a fetched result's
+title. If the local model is unavailable, results still appear with an explanation.
+The answer is extractive: wording comes directly from the sources, whose factual
+accuracy should still be checked. Page text is treated as untrusted data.
+
+Results come from DuckDuckGo's keyless HTML host. Jev checks each origin's robots
+rules (including redirect destinations), honors crawl delays/request rates and
+429/503 backoff, and skips hosts whose rules cannot be read. It fetches at most
+three result pages, with a 14-second web budget, short request timeouts, a 256 KiB
+response cap, and no access to private-network URLs. The local model call has a
+separate 15-second read timeout. A bounded in-memory cache keeps results for ten
+minutes; unavailable local summaries can retry without fetching the web again.
+No packages are added. “Read aloud” uses the installed macOS voice only after a
+click or an explicit “read it”; there is no audio prefetch or autoplay for search.

@@ -1215,6 +1215,11 @@ def _handle_turn(text, stt_ms=None, notify=None, reply_sink=None, quiet=False):
     if early is not None and early[0] == "actions":
         misses = 0
         return _run_local(early[1], text, notify, reply_sink)
+    # General questions and explicit searches bypass paid routing, answer APIs, and TTS prefetch.
+    from commands.web_search import is_search_request
+    if early is None and is_search_request(text):
+        misses = 0
+        return _search_turn(text, notify, reply_sink)
     emit(notify, "Thinking", text)
     if early is not None:
         kind, payload = early
@@ -1333,6 +1338,19 @@ def _handle_turn(text, stt_ms=None, notify=None, reply_sink=None, quiet=False):
         # The 10 seconds start after the prompt, so speaking it doesn't eat the window.
         commands.refresh_confirmation()
         return "expect_reply"
+
+
+def _search_turn(text, notify, reply_sink=None):
+    from commands import web_search
+    emit(notify, "Thinking", "Searching the web")
+    result = web_search.ENGINE.search(text)
+    line = web_search.answer_text(result)
+    _remember_reply(line)
+    web_search.LAST_ANSWER = line
+    if reply_sink is not None:
+        reply_sink.append(line)
+    emit(notify, "Web Search", json.dumps(result, ensure_ascii=False))
+    emit(notify, "Ready", line + " Use Read aloud in the search window to hear it.")
 
 
 def _ask_jev_turn(question, notify):
@@ -1593,6 +1611,12 @@ def _read_last_reply(notify, reply_sink=None):
     """"read it" with no open offer: read the latest reply aloud now."""
     if not LAST_REPLY_TEXT:
         _deliver("I don't have a reply to read yet.", notify, reply_sink)
+        return
+    from commands import web_search
+    if LAST_REPLY_TEXT == web_search.LAST_ANSWER:
+        from commands.web_search_ui import read_aloud
+        read_aloud(LAST_REPLY_TEXT)
+        emit(notify, "Ready", LAST_REPLY_TEXT)
         return
     print("reply: read aloud on request", flush=True)
     with direct_speech():
