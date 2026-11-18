@@ -22,8 +22,16 @@ HTML = '''<div><a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2
 <a class="result__snippet">Lima is the <b>capital city</b> of Peru. The city sits on the Pacific coast of South America.</a></div>'''
 
 
-def model(ids=(1, 2), alternate=None):
-    return {'choices': [{'message': {'content': json.dumps({'sentences': list(ids), 'alternative_source': alternate})}}]}
+def model(sentences=None, alternate=None, answerable=True):
+    if not answerable:
+        content = 'INSUFFICIENT'
+    else:
+        if sentences is None:
+            sentences = [{'text': "Peru's capital is Lima.", 'source': 1}]
+        content = ' '.join('{text} [{source}]'.format(**sentence) for sentence in sentences)
+        if alternate:
+            content += '\nAlternative: ' + str(alternate)
+    return {'choices': [{'message': {'content': content}}]}
 
 
 class Clock:
@@ -64,36 +72,115 @@ class SearchTests(unittest.TestCase):
         html = ''.join('<a class="result__a" href="https://example.org/{0}">Result {0}</a>'.format(i) for i in range(8))
         self.assertEqual([r['title'] for r in ws.parse_results(html)], ['Result ' + str(i) for i in range(5)])
 
-    def test_grounded_selection_and_alternative_are_source_only(self):
+    def test_generated_answer_uses_new_wording_and_validated_sources(self):
         seen = []
         def post(body):
             seen.append(body)
             return model(alternate=2)
-        sentences, alternate, notice = ws.select_answer('Lima', ROWS, post)
-        self.assertEqual([s['text'] for s in sentences], [s['text'] for s in ws.evidence_sentences(ROWS)[:2]])
+        sentences, alternate, notice = ws.summarize_answer('Lima', ROWS, post)
+        self.assertEqual(sentences, [{'text': "Peru's capital is Lima.", 'source': 1}])
+        self.assertNotIn(sentences[0]['text'], ROWS[0]['snippet'])
         self.assertEqual(alternate, 2)
         self.assertEqual(notice, '')
         self.assertNotIn('tools', seen[0])
         self.assertNotIn('Authorization', str(seen[0]))
+        self.assertEqual(seen[0]['model'], 'system')
+        self.assertLessEqual(seen[0]['max_tokens'], 220)
         self.assertIn('untrusted DATA', seen[0]['messages'][0]['content'])
+        self.assertIn('YOUR OWN WORDS', seen[0]['messages'][0]['content'])
 
-    def test_hallucinated_invalid_or_insufficient_selections_abstain(self):
-        for ids in ([], [1], [1, 1], [1, 999], [True, 2], ['1', 2], [1, 2, 3, 4, 5]):
-            with self.subTest(ids=ids):
-                result = ws.select_answer('unknown fact', ROWS, lambda body: model(ids))
-                self.assertEqual(result, ([], None, ws.NO_ANSWER))
-        made_up = {'choices': [{'message': {'content': '{"sentences":["made up", "facts"]}'}}]}
-        self.assertEqual(ws.select_answer('q', ROWS, lambda body: made_up)[2], ws.NO_ANSWER)
+    def test_source_footnotes_removed_before_prompt_and_from_results(self):
+        rows = copy.deepcopy(ROWS)
+        rows[0]['snippet'] = 'Lima[a][1] is the capital city of Peru.[citation needed]'
+        rows[0]['page'] = 'The city[23] sits on the coast.[b]'
+        seen = []
+        ws.summarize_answer('q', rows, lambda body: (seen.append(body) or model()))
+        context = seen[0]['messages'][1]['content']
+        self.assertIn('Lima is the capital city of Peru.\nThe city sits on the coast.', context)
+        self.assertNotIn('[a]', context)
+        self.assertNotIn('[23]', context)
+        parsed = ws.parse_results(HTML.replace('Lima is', 'Lima[a][1] is'))
+        self.assertNotIn('[a]', parsed[0]['snippet'])
+        self.assertNotIn('[1]', parsed[0]['snippet'])
+        self.assertEqual(ws.clean_source_text('Keep [Fe] and [Ctrl] but not [12–14].'), 'Keep [Fe] and [Ctrl] but not .')
 
-    def test_model_down_or_invalid_json_keeps_web_results(self):
+    def test_insufficient_evidence_is_not_a_snippet_fallback(self):
+        sentences, alternate, notice = ws.summarize_answer('unknown fact', ROWS,
+                                                         lambda body: model([], answerable=False))
+        self.assertEqual((sentences, alternate, notice), ([], None, ws.NO_ANSWER))
+
+    def test_invalid_citation_or_shape_uses_labeled_fallback(self):
+        base = {'text': "Peru's capital is Lima.", 'source': 1}
+        bad_sentences = [[], [base, dict(base, text='A new fact.'), dict(base, text='Another fact.'), dict(base, text='One more fact.')],
+                         [dict(base, source=999)], [dict(base, source='bad')],
+                         [dict(base, text='The population is 1234567 people.')],
+                         [dict(base, text='First fact. Second new detail. Third useful idea. Fourth distinct thought.')],
+                         [dict(base, text='Long ' * 40)], [dict(base, text='https://evil.example/')]]
+        for generated in bad_sentences:
+            with self.subTest(generated=generated):
+                sentences, alternate, notice = ws.summarize_answer('q', ROWS, lambda body: model(generated))
+                self.assertEqual(notice, ws.MODEL_UNAVAILABLE)
+                self.assertEqual(sentences, ws.fallback_snippets(ROWS))
+                self.assertIsNone(alternate)
+                result = {'sentences': sentences, 'notice': notice, 'fallback': True}
+                self.assertTrue(ws.answer_text(result).startswith('From the web: '))
+                self.assertIn('[1]', ws.answer_text(result))
+
+    def test_repeated_or_rephrased_facts_are_dropped(self):
+        base = {'text': "Peru's capital is Lima.", 'source': 1}
+        repeat = dict(base, text='Lima is the capital of Peru.')
+        extra = {'text': 'It lies on South America’s Pacific coast.', 'source': 1}
+        generated = [base, repeat, extra]
+        sentences, _, notice = ws.summarize_answer('q', ROWS, lambda body: model(generated))
+        self.assertEqual([s['text'] for s in sentences], [base['text'], extra['text']])
+        self.assertEqual(notice, '')
+
+    def test_paragraph_citation_applies_to_each_generated_sentence(self):
+        response = {'choices': [{'message': {'content': "Peru's capital is Lima. It lies along the Pacific coast. [1]"}}]}
+        sentences, _, notice = ws.summarize_answer('q', ROWS, lambda body: response)
+        self.assertEqual(sentences, [{'text': "Peru's capital is Lima.", 'source': 1},
+                                     {'text': 'It lies along the Pacific coast.', 'source': 1}])
+        self.assertEqual(notice, '')
+
+    def test_citation_before_terminal_punctuation_is_valid(self):
+        response = {'choices': [{'message': {'content': "Peru's capital is Lima [1]."}}]}
+        self.assertEqual(ws.summarize_answer('q', ROWS, lambda body: response),
+                         ([{'text': "Peru's capital is Lima.", 'source': 1}], None, ''))
+
+    def test_empty_alternative_metadata_does_not_discard_a_valid_answer(self):
+        for empty in ('N.', 'none', 'null', '0'):
+            response = {'choices': [{'message': {'content': "Peru's capital is Lima [1].\nAlternative: " + empty}}]}
+            self.assertEqual(ws.summarize_answer('q', ROWS, lambda body: response),
+                             ([{'text': "Peru's capital is Lima.", 'source': 1}], None, ''))
+
+    def test_copied_long_sentence_is_a_labeled_model_failure(self):
+        rows = copy.deepcopy(ROWS)
+        copied = 'The city sits on the Pacific coast of South America.'
+        self.assertEqual(ws.summarize_answer('q', rows, lambda body: model([{'text': copied, 'source': 1}]))[2],
+                         ws.MODEL_UNAVAILABLE)
+
+    def test_three_generated_sentences_and_no_snippet_when_fm_succeeds(self):
+        generated = [dict(text="Peru's capital is Lima.", source=1),
+                     dict(text='It lies on South America’s Pacific coast.', source=1),
+                     dict(text='The other meaning is an edible bean.', source=2)]
+        with patch.object(ws, 'fallback_snippets', side_effect=AssertionError('must not copy snippets')):
+            sentences, _, notice = ws.summarize_answer('Lima', ROWS, lambda body: model(generated))
+        self.assertEqual(len(sentences), 3)
+        self.assertEqual(notice, '')
+
+    def test_model_down_or_uncited_output_uses_clean_snippet_fallback(self):
         def down(body):
             raise requests.Timeout()
-        for post in (down, lambda body: {}, lambda body: {'choices': [{'message': {'content': 'not json'}}]}):
-            self.assertEqual(ws.select_answer('q', ROWS, post), ([], None, ws.MODEL_UNAVAILABLE))
+        for post in (down, lambda body: {}, lambda body: {'choices': [{'message': {'content': 'uncited answer'}}]}):
+            sentences, alternate, notice = ws.summarize_answer('q', ROWS, post)
+            self.assertEqual((sentences, alternate, notice), (ws.fallback_snippets(ROWS), None, ws.MODEL_UNAVAILABLE))
+        rows = copy.deepcopy(ROWS)
+        rows[0]['snippet'] = 'Lima[a][1] is the capital city of Peru. A repeat is not needed.'
+        self.assertEqual(ws.summarize_answer('q', rows, down)[0], [{'text': 'Lima is the capital city of Peru.', 'source': 1}])
 
     def test_no_evidence_does_not_call_model(self):
         post = Mock()
-        self.assertEqual(ws.select_answer('q', [], post)[2], ws.NO_ANSWER)
+        self.assertEqual(ws.summarize_answer('q', [], post)[2], ws.NO_ANSWER)
         post.assert_not_called()
 
     def test_model_endpoint_fixed_local_no_redirects(self):
@@ -102,7 +189,7 @@ class SearchTests(unittest.TestCase):
         session = Mock()
         session.post.return_value = response
         with patch.object(ws.requests, 'Session', return_value=session):
-            ws.select_answer('q', ROWS)
+            ws.summarize_answer('q', ROWS)
         self.assertEqual(session.post.call_args.args[0], 'http://127.0.0.1:1976/v1/chat/completions')
         self.assertEqual(session.post.call_args.kwargs['allow_redirects'], False)
         self.assertNotIn('headers', session.post.call_args.kwargs)
@@ -133,7 +220,8 @@ class SearchTests(unittest.TestCase):
         self.assertEqual(first['notice'], ws.MODEL_UNAVAILABLE)
         before = fetcher.get.call_count
         second = engine.search('Lima')
-        self.assertEqual(len(second['sentences']), 2)
+        self.assertEqual(len(second['sentences']), 1)
+        self.assertFalse(second['fallback'])
         self.assertEqual(fetcher.get.call_count, before)
 
     def test_empty_or_long_queries_do_not_fetch_and_are_not_silently_truncated(self):
@@ -270,7 +358,7 @@ class RoutingTests(unittest.TestCase):
     def test_search_delivery_never_prefetches_or_autoplays(self):
         source = (Path(__file__).resolve().parents[1] / 'siri.py').read_text()
         node = next(n for n in ast.parse(source).body if isinstance(n, ast.FunctionDef) and n.name == '_search_turn')
-        result = {'query': 'q', 'results': copy.deepcopy(ROWS), 'sentences': ws.evidence_sentences(ROWS)[:2],
+        result = {'query': 'q', 'results': copy.deepcopy(ROWS), 'sentences': [{'text': "Peru's capital is Lima.", 'source': 1}],
                   'alternative': None, 'notice': ''}
         events = []
         namespace = {'json': json, 'emit': lambda notify, state, detail: events.append((state, detail)), '_remember_reply': Mock()}

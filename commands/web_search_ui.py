@@ -47,7 +47,8 @@ def _panel_class():
             if self is None:
                 return None
             self.result = result
-            self.read_text = ' '.join(s['text'] for s in result['sentences']) or result['notice']
+            self.read_text = ('From the web: ' if result.get('fallback') and result['sentences'] else '') + (
+                ' '.join(s['text'] for s in result['sentences']) or result['notice'])
             style = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskResizable
             self.panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
                 NSMakeRect(0, 0, 780, 690), style, NSBackingStoreBuffered, False)
@@ -86,6 +87,8 @@ def _panel_class():
 
             append(result['query'] + '\n\n', 23, bold=True)
             if result['sentences']:
+                if result.get('fallback'):
+                    append('From the web\n', 16, bold=True)
                 for sentence in result['sentences']:
                     append(sentence['text'] + ' ', 16)
                     append('[{0}]'.format(sentence['source']), 16,
@@ -107,7 +110,7 @@ def _panel_class():
                 append(row['url'] + '\n', 12, row['url'])
                 snippet = ' '.join(row['snippet'].split())
                 append(snippet[:190] + ('…' if len(snippet) > 190 else '') + '\n\n')
-            append('Sources: DuckDuckGo and available pages. AI selects source sentences locally; check the linked sources.', 11)
+            append('Sources: DuckDuckGo and available pages. AI answers use these sources; check the linked sources.', 11)
             self.text_view.textStorage().setAttributedString_(attributed)
             for x, width, title, action in ((16, 150, 'Open in Google', 'google:'),
                                            (178, 130, 'Read aloud', 'read:')):
