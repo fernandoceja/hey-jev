@@ -615,13 +615,17 @@ titles, URLs, and snippets. If there are fewer results, Jev shows only those ret
 
 The existing Apple Foundation Models service must already be running at
 `127.0.0.1:1976`. Search never starts a listener, uses an API key, or falls back to a
-paid model. To prevent invented answer prose, the model selects 2–4 complete
-sentences from fetched evidence; Jev validates their IDs and attaches source
-links itself. It abstains when the evidence is insufficient or the selection is
-invalid. For ambiguity it can offer one other meaning using a fetched result's
-title. If the local model is unavailable, results still appear with an explanation.
-The answer is extractive: wording comes directly from the sources, whose factual
-accuracy should still be checked. Page text is treated as untrusted data.
+paid model. The model writes its own answer from cleaned source excerpts: one
+short direct sentence, then at most two supporting sentences adding new facts.
+Wiki footnotes such as `[a]` and `[1]` are removed before summarizing. Jev validates
+each sentence's source number and length, rejects unsupported numeric details,
+removes repeated claims, and adds clickable numbered citations itself. These checks do not prove
+that every generated paraphrase is entailed by its source; check the linked sources.
+If the evidence is insufficient, Jev says so without substituting snippets. If FM
+fails or returns invalid output, Jev shows a cleaned, cited snippet labeled
+**From the web** and can retry the local model using the cached results. For
+ambiguity it can offer one other meaning using a fetched result's title. Page text
+is treated as untrusted data.
 
 Results come from DuckDuckGo's keyless HTML host. Jev checks each origin's robots
 rules (including redirect destinations), honors crawl delays/request rates and
